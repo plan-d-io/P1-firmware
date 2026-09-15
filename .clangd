@@ -1,0 +1,61 @@
+# clangd configuration for the PlatformIO / pioarduino Xtensa build.
+#
+# This file affects ONLY clangd (the editor's code intelligence). The firmware
+# build is driven by platformio.ini and xtensa-esp32-elf-g++ and is completely
+# unaffected by anything here.
+#
+# Why Remove: upstream LLVM does not ship the Xtensa backend in its official
+# releases, so this clangd has no xtensa target. It rejects the Xtensa-specific
+# driver flags in compile_commands.json, and a rejected flag aborts argument
+# parsing for the whole file, which cascades into bogus header diagnostics.
+# Stripping the flags clangd cannot model leaves everything else working.
+#
+# KNOWN REMAINING ISSUE (harmless, do not chase):
+# One error survives -- "undeclared identifier XCHAL_HAVE_LOOPS" in the
+# toolchain header xtruntime-frames.h. That header includes
+# <xtensa/config/core.h>, which picks the right core-isa.h via GCC's
+# multilib/core-config machinery that clangd has no equivalent for, so the
+# XCHAL_* macros never get defined. Force-includes, explicit -I paths and
+# -D shims were all tried and none fixed it. The real fix, if it ever becomes
+# worth it, is Espressif's Xtensa-capable clang from
+# https://github.com/espressif/llvm-project/releases -- extract it and set
+# "clangd.path" to its bin/clangd.exe. Until then: ignore that one error.
+
+CompileFlags:
+  # Take builtin headers from the query-driver (xtensa GCC), not from clangd.
+  BuiltinHeaders: QueryDriver
+  Remove:
+    - -mlongcalls
+    - -mdisable-hardware-atomics
+    - -mtext-section-literals
+    - -mfix-esp32-psram-cache-issue
+    - -mfix-esp32-psram-cache-strategy=*
+    - -fstrict-volatile-bitfields
+    - -freorder-blocks
+    - -fno-tree-switch-conversion
+    - -fno-shrink-wrap
+    - -Wno-frame-address
+    - -gdwarf-4
+
+Diagnostics:
+  # pp_expects_filename: .ino files have no #include of their own.
+  # unused-includes: unreliable against Arduino/ESP-IDF header chains.
+  Suppress: [pp_expects_filename, unused-includes]
+
+---
+# archive/ is reference-only legacy material that is not built. pioarduino puts
+# it in the compile database anyway; silence it so it does not drown real work.
+If:
+  PathMatch: .*archive/.*
+Diagnostics:
+  Suppress: "*"
+
+---
+If:
+  PathMatch: .*\.ino
+CompileFlags:
+  Add:
+    - "-x"
+    - "c++"
+    - "-include"
+    - "Arduino.h"

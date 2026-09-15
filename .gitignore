@@ -1,0 +1,46 @@
+# Local working material — scratch files and local notes.
+# Never published.
+_local/
+
+# Editor scratch folders are not part of the project.
+
+
+
+# Legacy Arduino IDE projects, kept locally as reference only. Not tracked:
+# they are copies of repositories that still exist upstream, three of them with
+# their own .git directories, and committing them would duplicate public
+# history and add ~2 MB of dead binaries to a repo we intend to publish.
+#   github.com/plan-d-io/P1-dongle
+#   github.com/plan-d-io/P1-LoRa-receiver
+#   github.com/plan-d-io/P1-LoRa-transmitter
+archive/
+
+# PlatformIO build output
+.pio/
+
+# Generated compile databases (machine-specific absolute paths, large, churn
+# on every build). pioarduino writes one into .cache/clangd/; `pio run -t
+# compiledb` writes one into the project root.
+.cache/
+compile_commands.json
+
+# VS Code: generated and machine-specific files only. extensions.json
+# and settings.json are project configuration and SHOULD be committed.
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+.vscode/.browse.c_cpp.db*
+.vscode/*.code-workspace
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Editors / OS
+.dummy
+Thumbs.db
+.DS_Store
+*.tmp
+*.bak
+*~

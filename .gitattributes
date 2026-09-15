@@ -1,0 +1,20 @@
+# Normalise line endings. Files are stored with LF in the repository and
+# checked out with the platform's native endings. Set before the first commit,
+# so there is no historical churn to clean up.
+* text=auto
+
+# Windows scripts must keep CRLF or they break when run.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Keep shell scripts LF even on Windows.
+*.sh   text eol=lf
+
+# Never touch these.
+*.bin  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.gz   binary
+*.pdf  binary
