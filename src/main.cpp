@@ -1,22 +1,36 @@
 #include <Arduino.h>
 
+// Pins from archive/P1-dongle/P1-dongle.ino:
+//   HWSERIAL.begin(115200, SERIAL_8N1, 21, 22);
+//   TRIGGER 25, HIGH for continuous telegrams.
+static constexpr int kP1Rx = 21;
+static constexpr int kP1Tx = 22;
+static constexpr int kDataRequest = 25;
+
 void setup()
 {
     Serial.begin(115200);
-    delay(1000);
 
-    Serial.println();
-    Serial.println("P1-LoRa");
-    Serial.println("pioarduino toolchain test");
+    pinMode(kDataRequest, OUTPUT);
+    digitalWrite(kDataRequest, HIGH);
+
+    Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
+
+    Serial.println("P1 passthrough");
 }
 
 void loop()
 {
-    Serial.printf(
-        "Uptime: %lu ms | Free heap: %u bytes\n",
-        millis(),
-        ESP.getFreeHeap()
-    );
-
-    delay(1000);
+    uint8_t buf[64];
+    size_t n = 0;
+    while (n < sizeof(buf)) {
+        const int b = Serial1.read();
+        if (b < 0) {
+            break;
+        }
+        buf[n++] = static_cast<uint8_t>(b);
+    }
+    if (n > 0) {
+        Serial.write(buf, n);
+    }
 }

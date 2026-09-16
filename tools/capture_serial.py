@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import pathlib
+import re
 import sys
 import time
 
@@ -129,6 +130,45 @@ def capture(ser, seconds: float, until: str | None, sink) -> bool:
     return found_sentinel
 
 
+TELEGRAM_END = re.compile(rb"^![0-9A-Fa-f]{4}\r?$", re.MULTILINE)
+
+
+def capture_raw(ser, seconds: float, telegrams: int | None,
+                log_file, echo: bool) -> int:
+    """Byte-exact passthrough. Returns the number of complete telegrams seen.
+
+    Used to capture DSMR telegrams as test fixtures: no timestamps, no added
+    or removed bytes, because the CRC16 is computed over the exact wire bytes.
+    A telegram ends with a line of "!" followed by four hex digits.
+    """
+    deadline = time.monotonic() + seconds
+    seen = 0
+    tail = b""
+
+    out = sys.stdout.buffer if echo else None
+
+    while time.monotonic() < deadline:
+        chunk = ser.read(4096)
+        if not chunk:
+            continue
+        if log_file:
+            log_file.write(chunk)
+            log_file.flush()
+        if out:
+            out.write(chunk)
+            out.flush()
+
+        # Count terminators, keeping a small tail in case one straddles chunks.
+        window = tail + chunk
+        seen += len(TELEGRAM_END.findall(window))
+        tail = window[-8:]
+
+        if telegrams is not None and seen >= telegrams:
+            return seen
+
+    return seen
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Capture bounded serial output from the board.",
@@ -144,6 +184,14 @@ def main() -> int:
     ap.add_argument("--reset", action="store_true",
                     help="Pulse DTR/RTS to reset the board before capturing, "
                          "so the boot messages are included.")
+    ap.add_argument("--raw", action="store_true",
+                    help="Byte-exact passthrough: no timestamps, no header in "
+                         "the log. Use this to capture DSMR telegrams as "
+                         "fixtures, where the CRC is computed over the exact "
+                         "wire bytes.")
+    ap.add_argument("--telegrams", type=int, metavar="N",
+                    help="With --raw, stop once at least N complete telegrams "
+                         "(a line of '!' plus four hex digits).")
     ap.add_argument("--no-file", action="store_true",
                     help="Print only; do not write a log file.")
     ap.add_argument("--list", action="store_true",
@@ -168,8 +216,47 @@ def main() -> int:
     if not args.no_file:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_path = LOG_DIR / f"{stamp}.log"
-        log_file = log_path.open("w", encoding="utf-8")
+        suffix = "p1" if args.raw else "log"
+        log_path = LOG_DIR / f"{stamp}.{suffix}"
+        # Raw mode writes bytes verbatim; line mode writes decoded text.
+        log_file = log_path.open("wb" if args.raw else "w",
+                                 **({} if args.raw else {"encoding": "utf-8"}))
+
+    def reset_board() -> None:
+        ser.dtr = False
+        ser.rts = True
+        time.sleep(0.1)
+        ser.rts = False
+        time.sleep(0.05)
+        ser.reset_input_buffer()
+
+    header = (f"--- {port} @ {args.baud} baud, up to {args.seconds:g}s"
+              + (f", {args.telegrams} telegrams" if args.raw and args.telegrams else "")
+              + (f', until "{args.until}"' if args.until else "")
+              + (" [raw]" if args.raw else "")
+              + " ---")
+
+    if args.raw:
+        # Header to stderr only: stdout must stay byte-exact.
+        print(header, file=sys.stderr, flush=True)
+        try:
+            if args.reset:
+                reset_board()
+            seen = capture_raw(ser, args.seconds, args.telegrams, log_file, echo=True)
+        except KeyboardInterrupt:
+            seen = 0
+        finally:
+            ser.close()
+            if log_file:
+                log_file.close()
+
+        print(f"\n--- {seen} complete telegram(s) ---", file=sys.stderr)
+        if log_path:
+            print(f"Saved to {log_path}", file=sys.stderr)
+        if args.telegrams and seen < args.telegrams:
+            print(f"Expected {args.telegrams}, got {seen}.", file=sys.stderr)
+            return 1
+        return 0 if seen else 1
 
     def sink(line: str) -> None:
         print(line, flush=True)
@@ -177,20 +264,11 @@ def main() -> int:
             log_file.write(line + "\n")
             log_file.flush()
 
-    header = (f"--- {port} @ {args.baud} baud, up to {args.seconds:g}s"
-              + (f', until "{args.until}"' if args.until else "")
-              + " ---")
     sink(header)
 
     try:
         if args.reset:
-            ser.dtr = False
-            ser.rts = True
-            time.sleep(0.1)
-            ser.rts = False
-            time.sleep(0.05)
-            ser.reset_input_buffer()
-
+            reset_board()
         hit = capture(ser, args.seconds, args.until, sink)
     except KeyboardInterrupt:
         sink("--- interrupted ---")
@@ -204,6 +282,7 @@ def main() -> int:
         sink("--- ended ---")
 
     if log_path:
+        log_file.close()
         print(f"\nSaved to {log_path}", file=sys.stderr)
 
     # Non-zero when an expected sentinel never arrived, so a caller can tell.
