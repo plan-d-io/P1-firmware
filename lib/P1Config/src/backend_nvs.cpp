@@ -1,0 +1,85 @@
+#include "P1Config.h"
+
+#if defined(ARDUINO)
+
+namespace p1cfg {
+
+bool NvsBackend::begin(bool read_only)
+{
+    open_ = prefs_.begin("p1cfg", read_only);
+    return open_;
+}
+
+void NvsBackend::end()
+{
+    if (open_) {
+        prefs_.end();
+        open_ = false;
+    }
+}
+
+bool NvsBackend::has(const char* key) const
+{
+    return prefs_.isKey(key);
+}
+
+bool NvsBackend::get_bool(const char* key, bool def) const
+{
+    return prefs_.getBool(key, def);
+}
+
+std::int32_t NvsBackend::get_i32(const char* key, std::int32_t def) const
+{
+    return prefs_.getInt(key, def);
+}
+
+std::uint32_t NvsBackend::get_u32(const char* key, std::uint32_t def) const
+{
+    return prefs_.getUInt(key, def);
+}
+
+void NvsBackend::get_str(const char* key, char* out, std::size_t cap,
+                         const char* def) const
+{
+    if (cap == 0) {
+        return;
+    }
+    const std::size_t n = prefs_.getString(key, out, cap);
+    if (n == 0 && def != nullptr && !prefs_.isKey(key)) {
+        std::size_t i = 0;
+        while (i + 1 < cap && def[i] != '\0') {
+            out[i] = def[i];
+            ++i;
+        }
+        out[i] = '\0';
+    }
+}
+
+void NvsBackend::put_bool(const char* key, bool v)
+{
+    prefs_.putBool(key, v);
+}
+
+void NvsBackend::put_i32(const char* key, std::int32_t v)
+{
+    prefs_.putInt(key, v);
+}
+
+void NvsBackend::put_u32(const char* key, std::uint32_t v)
+{
+    prefs_.putUInt(key, v);
+}
+
+void NvsBackend::put_str(const char* key, const char* v)
+{
+    prefs_.putString(key, v);
+}
+
+void NvsBackend::remove(const char* key)
+{
+    prefs_.remove(key);
+}
+
+}  // namespace p1cfg
+
+#endif
