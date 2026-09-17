@@ -26,7 +26,13 @@ import pathlib
 import re
 import sys
 
-TELEGRAM = re.compile(rb"/.*?![0-9A-Fa-f]{4}", re.S)
+# The CRC field should be exactly four hex characters. We deliberately match
+# one to four, followed by the line ending, so that a telegram whose CRC was
+# printed without its leading zero is still found as one telegram. Insisting on
+# four here makes the regex run past the short CRC and swallow the NEXT
+# telegram too, which then reports as a checksum mismatch and sends you hunting
+# for corruption that is not there. That cost a debugging session once.
+TELEGRAM = re.compile(rb"/.*?![0-9A-Fa-f]{1,4}(?=\r\n|\n|$)", re.S)
 
 
 def crc16_arc(data: bytes) -> int:
@@ -53,25 +59,43 @@ def main() -> int:
         return 1
 
     bad = 0
+    short = 0
     for i, t in enumerate(telegrams):
-        claimed = t[-4:].decode()
-        calc = crc16_arc(t[:-4])
+        body, _, claimed_b = t.rpartition(b"!")
+        body += b"!"
+        claimed = claimed_b.decode()
+        calc = crc16_arc(body)
         ident = t.split(b"\r\n")[0].decode(errors="replace")
-        if int(claimed, 16) == calc:
-            print(f"  [{i}] {claimed}  ok        {ident[:44]}")
-        else:
+
+        if int(claimed, 16) != calc:
             bad += 1
-            print(f"  [{i}] {claimed}  MISMATCH (computed {calc:04X})  {ident[:30]}")
+            print(f"  [{i}] !{claimed}  MISMATCH (computed {calc:04X})  {ident[:30]}")
             if args.fix:
-                data = data.replace(t, t[:-4] + ("%04X" % calc).encode(), 1)
+                data = data.replace(t, body + ("%04X" % calc).encode(), 1)
+        elif len(claimed) != 4:
+            short += 1
+            print(f"  [{i}] !{claimed}  SHORT: value correct, should be "
+                  f"!{calc:04X} — leading zero not printed by the sender")
+            if args.fix:
+                data = data.replace(t, body + ("%04X" % calc).encode(), 1)
+        else:
+            print(f"  [{i}] !{claimed}  ok        {ident[:44]}")
 
-    print(f"\n{len(telegrams)} telegram(s), {len(telegrams) - bad} valid")
+    print(f"\n{len(telegrams)} telegram(s), {len(telegrams) - bad - short} fully valid, "
+          f"{short} with a short CRC, {bad} with a wrong CRC")
 
-    if bad and args.fix:
+    if short and not bad:
+        print("\nA short CRC is a formatting bug in whatever produced the stream:\n"
+              "the checksum value is right but was printed without padding to four\n"
+              "hex digits. A DSMR parser reading a fixed four characters will reject\n"
+              "these telegrams, correctly. Do not loosen the parser — fix the sender.",
+              file=sys.stderr)
+
+    if (bad or short) and args.fix:
         args.file.write_bytes(data)
-        print(f"Rewrote {bad} CRC(s) in {args.file}.")
+        print(f"Rewrote {bad + short} CRC(s) in {args.file}.")
         return 0
-    if bad:
+    if bad or short:
         print("Run with --fix only if you intended these bytes to change.",
               file=sys.stderr)
         return 1

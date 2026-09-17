@@ -29,7 +29,10 @@ import re
 import sys
 
 TIMESTAMP = re.compile(rb"^\d{2}:\d{2}:\d{2}\.\d{3} -> ")
-TELEGRAM = re.compile(rb"/.*?![0-9A-Fa-f]{4}", re.S)
+# One to four hex characters, not exactly four: a sender that omits the leading
+# zero would otherwise cause this to swallow two telegrams as one. See
+# tools/p1crc.py for the full explanation.
+TELEGRAM = re.compile(rb"/.*?![0-9A-Fa-f]{1,4}(?=\r\n|\n|$)", re.S)
 
 
 def crc16_arc(data: bytes) -> int:
@@ -56,8 +59,11 @@ def recover(raw: bytes) -> bytes:
 def verify(data: bytes) -> tuple[int, int]:
     """Return (valid, total) telegram counts."""
     telegrams = TELEGRAM.findall(data)
-    valid = sum(1 for t in telegrams
-                if int(t[-4:], 16) == crc16_arc(t[:-4]))
+    valid = 0
+    for t in telegrams:
+        body, _, claimed = t.rpartition(b"!")
+        if int(claimed, 16) == crc16_arc(body + b"!"):
+            valid += 1
     return valid, len(telegrams)
 
 
