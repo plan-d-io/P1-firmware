@@ -188,7 +188,7 @@ void test_payload_formats()
     auto f0 = collect(flu.data(), cfg);
     TEST_ASSERT_NOT_NULL(find_topic(f0, t1));
     TEST_ASSERT_EQUAL_STRING("182.077", find_topic(f0, t1)->payload.c_str());
-    TEST_ASSERT_EQUAL_STRING("0002", find_topic(f0, tariff)->payload.c_str());
+    TEST_ASSERT_EQUAL_STRING("2", find_topic(f0, tariff)->payload.c_str());
     TEST_ASSERT_EQUAL_STRING("381.161", find_topic(f0, total)->payload.c_str());
     auto g0 = collect(mbus.data(), cfg);
     TEST_ASSERT_EQUAL_STRING("112.384", find_topic(g0, gas)->payload.c_str());
@@ -198,14 +198,14 @@ void test_payload_formats()
     TEST_ASSERT_EQUAL_STRING(
         "{\"value\":182.077,\"unit\":\"kWh\",\"timestamp\":1692463399}",
         find_topic(f1, t1)->payload.c_str());
-    TEST_ASSERT_EQUAL_STRING("{\"value\":\"0002\",\"timestamp\":1692463399}",
+    TEST_ASSERT_EQUAL_STRING("{\"value\":2,\"timestamp\":1692463399}",
                              find_topic(f1, tariff)->payload.c_str());
     TEST_ASSERT_EQUAL_STRING(
         "{\"value\":381.161,\"unit\":\"kWh\",\"timestamp\":1692463399}",
         find_topic(f1, total)->payload.c_str());
     auto g1 = collect(mbus.data(), cfg);
     TEST_ASSERT_EQUAL_STRING(
-        "{\"value\":112.384,\"unit\":\"m3\",\"timestamp\":1589283958}",
+        "{\"value\":112.384,\"unit\":\"m\xC2\xB3\",\"timestamp\":1589283958}",
         find_topic(g1, gas)->payload.c_str());
 
     cfg.values().frmt_pyld = 2;
@@ -216,7 +216,7 @@ void test_payload_formats()
         "\"sensorId\":\"utility_meter.total_consumption_t1\"}",
         find_topic(f2, t1)->payload.c_str());
     TEST_ASSERT_EQUAL_STRING(
-        "{\"value\":\"0002\",\"timestamp\":1692463399,"
+        "{\"value\":2,\"timestamp\":1692463399,"
         "\"friendly_name\":\"Active tariff period\","
         "\"sensorId\":\"utility_meter.active_tariff_period\"}",
         find_topic(f2, tariff)->payload.c_str());
@@ -238,7 +238,7 @@ void test_payload_formats()
         find_topic(f3, total)->payload.c_str());
     auto g3 = collect(mbus.data(), cfg);
     TEST_ASSERT_EQUAL_STRING(
-        "{\"value\":112.384,\"unit\":\"m3\",\"timestamp\":1589283958,"
+        "{\"value\":112.384,\"unit\":\"m\xC2\xB3\",\"timestamp\":1589283958,"
         "\"friendly_name\":\"Natural gas consumption\","
         "\"sensorId\":\"utility_meter.natural_gas_consumption\","
         "\"entity\":\"Utility meter\",\"metric\":\"naturalGasImport\","
@@ -400,6 +400,113 @@ void test_fluvius_topic_set()
     TEST_ASSERT_FALSE(has_topic(hits, "data/devices/utility_meter/natural_gas_consumption"));
 }
 
+void test_tariff_is_unsigned_integer()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    cfg.set_field_on("0-0:96.14.0", true);
+
+    const char* topic = "data/devices/utility_meter/active_tariff_period";
+
+    p1dsmr::Reader flu;
+    TEST_ASSERT_NOT_NULL(first_of(flu, "belgian-3phase-fluvius.p1"));
+
+    cfg.values().frmt_pyld = 0;
+    auto f0 = collect(flu.data(), cfg);
+    TEST_ASSERT_NOT_NULL(find_topic(f0, topic));
+    TEST_ASSERT_EQUAL_STRING("2", find_topic(f0, topic)->payload.c_str());
+
+    cfg.values().frmt_pyld = 1;
+    auto f1 = collect(flu.data(), cfg);
+    TEST_ASSERT_EQUAL_STRING("{\"value\":2,\"timestamp\":1692463399}",
+                             find_topic(f1, topic)->payload.c_str());
+
+    p1dsmr::Reader junk;
+    TEST_ASSERT_TRUE(parse_one(
+        junk, seal("/TEST\n\n0-0:96.14.0(XXXX)\n0-0:1.0.0(230101000000W)\n!")));
+    cfg.values().frmt_pyld = 0;
+    auto skipped = collect(junk.data(), cfg);
+    TEST_ASSERT_NULL(find_topic(skipped, topic));
+}
+
+void test_gas_water_unit_is_cubic_metre_utf8()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    cfg.values().frmt_pyld = 1;
+    cfg.set_field_on("0-2:24.2.1", true);
+
+    p1dsmr::Reader mbus;
+    TEST_ASSERT_NOT_NULL(first_of(mbus, "belgian-mbus-gas-water-spec.p1"));
+    auto hits = collect(mbus.data(), cfg);
+
+    const Hit* gas = find_topic(hits, "data/devices/utility_meter/natural_gas_consumption");
+    TEST_ASSERT_NOT_NULL(gas);
+    const char want_gas[] = "{\"value\":112.384,\"unit\":\"m\xC2\xB3\",\"timestamp\":1589283958}";
+    TEST_ASSERT_EQUAL_UINT(sizeof(want_gas) - 1, gas->payload.size());
+    TEST_ASSERT_EQUAL_STRING(want_gas, gas->payload.c_str());
+    const auto unit_at = gas->payload.find("\"unit\":\"");
+    TEST_ASSERT_TRUE(unit_at != std::string::npos);
+    TEST_ASSERT_EQUAL_UINT('m', static_cast<unsigned char>(gas->payload[unit_at + 8]));
+    TEST_ASSERT_EQUAL_UINT(0xC2, static_cast<unsigned char>(gas->payload[unit_at + 9]));
+    TEST_ASSERT_EQUAL_UINT(0xB3, static_cast<unsigned char>(gas->payload[unit_at + 10]));
+
+    const Hit* water = find_topic(hits, "data/devices/utility_meter/water_consumption");
+    TEST_ASSERT_NOT_NULL(water);
+    const char want_water[] = "{\"value\":872.234,\"unit\":\"m\xC2\xB3\",\"timestamp\":1589283958}";
+    TEST_ASSERT_EQUAL_STRING(want_water, water->payload.c_str());
+}
+
+void test_maximum_demand_uses_capture_time()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    cfg.values().frmt_pyld = 1;
+
+    p1dsmr::Reader flu;
+    TEST_ASSERT_NOT_NULL(first_of(flu, "belgian-3phase-fluvius.p1"));
+    auto hits = collect(flu.data(), cfg);
+
+    const Hit* peak =
+        find_topic(hits, "data/devices/utility_meter/maximum_demand_current_month");
+    TEST_ASSERT_NOT_NULL(peak);
+    TEST_ASSERT_EQUAL_STRING("{\"value\":2.396,\"unit\":\"kW\",\"timestamp\":1692064800}",
+                             peak->payload.c_str());
+
+    const Hit* t1 = find_topic(hits, "data/devices/utility_meter/total_consumption_t1");
+    TEST_ASSERT_NOT_NULL(t1);
+    TEST_ASSERT_TRUE(t1->payload.find("\"timestamp\":1692463399") != std::string::npos);
+}
+
+void test_builder_payload_bound()
+{
+    TEST_ASSERT_EQUAL_UINT(3072, p1pub::kPayloadMax);
+    TEST_ASSERT_TRUE(sizeof(p1pub::Builder) >= p1pub::kTopicMax + p1pub::kPayloadMax);
+    TEST_ASSERT_TRUE(sizeof(p1pub::Builder) < 4096);
+
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    cfg.set_field_on("0-0:96.13.0", true);
+    cfg.values().frmt_pyld = 3;
+
+    std::string body = "/TEST\n\n0-0:96.13.0(";
+    body.append(2048, 'A');
+    body += ")\n0-0:1.0.0(230101000000W)\n!";
+    p1dsmr::Reader r;
+    TEST_ASSERT_TRUE(parse_one(r, seal(body)));
+    auto hits = collect(r.data(), cfg);
+    const Hit* msg = find_topic(hits, "data/devices/utility_meter/text_message");
+    TEST_ASSERT_NOT_NULL(msg);
+    TEST_ASSERT_TRUE(msg->payload.size() > 2048);
+    TEST_ASSERT_TRUE(msg->payload.size() < p1pub::kPayloadMax);
+    TEST_ASSERT_TRUE(msg->payload.find("{\"value\":\"") == 0);
+    TEST_ASSERT_TRUE(msg->payload.find(std::string(2048, 'A')) != std::string::npos);
+}
+
 void test_dutch_topic_set()
 {
     p1cfg::MemoryBackend mem;
@@ -452,5 +559,9 @@ int main()
     RUN_TEST(test_cofy_metric_keys);
     RUN_TEST(test_fluvius_topic_set);
     RUN_TEST(test_dutch_topic_set);
+    RUN_TEST(test_tariff_is_unsigned_integer);
+    RUN_TEST(test_gas_water_unit_is_cubic_metre_utf8);
+    RUN_TEST(test_maximum_demand_uses_capture_time);
+    RUN_TEST(test_builder_payload_bound);
     return UNITY_END();
 }

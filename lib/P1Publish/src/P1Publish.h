@@ -10,6 +10,7 @@
 namespace p1pub {
 
 constexpr std::size_t kTopicMax = 96;
+// Sized for message_long / the failure log (up to 2048 chars) plus JSON wrapping.
 constexpr std::size_t kPayloadMax = 3072;
 
 // MQTT_PFIX + slugged catalogue label. 0 if the buffer is too small.
@@ -21,6 +22,9 @@ std::size_t availability_topic(const p1cfg::Store& cfg, char* out, std::size_t c
 
 // Turns one telegram into topic/payload pairs. No network, no heap per telegram.
 // The views passed to `on_msg` are valid only for the duration of that call.
+//
+// Must live at file scope, never on a task stack. The object is the two
+// buffers (~3.2 KB); the Arduino loop task is 8 KB.
 class Builder {
 public:
     template <typename Fn>

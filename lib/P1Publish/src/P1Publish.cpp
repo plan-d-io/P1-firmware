@@ -196,7 +196,7 @@ struct Val {
     std::uint32_t u = 0;
     std::string_view s;
     const char* unit = "";
-    std::string_view mbus_ts;
+    std::string_view capture_ts;
 };
 
 Val milli(bool present, const dsmr_parser::FixedValue& v, const char* unit)
@@ -211,11 +211,11 @@ Val milli(bool present, const dsmr_parser::FixedValue& v, const char* unit)
     return r;
 }
 
-Val milli_mbus(bool present, const dsmr_parser::TimestampedFixedValue& v, const char* unit)
+Val milli_captured(bool present, const dsmr_parser::TimestampedFixedValue& v, const char* unit)
 {
     Val r = milli(present, v, unit);
     if (r.kind != Val::Kind::Absent) {
-        r.mbus_ts = v.timestamp;
+        r.capture_ts = v.timestamp;
     }
     return r;
 }
@@ -231,6 +231,32 @@ Val uint_val(bool present, std::uint32_t v)
     return r;
 }
 
+Val tariff_val(bool present, std::string_view s)
+{
+    if (!present) {
+        return {};
+    }
+    std::uint32_t acc = 0;
+    bool any = false;
+    for (char c : s) {
+        if (c < '0' || c > '9') {
+            if (!any) {
+                return {};
+            }
+            break;
+        }
+        any = true;
+        if (acc > (0xFFFFFFFFu - static_cast<std::uint32_t>(c - '0')) / 10) {
+            return {};
+        }
+        acc = acc * 10 + static_cast<std::uint32_t>(c - '0');
+    }
+    if (!any) {
+        return {};
+    }
+    return uint_val(true, acc);
+}
+
 Val str_val(bool present, std::string_view v)
 {
     if (!present) {
@@ -240,6 +266,14 @@ Val str_val(bool present, std::string_view v)
     r.kind = Val::Kind::Str;
     r.s = v;
     return r;
+}
+
+const char* publish_unit(const char* unit)
+{
+    if (unit != nullptr && std::strcmp(unit, "m3") == 0) {
+        return "m\xC2\xB3";
+    }
+    return unit;
 }
 
 namespace f = dsmr_parser::fields;
@@ -297,7 +331,7 @@ Val value_of(const p1dsmr::Data& d, std::string_view id)
                      f::energy_returned_tariff2::unit());
     }
     if (id == "0-0:96.14.0") {
-        return str_val(d.electricity_tariff_present, d.electricity_tariff);
+        return tariff_val(d.electricity_tariff_present, d.electricity_tariff);
     }
     if (id == "1-0:1.7.0") {
         return milli(d.power_delivered_present, d.power_delivered, f::power_delivered::unit());
@@ -350,16 +384,16 @@ Val value_of(const p1dsmr::Data& d, std::string_view id)
                      f::active_energy_import_current_average_demand::unit());
     }
     if (id == "1-0:1.6.0") {
-        return milli(d.active_energy_import_maximum_demand_running_month_present,
-                     d.active_energy_import_maximum_demand_running_month,
-                     f::active_energy_import_maximum_demand_running_month::unit());
+        return milli_captured(d.active_energy_import_maximum_demand_running_month_present,
+                              d.active_energy_import_maximum_demand_running_month,
+                              f::active_energy_import_maximum_demand_running_month::unit());
     }
     if (id == "0-1:24.2.3") {
-        return milli_mbus(d.gas_delivered_be_present, d.gas_delivered_be,
-                          f::gas_delivered_be::unit());
+        return milli_captured(d.gas_delivered_be_present, d.gas_delivered_be,
+                              f::gas_delivered_be::unit());
     }
     if (id == "0-1:24.2.1") {
-        return milli_mbus(d.gas_delivered_present, d.gas_delivered, f::gas_delivered::unit());
+        return milli_captured(d.gas_delivered_present, d.gas_delivered, f::gas_delivered::unit());
     }
     if (id == "identification") {
         return str_val(d.identification_present, d.identification);
@@ -432,7 +466,8 @@ Val value_of(const p1dsmr::Data& d, std::string_view id)
         return uint_val(d.water_device_type_present, d.water_device_type);
     }
     if (id == "0-2:24.2.1") {
-        return milli_mbus(d.water_delivered_present, d.water_delivered, f::water_delivered::unit());
+        return milli_captured(d.water_delivered_present, d.water_delivered,
+                              f::water_delivered::unit());
     }
     return {};
 }
@@ -469,12 +504,13 @@ bool write_payload(char* out, std::size_t cap, std::size_t& n, const p1cfg::Fiel
         !append_value(out, cap, n, v, true)) {
         return false;
     }
-    if (v.unit != nullptr && v.unit[0] != '\0') {
-        if (!append(out, cap, n, ",\"unit\":") || !append_json_str(out, cap, n, v.unit)) {
+    const char* unit = publish_unit(v.unit);
+    if (unit != nullptr && unit[0] != '\0') {
+        if (!append(out, cap, n, ",\"unit\":") || !append_json_str(out, cap, n, unit)) {
             return false;
         }
     }
-    std::string_view ts = v.mbus_ts.empty() ? telegram_ts : v.mbus_ts;
+    std::string_view ts = v.capture_ts.empty() ? telegram_ts : v.capture_ts;
     std::int64_t unix_ts = 0;
     if (dsmr_to_unix(ts, unix_ts)) {
         if (!append(out, cap, n, ",\"timestamp\":") || !append_i64(out, cap, n, unix_ts)) {
