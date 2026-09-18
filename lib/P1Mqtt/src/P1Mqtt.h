@@ -17,7 +17,12 @@ constexpr std::size_t kDeviceIdCap = 9;
 constexpr std::size_t kUriMax = 80;
 constexpr std::size_t kTopicBuf = 128;
 
+// False if mac is null or every byte is 0x00 — that is a failed read, not a
+// real station address. device_id() writes an empty string in that case.
+bool mac_usable(const std::uint8_t mac[6]);
+
 // Corrected id: last three MAC bytes as two uppercase hex digits each.
+// Empty output if the MAC is not usable (would otherwise become P1000000).
 void device_id(const std::uint8_t mac[6], char* out, std::size_t cap);
 
 // Fielded form: Arduino String(byte, HEX) then toUpperCase — no leading zero

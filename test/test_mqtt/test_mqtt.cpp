@@ -13,6 +13,32 @@ const std::uint8_t kMacFull[6] = {0x11, 0x22, 0x33, 0x1A, 0xB2, 0xC3};
 
 }  // namespace
 
+void test_device_id_from_station_mac()
+{
+    const std::uint8_t mac[6] = {0x02, 0x00, 0x00, 0xAA, 0xBB, 0xCC};
+    char id[p1mqtt::kDeviceIdCap];
+    TEST_ASSERT_TRUE(p1mqtt::mac_usable(mac));
+    p1mqtt::device_id(mac, id, sizeof(id));
+    TEST_ASSERT_EQUAL_STRING("P1AABBCC", id);
+}
+
+void test_all_zero_mac_is_invalid()
+{
+    const std::uint8_t z[6] = {};
+    TEST_ASSERT_FALSE(p1mqtt::mac_usable(z));
+    TEST_ASSERT_FALSE(p1mqtt::mac_usable(nullptr));
+
+    char id[p1mqtt::kDeviceIdCap];
+    std::memset(id, 'X', sizeof(id));
+    p1mqtt::device_id(z, id, sizeof(id));
+    TEST_ASSERT_EQUAL_STRING("", id);
+
+    char mqtt_id[p1cfg::kIdMax];
+    mqtt_id[0] = '\0';
+    TEST_ASSERT_FALSE(p1mqtt::migrate_mqtt_id(mqtt_id, sizeof(mqtt_id), z));
+    TEST_ASSERT_EQUAL_STRING("", mqtt_id);
+}
+
 void test_device_id_pads_low_byte()
 {
     char id[p1mqtt::kDeviceIdCap];
@@ -109,6 +135,8 @@ extern "C" void tearDown() {}
 int main()
 {
     UNITY_BEGIN();
+    RUN_TEST(test_device_id_from_station_mac);
+    RUN_TEST(test_all_zero_mac_is_invalid);
     RUN_TEST(test_device_id_pads_low_byte);
     RUN_TEST(test_mqtt_id_migrates_empty);
     RUN_TEST(test_mqtt_id_migrates_legacy);

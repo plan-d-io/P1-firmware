@@ -48,12 +48,25 @@ void copy_id(char* dst, std::size_t cap, const char* src)
 
 }  // namespace
 
+bool mac_usable(const std::uint8_t mac[6])
+{
+    if (mac == nullptr) {
+        return false;
+    }
+    for (int i = 0; i < 6; ++i) {
+        if (mac[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void device_id(const std::uint8_t mac[6], char* out, std::size_t cap)
 {
     if (out == nullptr || cap == 0) {
         return;
     }
-    if (mac == nullptr || cap < kDeviceIdCap) {
+    if (!mac_usable(mac) || cap < kDeviceIdCap) {
         out[0] = '\0';
         return;
     }

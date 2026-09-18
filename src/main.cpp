@@ -5,6 +5,7 @@
 #include <P1Mqtt.h>
 #include <P1Publish.h>
 #include <WiFi.h>
+#include <esp_mac.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -47,7 +48,12 @@ static std::size_t g_cmd_n = 0;
 
 static void read_mac(std::uint8_t mac[6])
 {
-    WiFi.macAddress(mac);
+    // eFuse, not WiFi.macAddress(): the STA interface still reports zeros
+    // until it is brought up, and the id is needed before that.
+    std::memset(mac, 0, 6);
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        std::memset(mac, 0, 6);
+    }
 }
 
 static bool host_is_local(const char* host)
@@ -102,7 +108,9 @@ static void start_wifi()
     }
 
     WiFi.mode(WIFI_STA);
-    WiFi.setHostname(g_device_id);
+    if (g_device_id[0] != '\0') {
+        WiFi.setHostname(g_device_id);
+    }
     WiFi.setAutoReconnect(true);
     WiFi.begin(g_cfg.values().wifi_ssid, g_cfg.values().wifi_pass);
     g_wifi_started = true;
@@ -111,7 +119,7 @@ static void start_wifi()
 
 static void ensure_mdns()
 {
-    if (g_mdns_started || !g_got_ip) {
+    if (g_mdns_started || !g_got_ip || g_device_id[0] == '\0') {
         return;
     }
     if (MDNS.begin(g_device_id)) {
@@ -432,12 +440,18 @@ void setup()
 
     std::uint8_t mac[6]{};
     read_mac(mac);
-    p1mqtt::device_id(mac, g_device_id, sizeof(g_device_id));
+    if (!p1mqtt::mac_usable(mac)) {
+        Serial.println("MAC read failed (all zeros); refusing P1000000 as device id");
+        g_device_id[0] = '\0';
+    } else {
+        p1mqtt::device_id(mac, g_device_id, sizeof(g_device_id));
+    }
 
     Serial.printf("P1 UART rx=%u id=%s\n", static_cast<unsigned>(rx), g_device_id);
 
     g_cfg.load();
-    if (p1mqtt::migrate_mqtt_id(g_cfg.values().mqtt_id, sizeof(g_cfg.values().mqtt_id), mac)) {
+    if (p1mqtt::mac_usable(mac) &&
+        p1mqtt::migrate_mqtt_id(g_cfg.values().mqtt_id, sizeof(g_cfg.values().mqtt_id), mac)) {
         g_cfg.save();
         Serial.printf("MQTT_ID migrated to %s\n", g_cfg.values().mqtt_id);
     }
