@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <span>
 #include <string_view>
 
@@ -44,8 +45,11 @@ static bool g_host_empty_logged = false;
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
+static std::uint8_t g_mac[6]{};
 static char g_resolved_host[p1cfg::kHostMax]{};
 static std::uint32_t g_last_diag_ms = 0;
+static std::uint64_t g_disc_mask = 0;
+static bool g_disc_have = false;
 static char g_json[3072];
 static char g_in_topic[p1mqtt::kTopicBuf];
 static char g_in_payload[p1mqtt::InboundAssembler::kMax + 1];
@@ -245,6 +249,9 @@ static void subscribe_inbound()
     if (p1mqtt::inbound_topic(avail, p1mqtt::Inbound::Config, topic, sizeof(topic)) > 0) {
         g_mqtt.subscribe(topic);
     }
+    if (g_cfg.values().ha_en) {
+        g_mqtt.subscribe(p1mqtt::kHaStatusTopic);
+    }
 }
 
 static void publish_reboot_state(const char* on_off)
@@ -319,12 +326,136 @@ static void publish_diagnostics()
     publish_one_diag("reboot", "Reboot", "\"off\"");
 }
 
+static bool publish_retained(std::string_view topic, std::string_view payload)
+{
+    return g_mqtt.publish(topic, payload, true);
+}
+
+static bool publish_discovery_buf(std::string_view topic, const char* buf, std::size_t n)
+{
+    if (n == 0) {
+        Serial.printf("HA discovery overflow topic=%.*s cap=%u mqtt_out=%u\n",
+                      static_cast<int>(topic.size()), topic.data(),
+                      static_cast<unsigned>(p1pub::kDiscoveryCap),
+                      static_cast<unsigned>(p1mqtt::kMqttOutSize));
+        return false;
+    }
+    if (!publish_retained(topic, std::string_view(buf, n))) {
+        Serial.printf("HA discovery publish failed %.*s\n", static_cast<int>(topic.size()),
+                      topic.data());
+        return false;
+    }
+    Serial.printf("HA discovery %.*s n=%u\n", static_cast<int>(topic.size()), topic.data(),
+                  static_cast<unsigned>(n));
+    return true;
+}
+
+static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_mask)
+{
+    if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
+        return false;
+    }
+    char* buf = new (std::nothrow) char[p1pub::kDiscoveryCap];
+    if (buf == nullptr) {
+        Serial.println("HA discovery alloc failed");
+        return false;
+    }
+
+    bool ok = true;
+    char topic[p1pub::kTopicMax];
+    char slug_id[p1pub::kUniqueIdMax];
+    if (p1pub::slug(g_cfg.values().ha_device, slug_id, sizeof(slug_id)) > 0 &&
+        p1pub::device_discovery_topic(slug_id, topic, sizeof(topic)) > 0) {
+        const std::size_t n =
+            p1pub::meter_discovery(g_cfg, kFwVer, include_mask, stub_mask, buf,
+                                   p1pub::kDiscoveryCap);
+        ok = publish_discovery_buf(topic, buf, n) && ok;
+    } else {
+        ok = false;
+    }
+
+    if (g_device_id[0] != '\0' &&
+        p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
+        const std::size_t n =
+            p1pub::dongle_discovery(g_cfg, g_device_id, kFwVer, buf, p1pub::kDiscoveryCap);
+        ok = publish_discovery_buf(topic, buf, n) && ok;
+    } else {
+        ok = false;
+    }
+
+    delete[] buf;
+    return ok;
+}
+
+static void for_legacy_pub(std::string_view topic, void* ctx)
+{
+    const char* payload = static_cast<const char*>(ctx);
+    g_mqtt.publish(topic, payload != nullptr ? std::string_view(payload) : std::string_view{},
+                   true);
+}
+
+static void run_ha_migration()
+{
+    char legacy[p1mqtt::kDeviceIdCap];
+    p1mqtt::legacy_device_id(g_mac, legacy, sizeof(legacy));
+
+    Serial.println("HA migrate step 1");
+    p1pub::for_each_legacy_discovery_topic(g_cfg, g_device_id, legacy, &for_legacy_pub,
+                                           const_cast<char*>(p1pub::kMigrateDiscovery));
+
+    Serial.println("HA migrate step 2");
+    if (!publish_ha_devices(g_disc_mask, 0)) {
+        Serial.println("HA migrate step 2 failed; not clearing old topics");
+        return;
+    }
+
+    Serial.println("HA migrate step 3");
+    p1pub::for_each_legacy_discovery_topic(g_cfg, g_device_id, legacy, &for_legacy_pub, nullptr);
+    g_cfg.set_ha_migrated();
+    Serial.println("HA migrate done");
+}
+
+static void ha_on_field_set(std::uint64_t next)
+{
+    if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
+        g_disc_mask = next;
+        g_disc_have = true;
+        return;
+    }
+    if (!g_disc_have) {
+        g_disc_mask = next;
+        g_disc_have = true;
+        if (!g_cfg.ha_migrated()) {
+            run_ha_migration();
+        } else {
+            publish_ha_devices(g_disc_mask, 0);
+        }
+        return;
+    }
+    if (next == g_disc_mask) {
+        return;
+    }
+    const std::uint64_t removed = g_disc_mask & ~next;
+    if (removed != 0) {
+        publish_ha_devices(next, removed);
+    }
+    g_disc_mask = next;
+    publish_ha_devices(g_disc_mask, 0);
+}
+
 static void on_just_connected()
 {
     subscribe_inbound();
     publish_online();
     publish_reboot_state("off");
     publish_config_snapshot();
+    if (g_cfg.values().ha_en && g_disc_have) {
+        if (!g_cfg.ha_migrated()) {
+            run_ha_migration();
+        } else {
+            publish_ha_devices(g_disc_mask, 0);
+        }
+    }
 }
 
 static void handle_inbound()
@@ -361,11 +492,38 @@ static void handle_inbound()
         g_cfg.save();
         publish_config_snapshot();
         Serial.println("MQTT config applied");
+        if (g_cfg.values().ha_en) {
+            g_mqtt.subscribe(p1mqtt::kHaStatusTopic);
+            if (g_disc_have) {
+                ha_on_field_set(g_disc_mask);
+            }
+        }
+        return;
+    }
+
+    if (kind == p1mqtt::Inbound::HaStatus) {
+        if (std::strcmp(g_in_payload, "online") != 0) {
+            return;
+        }
+        Serial.println("HA status online");
+        if (g_disc_have) {
+            publish_ha_devices(g_disc_mask, 0);
+        }
     }
 }
 
 static void on_telegram(const p1dsmr::Data& data)
 {
+    if (g_cfg.values().ha_en) {
+        const std::uint64_t next = p1pub::discovery_field_mask(data, g_cfg);
+        if (g_mqtt.state() == p1mqtt::Mqtt::State::Connected) {
+            ha_on_field_set(next);
+        } else {
+            g_disc_mask = next;
+            g_disc_have = true;
+        }
+    }
+
     if (g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
         return;
     }
@@ -539,7 +697,59 @@ static void handle_line(char* line)
         cmd_set(line + 4);
         return;
     }
-    Serial.println("commands: set <KEY> <value> | get | save | status");
+    if (std::memcmp(line, "field ", 6) == 0) {
+        char* rest = line + 6;
+        while (*rest == ' ') {
+            ++rest;
+        }
+        char* id = rest;
+        char* val = rest;
+        while (*val != '\0' && *val != ' ') {
+            ++val;
+        }
+        if (*val == '\0') {
+            Serial.println("usage: field <id> on|off");
+            return;
+        }
+        *val++ = '\0';
+        while (*val == ' ') {
+            ++val;
+        }
+        bool on = false;
+        if (std::strcmp(val, "on") == 0) {
+            on = true;
+        } else if (std::strcmp(val, "off") == 0) {
+            on = false;
+        } else {
+            Serial.println("field wants on or off");
+            return;
+        }
+        if (p1cfg::find_field(id) == nullptr) {
+            Serial.printf("unknown field %s\n", id);
+            return;
+        }
+        g_cfg.set_field_on(id, on);
+        g_cfg.save();
+        Serial.printf("field %s %s\n", id, on ? "on" : "off");
+        if (g_disc_have) {
+            std::uint64_t next = g_disc_mask;
+            const p1cfg::Field* all = p1cfg::catalogue();
+            for (std::size_t i = 0; i < p1cfg::catalogue_size(); ++i) {
+                if (std::strcmp(all[i].id, id) == 0) {
+                    const std::uint64_t bit = std::uint64_t{1} << i;
+                    if (on) {
+                        next |= bit;
+                    } else {
+                        next &= ~bit;
+                    }
+                    break;
+                }
+            }
+            ha_on_field_set(next);
+        }
+        return;
+    }
+    Serial.println("commands: set <KEY> <value> | get | save | status | field <id> on|off");
 }
 
 static void poll_serial()
@@ -601,6 +811,7 @@ void setup()
 
     std::uint8_t mac[6]{};
     read_mac(mac);
+    std::memcpy(g_mac, mac, 6);
     if (!p1mqtt::mac_usable(mac)) {
         Serial.println("MAC read failed (all zeros); refusing P1000000 as device id");
         g_device_id[0] = '\0';

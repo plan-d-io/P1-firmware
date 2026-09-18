@@ -382,6 +382,7 @@ void Store::load()
         load_one(table_[i]);
     }
     load_overrides();
+    ha_mig_ = backend_.has("HA_MIG") && backend_.get_bool("HA_MIG", false);
     const std::uint32_t ver = ver_present ? v_.cfg_ver : 0;
     backend_.end();
 
@@ -493,6 +494,14 @@ void Store::save_overrides()
         return;
     }
     backend_.put_str("FLD_OVR", buf);
+}
+
+void Store::set_ha_migrated()
+{
+    ha_mig_ = true;
+    backend_.begin(false);
+    backend_.put_bool("HA_MIG", true);
+    backend_.end();
 }
 
 bool Store::field_on(std::string_view id) const

@@ -15,6 +15,8 @@ constexpr std::size_t kDeviceIdCap = 9;
 constexpr std::size_t kUriMax = 80;
 constexpr std::size_t kTopicBuf = 128;
 constexpr std::uint32_t kDiagIntervalMs = 60000;
+constexpr std::size_t kMqttOutSize = 16384;
+constexpr const char kHaStatusTopic[] = "homeassistant/status";
 
 // False if mac is null or every byte is 0x00 — that is a failed read, not a
 // real station address. device_id() writes an empty string in that case.
@@ -43,7 +45,7 @@ bool interval_due(std::uint32_t interval_ms, std::uint32_t now_ms, std::uint32_t
 
 // Command topics. Built from the same availability string that
 // p1pub::availability_topic() returns (MQTT_PFIX minus a trailing slash).
-enum class Inbound : std::uint8_t { None, Reboot, Config };
+enum class Inbound : std::uint8_t { None, Reboot, Config, HaStatus };
 
 std::size_t inbound_topic(std::string_view availability, Inbound kind, char* out,
                           std::size_t cap);

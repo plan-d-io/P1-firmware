@@ -332,6 +332,9 @@ std::size_t inbound_topic(std::string_view availability, Inbound kind, char* out
 
 Inbound match_inbound(std::string_view availability, std::string_view topic)
 {
+    if (topic == kHaStatusTopic) {
+        return Inbound::HaStatus;
+    }
     char reboot[kTopicBuf];
     char config[kTopicBuf];
     if (inbound_topic(availability, Inbound::Reboot, reboot, sizeof(reboot)) > 0 &&
@@ -649,7 +652,7 @@ bool Mqtt::begin(const p1cfg::Store& cfg, const char* host_override)
     mqtt_cfg.session.last_will.qos = 1;
     mqtt_cfg.session.last_will.retain = 1;
     mqtt_cfg.buffer.size = 2048;
-    mqtt_cfg.buffer.out_size = 4096;
+    mqtt_cfg.buffer.out_size = kMqttOutSize;
 
     auto* client = esp_mqtt_client_init(&mqtt_cfg);
     if (client == nullptr) {

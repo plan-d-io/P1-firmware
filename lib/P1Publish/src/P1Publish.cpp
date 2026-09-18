@@ -620,4 +620,44 @@ std::size_t Builder::emit_impl(const p1dsmr::Data& data, const p1cfg::Store& cfg
     return count;
 }
 
+bool reading_present(const p1dsmr::Data& data, std::string_view id)
+{
+    return value_of(data, id).kind != Val::Kind::Absent;
+}
+
+std::uint64_t discovery_field_mask(const p1dsmr::Data& data, const p1cfg::Store& cfg)
+{
+    const p1cfg::RegionTag filter = region_of(cfg.values());
+    const p1cfg::Field* all = p1cfg::catalogue();
+    const std::size_t nf = p1cfg::catalogue_size();
+    std::uint64_t mask = 0;
+    for (std::size_t i = 0; i < nf; ++i) {
+        const p1cfg::Field& field = all[i];
+        if (!cfg.field_on(field.id) || !p1cfg::field_in_region(field, filter)) {
+            continue;
+        }
+        if (value_of(data, field.id).kind == Val::Kind::Absent) {
+            continue;
+        }
+        mask |= (std::uint64_t{1} << i);
+    }
+    return mask;
+}
+
+std::uint64_t enabled_field_mask(const p1cfg::Store& cfg)
+{
+    const p1cfg::RegionTag filter = region_of(cfg.values());
+    const p1cfg::Field* all = p1cfg::catalogue();
+    const std::size_t nf = p1cfg::catalogue_size();
+    std::uint64_t mask = 0;
+    for (std::size_t i = 0; i < nf; ++i) {
+        const p1cfg::Field& field = all[i];
+        if (!cfg.field_on(field.id) || !p1cfg::field_in_region(field, filter)) {
+            continue;
+        }
+        mask |= (std::uint64_t{1} << i);
+    }
+    return mask;
+}
+
 }  // namespace p1pub

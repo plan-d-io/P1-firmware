@@ -233,6 +233,10 @@ public:
     bool field_on(std::string_view id) const;
     void set_field_on(std::string_view id, bool on);
 
+    // One-shot HA per-entity → device discovery migration. Not a user setting.
+    bool ha_migrated() const { return ha_mig_; }
+    void set_ha_migrated();
+
     JsonStatus apply_json(std::string_view json);
     // 0 means the buffer was too small (or cap == 0). Success is never 0:
     // the object is at least "{}".
@@ -251,6 +255,7 @@ private:
     CfgEntry table_[kSettingCount]{};
     std::uint8_t field_over_[kMaxFields]{};  // 0 = default, 1 = on, 2 = off
     bool migrated_ = false;
+    bool ha_mig_ = false;
 };
 
 }  // namespace p1cfg
