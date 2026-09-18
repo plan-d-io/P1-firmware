@@ -5,6 +5,7 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -61,7 +62,10 @@ int count_key(const char* json, const char* key)
 
 const char* after_components(const char* json)
 {
-    const char* p = std::strstr(json, "\"components\":");
+    const char* p = std::strstr(json, "\"cmps\":");
+    if (p == nullptr) {
+        p = std::strstr(json, "\"components\":");
+    }
     return p != nullptr ? p : json;
 }
 
@@ -147,9 +151,10 @@ void test_availability_topic_once_at_root()
     char buf[p1pub::kDiscoveryCap];
     TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf,
                                             sizeof(buf)) > 0);
-    TEST_ASSERT_EQUAL_INT(1, count_key(buf, "\"availability_topic\""));
+    TEST_ASSERT_EQUAL_INT(1, count_key(buf, "\"avty_t\""));
+    TEST_ASSERT_EQUAL_INT(0, count_key(buf, "\"availability_topic\""));
     const char* cmps = after_components(buf);
-    TEST_ASSERT_NULL(std::strstr(cmps, "availability_topic"));
+    TEST_ASSERT_NULL(std::strstr(cmps, "avty_t"));
 }
 
 void test_value_template_gated_on_format()
@@ -162,14 +167,16 @@ void test_value_template_gated_on_format()
 
     cfg.values().frmt_pyld = 3;
     TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "value_template"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "val_tpl"));
+    TEST_ASSERT_NULL(std::strstr(buf, "value_template"));
 
     cfg.values().frmt_pyld = 1;
     TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "value_template"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "val_tpl"));
 
     cfg.values().frmt_pyld = 0;
     TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_NULL(std::strstr(buf, "val_tpl"));
     TEST_ASSERT_NULL(std::strstr(buf, "value_template"));
 }
 
@@ -341,6 +348,47 @@ void test_published_identity_survives_reload()
     TEST_ASSERT_EQUAL_STRING("data/devices/example_meter/", b.published_mqtt_pfix());
 }
 
+void test_abbreviated_payload_keeps_unique_ids()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    char buf[p1pub::kDiscoveryCap];
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf,
+                                            sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(json_closed(buf));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"cmps\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"components\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"dev\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"o\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"avty_t\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"unique_id\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"stat_t\":\"~"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"~\":\"data/devices/utility_meter/\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"utility_meter_total_energy_consumed\""));
+
+    const p1cfg::Field* all = p1cfg::catalogue();
+    for (std::size_t i = 0; i < p1cfg::catalogue_size(); ++i) {
+        if (!cfg.field_on(all[i].id)) {
+            continue;
+        }
+        char uid[p1pub::kUniqueIdMax];
+        TEST_ASSERT_TRUE(p1pub::meter_unique_id(cfg.values().ha_device, all[i].label, uid,
+                                                sizeof(uid)) > 0);
+        char needle[p1pub::kUniqueIdMax + 24];
+        std::snprintf(needle, sizeof(needle), "\"uniq_id\":\"%s\"", uid);
+        TEST_ASSERT_NOT_NULL(std::strstr(buf, needle));
+    }
+
+    TEST_ASSERT_TRUE(p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(json_closed(buf));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"P1AABBCC_free_heap_size\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"stat_t\":\"~free_heap_size\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"ent_cat\":\"diagnostic\""));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"unique_id\":"));
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -362,5 +410,6 @@ int main()
     RUN_TEST(test_identity_clear_mqtt_prefix);
     RUN_TEST(test_identity_clear_unchanged_is_noop);
     RUN_TEST(test_published_identity_survives_reload);
+    RUN_TEST(test_abbreviated_payload_keeps_unique_ids);
     return UNITY_END();
 }

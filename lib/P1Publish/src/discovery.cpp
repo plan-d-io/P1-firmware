@@ -130,12 +130,12 @@ constexpr LiveDiag kLiveDiag[] = {
 
 bool write_origin(Wr& w, const char* fw_ver, bool& first)
 {
-    if (!wr_key(w, "origin", first) || !wr_char(w, '{')) {
+    if (!wr_key(w, "o", first) || !wr_char(w, '{')) {
         return false;
     }
     bool f = true;
-    if (!wr_key(w, "name", f) || !wr_json_str(w, kOriginName) || !wr_key(w, "sw_version", f) ||
-        !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_key(w, "support_url", f) ||
+    if (!wr_key(w, "name", f) || !wr_json_str(w, kOriginName) || !wr_key(w, "sw", f) ||
+        !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_key(w, "url", f) ||
         !wr_json_str(w, kSupportUrl) || !wr_char(w, '}')) {
         return false;
     }
@@ -144,11 +144,11 @@ bool write_origin(Wr& w, const char* fw_ver, bool& first)
 
 bool write_device(Wr& w, std::string_view name, std::string_view ident, bool& first)
 {
-    if (!wr_key(w, "device", first) || !wr_char(w, '{')) {
+    if (!wr_key(w, "dev", first) || !wr_char(w, '{')) {
         return false;
     }
     bool f = true;
-    if (!wr_key(w, "name", f) || !wr_json_str(w, name) || !wr_key(w, "identifiers", f) ||
+    if (!wr_key(w, "name", f) || !wr_json_str(w, name) || !wr_key(w, "ids", f) ||
         !wr_char(w, '[') || !wr_json_str(w, ident) || !wr_append(w, "]}")) {
         return false;
     }
@@ -172,34 +172,39 @@ bool write_meter_component(Wr& w, const p1cfg::Store& cfg, const p1cfg::Field& f
     if (stub) {
         return wr_char(w, '}');
     }
-    if (!wr_key(w, "unique_id", f) || !wr_json_str(w, uid) || !wr_key(w, "name", f) ||
+    if (!wr_key(w, "uniq_id", f) || !wr_json_str(w, uid) || !wr_key(w, "name", f) ||
         !wr_json_str(w, field.label)) {
         return false;
     }
-    char topic[kTopicMax];
-    if (reading_topic(cfg, field, topic, sizeof(topic)) == 0) {
+    char lab[kUniqueIdMax];
+    if (slug(field.label, lab, sizeof(lab)) == 0) {
         return false;
     }
-    if (!wr_key(w, "state_topic", f) || !wr_json_str(w, topic)) {
+    char topic[kTopicMax];
+    Wr tw{topic, sizeof(topic)};
+    if (!wr_char(tw, '~') || !wr_append(tw, lab) || finish(tw) == 0) {
+        return false;
+    }
+    if (!wr_key(w, "stat_t", f) || !wr_json_str(w, topic)) {
         return false;
     }
     if (cfg.values().frmt_pyld > 0) {
-        if (!wr_key(w, "value_template", f) || !wr_json_str(w, "{{ value_json.value }}")) {
+        if (!wr_key(w, "val_tpl", f) || !wr_json_str(w, "{{ value_json.value }}")) {
             return false;
         }
     }
     if (field.ha_class != nullptr && field.ha_class[0] != '\0') {
-        if (!wr_key(w, "device_class", f) || !wr_json_str(w, field.ha_class)) {
+        if (!wr_key(w, "dev_cla", f) || !wr_json_str(w, field.ha_class)) {
             return false;
         }
     }
     if (const char* sc = ha_state_class(field)) {
-        if (!wr_key(w, "state_class", f) || !wr_json_str(w, sc)) {
+        if (!wr_key(w, "stat_cla", f) || !wr_json_str(w, sc)) {
             return false;
         }
     }
     if (const char* u = ha_unit(field)) {
-        if (!wr_key(w, "unit_of_measurement", f) || !wr_json_str(w, u)) {
+        if (!wr_key(w, "unit_of_meas", f) || !wr_json_str(w, u)) {
             return false;
         }
     }
@@ -341,7 +346,8 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::ui
     if (slug(cfg.values().ha_device, slug_id, sizeof(slug_id)) == 0) {
         return 0;
     }
-    if (!write_device(w, cfg.values().ha_device, slug_id, first) ||
+    if (!wr_key(w, "~", first) || !wr_json_str(w, cfg.values().mqtt_pfix) ||
+        !write_device(w, cfg.values().ha_device, slug_id, first) ||
         !write_origin(w, fw_ver, first)) {
         return 0;
     }
@@ -349,8 +355,8 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::ui
     if (availability_topic(cfg, avail, sizeof(avail)) == 0) {
         return 0;
     }
-    if (!wr_key(w, "availability_topic", first) || !wr_json_str(w, avail) ||
-        !wr_key(w, "components", first) || !wr_char(w, '{')) {
+    if (!wr_key(w, "avty_t", first) || !wr_json_str(w, avail) || !wr_key(w, "cmps", first) ||
+        !wr_char(w, '{')) {
         return 0;
     }
 
@@ -392,15 +398,24 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
         return 0;
     }
     bool first = true;
-    if (!write_device(w, device_id, device_id, first) || !write_origin(w, fw_ver, first)) {
+    char base[kTopicMax];
+    Wr bw{base, sizeof(base)};
+    wr_append(bw, "sys/devices/");
+    wr_append(bw, device_id);
+    wr_char(bw, '/');
+    if (finish(bw) == 0) {
+        return 0;
+    }
+    if (!wr_key(w, "~", first) || !wr_json_str(w, base) ||
+        !write_device(w, device_id, device_id, first) || !write_origin(w, fw_ver, first)) {
         return 0;
     }
     char avail[kTopicMax];
     if (availability_topic(cfg, avail, sizeof(avail)) == 0) {
         return 0;
     }
-    if (!wr_key(w, "availability_topic", first) || !wr_json_str(w, avail) ||
-        !wr_key(w, "components", first) || !wr_char(w, '{')) {
+    if (!wr_key(w, "avty_t", first) || !wr_json_str(w, avail) || !wr_key(w, "cmps", first) ||
+        !wr_char(w, '{')) {
         return 0;
     }
 
@@ -427,30 +442,27 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
         }
         bool f = true;
         if (!wr_key(w, "p", f) || !wr_json_str(w, d.is_switch ? "switch" : "sensor") ||
-            !wr_key(w, "unique_id", f) || !wr_json_str(w, uid) || !wr_key(w, "name", f) ||
+            !wr_key(w, "uniq_id", f) || !wr_json_str(w, uid) || !wr_key(w, "name", f) ||
             !wr_json_str(w, d.name)) {
             return 0;
         }
         char state[kTopicMax];
         Wr sw{state, sizeof(state)};
-        wr_append(sw, "sys/devices/");
-        wr_append(sw, device_id);
-        wr_char(sw, '/');
+        wr_char(sw, '~');
         wr_append(sw, d.channel);
         if (finish(sw) == 0) {
             return 0;
         }
-        if (!wr_key(w, "state_topic", f) || !wr_json_str(w, state) ||
-            !wr_key(w, "value_template", f) || !wr_json_str(w, "{{ value_json.value }}") ||
-            !wr_key(w, "entity_category", f) || !wr_json_str(w, "diagnostic")) {
+        if (!wr_key(w, "stat_t", f) || !wr_json_str(w, state) || !wr_key(w, "val_tpl", f) ||
+            !wr_json_str(w, "{{ value_json.value }}") || !wr_key(w, "ent_cat", f) ||
+            !wr_json_str(w, "diagnostic")) {
             return 0;
         }
         if (d.is_switch) {
-            if (!wr_key(w, "command_topic", f) || !wr_json_str(w, cmd_full) ||
-                !wr_key(w, "payload_on", f) || !wr_json_str(w, "{\"value\":\"true\"}") ||
-                !wr_key(w, "payload_off", f) || !wr_json_str(w, "{\"value\":\"false\"}") ||
-                !wr_key(w, "state_on", f) || !wr_json_str(w, "on") || !wr_key(w, "state_off", f) ||
-                !wr_json_str(w, "off")) {
+            if (!wr_key(w, "cmd_t", f) || !wr_json_str(w, cmd_full) || !wr_key(w, "pl_on", f) ||
+                !wr_json_str(w, "{\"value\":\"true\"}") || !wr_key(w, "pl_off", f) ||
+                !wr_json_str(w, "{\"value\":\"false\"}") || !wr_key(w, "stat_on", f) ||
+                !wr_json_str(w, "on") || !wr_key(w, "stat_off", f) || !wr_json_str(w, "off")) {
                 return 0;
             }
         }
