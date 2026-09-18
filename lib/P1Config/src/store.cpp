@@ -315,6 +315,9 @@ void Store::bind_table()
     add_i32("FRMT_PYLD", "Reading payload format", CFG_IN_API, &v_.frmt_pyld, 3);
     add_u32("UPL_THROTTLE", "Upload throttle", CFG_IN_API, &v_.upl_throttle, 10);
     add_str("REGION", "Meter region", CFG_IN_API, v_.region, sizeof(v_.region), "auto");
+    add_str("WIFI_SSID", "WiFi network", CFG_IN_API, v_.wifi_ssid, sizeof(v_.wifi_ssid), "");
+    add_str("WIFI_PASS", "WiFi password", CFG_IN_API | CFG_SECRET, v_.wifi_pass,
+            sizeof(v_.wifi_pass), "");
     add_u32("CFG_VER", "Config schema version", CFG_HIDDEN, &v_.cfg_ver, 0);
 }
 

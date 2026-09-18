@@ -32,6 +32,10 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL_STRING("auto", s.values().region);
     TEST_ASSERT_EQUAL_STRING("data/devices/utility_meter/", s.values().mqtt_pfix);
     TEST_ASSERT_EQUAL_STRING("Utility meter", s.values().ha_device);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT(17, s.setting_count());
 
     mem.begin(false);
     mem.put_u32("MQTT_PORT", 8883);
@@ -83,6 +87,8 @@ void test_json_out_metadata()
     TEST_ASSERT_TRUE(json_has(buf, "\"type\":\"i32\""));
     TEST_ASSERT_TRUE(json_has(buf, "\"MQTT_HOST\""));
     TEST_ASSERT_TRUE(json_has(buf, "\"type\":\"str\""));
+    TEST_ASSERT_TRUE(json_has(buf, "\"WIFI_SSID\""));
+    TEST_ASSERT_TRUE(json_has(buf, "\"WIFI_PASS\""));
     TEST_ASSERT_FALSE(json_has(buf, "\"CFG_VER\""));
 }
 
@@ -102,6 +108,11 @@ void test_secrets_never_serialised()
     s.values().mqtt_pass[0] = '\0';
     s.to_json(buf, sizeof(buf));
     TEST_ASSERT_TRUE(json_has(buf, "\"set\":false"));
+
+    std::strcpy(s.values().wifi_pass, "not-in-json");
+    s.to_json(buf, sizeof(buf));
+    TEST_ASSERT_FALSE(json_has(buf, "not-in-json"));
+    TEST_ASSERT_TRUE(json_has(buf, "\"WIFI_PASS\""));
 }
 
 void test_json_in_atomic()
@@ -364,7 +375,7 @@ void test_upl_throttle_migrates()
     Store s(mem);
     s.load();
     TEST_ASSERT_TRUE(s.migrated());
-    TEST_ASSERT_EQUAL_UINT32(2, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
     TEST_ASSERT_EQUAL_UINT32(10, s.values().upl_throttle);
 
     MemoryBackend old;
@@ -376,7 +387,7 @@ void test_upl_throttle_migrates()
     Store s2(old);
     s2.load();
     TEST_ASSERT_TRUE(s2.migrated());
-    TEST_ASSERT_EQUAL_UINT32(2, s2.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s2.values().cfg_ver);
     TEST_ASSERT_EQUAL_UINT32(10, s2.values().upl_throttle);
     TEST_ASSERT_EQUAL_UINT32(1883, s2.values().mqtt_port);
 
@@ -384,6 +395,26 @@ void test_upl_throttle_migrates()
     s3.load();
     TEST_ASSERT_FALSE(s3.migrated());
     TEST_ASSERT_EQUAL_UINT32(10, s3.values().upl_throttle);
+}
+
+void test_wifi_settings_migrate()
+{
+    MemoryBackend old;
+    old.begin(false);
+    old.put_u32("CFG_VER", 2);
+    old.put_u32("MQTT_PORT", 1883);
+    old.end();
+
+    Store s(old);
+    s.load();
+    TEST_ASSERT_TRUE(s.migrated());
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
+    TEST_ASSERT_NOT_NULL(s.find_setting("WIFI_SSID"));
+    TEST_ASSERT_NOT_NULL(s.find_setting("WIFI_PASS"));
+    TEST_ASSERT_EQUAL(p1cfg::CFG_IN_API | p1cfg::CFG_SECRET,
+                      static_cast<int>(s.find_setting("WIFI_PASS")->flags));
 }
 
 void test_water_equipment_id_not_catalogued()
@@ -426,6 +457,7 @@ int main()
     RUN_TEST(test_memory_backend_refuses_overlong_string);
     RUN_TEST(test_to_json_overflow_is_zero);
     RUN_TEST(test_upl_throttle_migrates);
+    RUN_TEST(test_wifi_settings_migrate);
     RUN_TEST(test_water_equipment_id_not_catalogued);
     RUN_TEST(test_fixture_region_tags_unchanged);
     return UNITY_END();
