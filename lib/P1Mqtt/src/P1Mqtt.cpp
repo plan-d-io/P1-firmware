@@ -46,6 +46,176 @@ void copy_id(char* dst, std::size_t cap, const char* src)
     dst[n] = '\0';
 }
 
+bool append(char* out, std::size_t cap, std::size_t& n, std::string_view s)
+{
+    if (out == nullptr || n + s.size() + 1 > cap) {
+        return false;
+    }
+    for (char c : s) {
+        out[n++] = c;
+    }
+    return true;
+}
+
+bool append_char(char* out, std::size_t cap, std::size_t& n, char c)
+{
+    if (out == nullptr || n + 2 > cap) {
+        return false;
+    }
+    out[n++] = c;
+    return true;
+}
+
+bool append_json_str(char* out, std::size_t cap, std::size_t& n, std::string_view s)
+{
+    if (!append_char(out, cap, n, '"')) {
+        return false;
+    }
+    for (char c : s) {
+        if (c == '"' || c == '\\') {
+            if (!append_char(out, cap, n, '\\') || !append_char(out, cap, n, c)) {
+                return false;
+            }
+        } else if (static_cast<unsigned char>(c) < 0x20) {
+            continue;
+        } else if (!append_char(out, cap, n, c)) {
+            return false;
+        }
+    }
+    return append_char(out, cap, n, '"');
+}
+
+void skip_ws(std::string_view& s)
+{
+    while (!s.empty()) {
+        const char c = s[0];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            break;
+        }
+        s.remove_prefix(1);
+    }
+}
+
+bool parse_json_string(std::string_view& s, std::string_view& out)
+{
+    skip_ws(s);
+    if (s.empty() || s[0] != '"') {
+        return false;
+    }
+    s.remove_prefix(1);
+    std::size_t i = 0;
+    while (i < s.size() && s[i] != '"') {
+        if (s[i] == '\\') {
+            if (i + 1 >= s.size()) {
+                return false;
+            }
+            i += 2;
+            continue;
+        }
+        ++i;
+    }
+    if (i >= s.size()) {
+        return false;
+    }
+    out = s.substr(0, i);
+    s.remove_prefix(i + 1);
+    return true;
+}
+
+bool skip_json_value(std::string_view& s)
+{
+    skip_ws(s);
+    if (s.empty()) {
+        return false;
+    }
+    if (s[0] == '"') {
+        std::string_view unused;
+        return parse_json_string(s, unused);
+    }
+    if (s[0] == '{' || s[0] == '[') {
+        const char open = s[0];
+        const char close = (open == '{') ? '}' : ']';
+        int depth = 1;
+        s.remove_prefix(1);
+        bool in_str = false;
+        bool esc = false;
+        while (!s.empty() && depth > 0) {
+            const char c = s[0];
+            s.remove_prefix(1);
+            if (in_str) {
+                if (esc) {
+                    esc = false;
+                } else if (c == '\\') {
+                    esc = true;
+                } else if (c == '"') {
+                    in_str = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                in_str = true;
+            } else if (c == open) {
+                ++depth;
+            } else if (c == close) {
+                --depth;
+            }
+        }
+        return depth == 0;
+    }
+    while (!s.empty()) {
+        const char c = s[0];
+        if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            break;
+        }
+        s.remove_prefix(1);
+    }
+    return true;
+}
+
+std::size_t join_topic(std::string_view base, std::string_view suffix, char* out, std::size_t cap)
+{
+    write_nul(out, cap);
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    std::size_t n = 0;
+    if (!append(out, cap, n, base) || !append(out, cap, n, suffix)) {
+        write_nul(out, cap);
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+bool snapshot_append_entry(char* out, std::size_t cap, std::size_t& n, bool& first,
+                           const p1cfg::CfgEntry& e)
+{
+    if (!first && !append(out, cap, n, ",")) {
+        return false;
+    }
+    first = false;
+    if (!append_json_str(out, cap, n, e.key) || !append(out, cap, n, ":")) {
+        return false;
+    }
+    switch (e.type) {
+    case p1cfg::CfgType::Bool:
+        return append(out, cap, n, *e.var.b ? "true" : "false");
+    case p1cfg::CfgType::I32: {
+        char num[16];
+        std::snprintf(num, sizeof(num), "%ld", static_cast<long>(*e.var.i));
+        return append(out, cap, n, num);
+    }
+    case p1cfg::CfgType::U32: {
+        char num[16];
+        std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(*e.var.u));
+        return append(out, cap, n, num);
+    }
+    case p1cfg::CfgType::Str:
+        return append_json_str(out, cap, n, e.var.s != nullptr ? e.var.s : "");
+    }
+    return false;
+}
+
 }  // namespace
 
 bool mac_usable(const std::uint8_t mac[6])
@@ -142,6 +312,262 @@ bool throttle_due(std::uint32_t throttle_s, std::uint32_t now_ms, std::uint32_t 
     return (now_ms - last_ms) >= throttle_s * 1000u;
 }
 
+bool interval_due(std::uint32_t interval_ms, std::uint32_t now_ms, std::uint32_t last_ms)
+{
+    return (now_ms - last_ms) >= interval_ms;
+}
+
+std::size_t inbound_topic(std::string_view availability, Inbound kind, char* out, std::size_t cap)
+{
+    switch (kind) {
+    case Inbound::Reboot:
+        return join_topic(availability, "/set/reboot", out, cap);
+    case Inbound::Config:
+        return join_topic(availability, "/set/config", out, cap);
+    default:
+        write_nul(out, cap);
+        return 0;
+    }
+}
+
+Inbound match_inbound(std::string_view availability, std::string_view topic)
+{
+    char reboot[kTopicBuf];
+    char config[kTopicBuf];
+    if (inbound_topic(availability, Inbound::Reboot, reboot, sizeof(reboot)) > 0 &&
+        topic == reboot) {
+        return Inbound::Reboot;
+    }
+    if (inbound_topic(availability, Inbound::Config, config, sizeof(config)) > 0 &&
+        topic == config) {
+        return Inbound::Config;
+    }
+    return Inbound::None;
+}
+
+std::size_t config_snapshot_topic(std::string_view availability, char* out, std::size_t cap)
+{
+    return join_topic(availability, "/sys/config", out, cap);
+}
+
+std::size_t sys_topic(std::string_view id, std::string_view name, char* out, std::size_t cap)
+{
+    write_nul(out, cap);
+    if (out == nullptr || cap == 0 || id.empty() || name.empty()) {
+        return 0;
+    }
+    std::size_t n = 0;
+    if (!append(out, cap, n, "sys/devices/") || !append(out, cap, n, id) ||
+        !append_char(out, cap, n, '/') || !append(out, cap, n, name)) {
+        write_nul(out, cap);
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+std::size_t config_snapshot(const p1cfg::Store& cfg, const char* hostname, const char* fw_ver,
+                            char* out, std::size_t cap)
+{
+    write_nul(out, cap);
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    std::size_t n = 0;
+    if (!append(out, cap, n, "{") || !append_json_str(out, cap, n, "HOSTNAME") ||
+        !append(out, cap, n, ":") ||
+        !append_json_str(out, cap, n, hostname != nullptr ? hostname : "") ||
+        !append(out, cap, n, ",") || !append_json_str(out, cap, n, "FW_VER") ||
+        !append(out, cap, n, ":") ||
+        !append_json_str(out, cap, n, fw_ver != nullptr ? fw_ver : "")) {
+        write_nul(out, cap);
+        return 0;
+    }
+    bool first = false;
+    const p1cfg::CfgEntry* table = cfg.settings();
+    for (std::size_t i = 0; i < cfg.setting_count(); ++i) {
+        const p1cfg::CfgEntry& e = table[i];
+        if ((e.flags & p1cfg::CFG_IN_API) == 0 || (e.flags & p1cfg::CFG_SECRET) != 0) {
+            continue;
+        }
+        if (!snapshot_append_entry(out, cap, n, first, e)) {
+            write_nul(out, cap);
+            return 0;
+        }
+    }
+    if (!append(out, cap, n, "}")) {
+        write_nul(out, cap);
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+bool reboot_command(std::string_view payload)
+{
+    skip_ws(payload);
+    if (payload.empty() || payload[0] != '{') {
+        return false;
+    }
+    payload.remove_prefix(1);
+
+    bool saw_true = false;
+    bool saw_value = false;
+    for (;;) {
+        skip_ws(payload);
+        if (payload.empty()) {
+            return false;
+        }
+        if (payload[0] == '}') {
+            break;
+        }
+        std::string_view key;
+        if (!parse_json_string(payload, key)) {
+            return false;
+        }
+        skip_ws(payload);
+        if (payload.empty() || payload[0] != ':') {
+            return false;
+        }
+        payload.remove_prefix(1);
+        if (key == "value") {
+            saw_value = true;
+            skip_ws(payload);
+            std::string_view val;
+            if (!parse_json_string(payload, val)) {
+                return false;
+            }
+            if (val == "true") {
+                saw_true = true;
+            } else {
+                return false;
+            }
+        } else if (!skip_json_value(payload)) {
+            return false;
+        }
+        skip_ws(payload);
+        if (payload.empty()) {
+            return false;
+        }
+        if (payload[0] == ',') {
+            payload.remove_prefix(1);
+            continue;
+        }
+        if (payload[0] == '}') {
+            break;
+        }
+        return false;
+    }
+    return saw_value && saw_true;
+}
+
+std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
+                         std::string_view entity, std::string_view sensor_id, char* out,
+                         std::size_t cap)
+{
+    write_nul(out, cap);
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    std::size_t n = 0;
+    if (!append(out, cap, n, "{\"friendly_name\":") || !append_json_str(out, cap, n, friendly) ||
+        !append(out, cap, n, ",\"value\":") || !append(out, cap, n, value_json) ||
+        !append(out, cap, n, ",\"entity\":") || !append_json_str(out, cap, n, entity) ||
+        !append(out, cap, n, ",\"sensorId\":") || !append_json_str(out, cap, n, sensor_id) ||
+        !append_char(out, cap, n, '}')) {
+        write_nul(out, cap);
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+bool InboundAssembler::feed(std::string_view topic, const char* data, int data_len, int total_len,
+                            int offset)
+{
+    if (ready_.load(std::memory_order_acquire)) {
+        drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (data_len < 0 || total_len < 0 || offset < 0) {
+        drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (data == nullptr && data_len > 0) {
+        drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    if (offset == 0) {
+        overflow_ = false;
+        n_ = 0;
+        topic_[0] = '\0';
+        if (!topic.empty()) {
+            const std::size_t tn =
+                topic.size() < sizeof(topic_) - 1 ? topic.size() : sizeof(topic_) - 1;
+            for (std::size_t i = 0; i < tn; ++i) {
+                topic_[i] = topic[i];
+            }
+            topic_[tn] = '\0';
+        }
+    } else if (n_ == 0 && !overflow_) {
+        drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    if (overflow_) {
+        return false;
+    }
+
+    const auto u_total = static_cast<std::size_t>(total_len);
+    const auto u_len = static_cast<std::size_t>(data_len);
+    const auto u_off = static_cast<std::size_t>(offset);
+    if (u_total > kMax || u_off + u_len > kMax || u_off + u_len > u_total) {
+        overflow_ = true;
+        n_ = 0;
+        drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    if (u_len > 0) {
+        std::memcpy(payload_ + u_off, data, u_len);
+    }
+    n_ = u_off + u_len;
+    if (n_ == u_total) {
+        ready_.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
+}
+
+bool InboundAssembler::take(char* topic, std::size_t tcap, char* payload, std::size_t pcap)
+{
+    if (!ready_.exchange(false, std::memory_order_acq_rel)) {
+        return false;
+    }
+    if (topic != nullptr && tcap > 0) {
+        copy_id(topic, tcap, topic_);
+    }
+    if (payload != nullptr && pcap > 0) {
+        const std::size_t pn = n_ < pcap - 1 ? n_ : pcap - 1;
+        if (pn > 0) {
+            std::memcpy(payload, payload_, pn);
+        }
+        payload[pn] = '\0';
+    }
+    n_ = 0;
+    overflow_ = false;
+    return true;
+}
+
+void InboundAssembler::reset()
+{
+    ready_.store(false, std::memory_order_relaxed);
+    n_ = 0;
+    overflow_ = false;
+    topic_[0] = '\0';
+}
+
 #if defined(ARDUINO)
 
 Mqtt::~Mqtt()
@@ -154,9 +580,10 @@ void Mqtt::copy_str(char* dst, std::size_t cap, const char* src)
     copy_id(dst, cap, src);
 }
 
-void Mqtt::on_event(void* arg, void* /*base*/, std::int32_t id, void* /*data*/)
+void Mqtt::on_event(void* arg, void* /*base*/, std::int32_t id, void* data)
 {
     auto* self = static_cast<Mqtt*>(arg);
+    auto* event = static_cast<esp_mqtt_event_handle_t>(data);
     switch (id) {
     case MQTT_EVENT_CONNECTED:
         self->state_.store(State::Connected, std::memory_order_relaxed);
@@ -166,6 +593,16 @@ void Mqtt::on_event(void* arg, void* /*base*/, std::int32_t id, void* /*data*/)
     case MQTT_EVENT_DISCONNECTED:
         self->state_.store(State::Connecting, std::memory_order_relaxed);
         self->disconnects_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case MQTT_EVENT_DATA:
+        if (event != nullptr) {
+            const std::string_view topic =
+                (event->topic != nullptr && event->topic_len > 0)
+                    ? std::string_view(event->topic, static_cast<std::size_t>(event->topic_len))
+                    : std::string_view{};
+            self->inbound_.feed(topic, event->data, event->data_len, event->total_data_len,
+                                event->current_data_offset);
+        }
         break;
     default:
         break;
@@ -239,6 +676,7 @@ bool Mqtt::begin(const p1cfg::Store& cfg, const char* host_override)
 void Mqtt::stop()
 {
     just_connected_.store(false, std::memory_order_relaxed);
+    inbound_.reset();
     if (client_ != nullptr) {
         auto* client = static_cast<esp_mqtt_client_handle_t>(client_);
         esp_mqtt_client_stop(client);
@@ -268,6 +706,19 @@ bool Mqtt::publish(std::string_view topic, std::string_view payload, bool retain
         return false;
     }
     return true;
+}
+
+bool Mqtt::subscribe(std::string_view topic)
+{
+    auto* client = static_cast<esp_mqtt_client_handle_t>(client_);
+    if (client == nullptr || topic.empty() || topic.size() + 1 > sizeof(topic_buf_)) {
+        return false;
+    }
+    for (std::size_t i = 0; i < topic.size(); ++i) {
+        topic_buf_[i] = topic[i];
+    }
+    topic_buf_[topic.size()] = '\0';
+    return esp_mqtt_client_subscribe(client, topic_buf_, 1) >= 0;
 }
 
 #endif  // ARDUINO

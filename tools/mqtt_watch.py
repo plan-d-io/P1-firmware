@@ -7,6 +7,7 @@ and returns a status code.
 
 Silence is a failure: exit 0 only if the subscription succeeded and the
 condition was met (or, with no condition, at least one message arrived).
+`--allow-empty` overrides that when the interesting outcome is no traffic.
 
 Neither a broker address nor credentials are defaulted.
 
@@ -19,6 +20,10 @@ Examples
     python tools/mqtt_watch.py --host 192.0.2.20 \\
         --topic "data/devices/utility_meter" --topic "data/devices/utility_meter/#" \\
         --steal-client-id P1AABBCC --seconds 30
+    python tools/mqtt_watch.py --host 192.0.2.20 \\
+        --topic "sys/devices/P1AABBCC/reboot" \\
+        --publish "data/devices/utility_meter/set/reboot" \\
+        --payload-file payload-reboot.json --seconds 30
 
 Requires paho-mqtt. Install into the PlatformIO interpreter:
 
@@ -121,7 +126,21 @@ def main() -> int:
     ap.add_argument("--steal-client-id", metavar="ID",
                     help="After the first live message, connect once with this "
                          "client id to kick the existing session, then disconnect.")
+    ap.add_argument("--publish", metavar="TOPIC",
+                    help="After subscribe succeeds, publish this topic once.")
+    ap.add_argument("--payload", default="",
+                    help="Payload for --publish (default empty).")
+    ap.add_argument("--payload-file", metavar="F",
+                    help="Read --publish payload from this file (avoids shell quoting).")
+    ap.add_argument("--allow-empty", action="store_true",
+                    help="Exit 0 even if no messages arrived (after a successful connect).")
     args = ap.parse_args()
+
+    if args.payload_file:
+        if args.payload:
+            ap.error("use only one of --payload and --payload-file")
+        with open(args.payload_file, "r", encoding="utf-8") as fh:
+            args.payload = fh.read()
 
     if not args.topic:
         ap.error("at least one --topic is required")
@@ -141,6 +160,8 @@ def main() -> int:
     saw_online_after = False
     saw_reading_after = False
     online_after_at: float | None = None
+
+    published = False
 
     def on_connect(client, userdata, flags, rc, properties=None):
         nonlocal connected, connect_rc
@@ -208,6 +229,11 @@ def main() -> int:
         while time.monotonic() < deadline and not stop:
             if connect_rc is not None and not connected:
                 break
+            if args.publish and connected and not published:
+                time.sleep(0.3)
+                client.publish(args.publish, args.payload, qos=0, retain=False)
+                note(t0, f"published {args.publish}", args.json)
+                published = True
             if steal_after_live and not stole and connected:
                 live = any(not r for _, _, r in seen)
                 waited = time.monotonic() - t0
@@ -272,6 +298,8 @@ def main() -> int:
         return 0 if expect_hit else 1
     if args.count is not None:
         return 0 if count_hit else 1
+    if args.allow_empty:
+        return 0
     return 0 if seen else 1
 
 

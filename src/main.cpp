@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <span>
+#include <string_view>
 
 // Pins from archive/P1-dongle/P1-dongle.ino:
 //   HWSERIAL.begin(115200, SERIAL_8N1, 21, 22);
@@ -19,6 +20,8 @@
 static constexpr int kP1Rx = 21;
 static constexpr int kP1Tx = 22;
 static constexpr int kDataRequest = 25;
+// Rebuild generation. Fielded firmware was 2.23; keep this above that line.
+static constexpr char kFwVer[] = "3.00";
 
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
@@ -42,7 +45,10 @@ static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
 static char g_resolved_host[p1cfg::kHostMax]{};
+static std::uint32_t g_last_diag_ms = 0;
 static char g_json[3072];
+static char g_in_topic[p1mqtt::kTopicBuf];
+static char g_in_payload[p1mqtt::InboundAssembler::kMax + 1];
 static char g_cmd[192];
 static std::size_t g_cmd_n = 0;
 
@@ -193,14 +199,168 @@ static void try_start_mqtt()
     }
 }
 
+static const char* json_status_name(p1cfg::JsonStatus s)
+{
+    switch (s) {
+    case p1cfg::JsonStatus::Ok:
+        return "Ok";
+    case p1cfg::JsonStatus::Parse:
+        return "Parse";
+    case p1cfg::JsonStatus::UnknownKey:
+        return "UnknownKey";
+    case p1cfg::JsonStatus::WrongType:
+        return "WrongType";
+    case p1cfg::JsonStatus::Invalid:
+        return "Invalid";
+    }
+    return "?";
+}
+
+static bool fill_availability(char* out, std::size_t cap)
+{
+    return p1pub::availability_topic(g_cfg, out, cap) > 0;
+}
+
 static void publish_online()
 {
     char topic[p1pub::kTopicMax];
-    if (p1pub::availability_topic(g_cfg, topic, sizeof(topic)) == 0) {
+    if (!fill_availability(topic, sizeof(topic))) {
         return;
     }
     if (g_mqtt.publish(topic, "online", true)) {
         Serial.printf("MQTT online %s\n", topic);
+    }
+}
+
+static void subscribe_inbound()
+{
+    char avail[p1pub::kTopicMax];
+    char topic[p1mqtt::kTopicBuf];
+    if (!fill_availability(avail, sizeof(avail))) {
+        return;
+    }
+    if (p1mqtt::inbound_topic(avail, p1mqtt::Inbound::Reboot, topic, sizeof(topic)) > 0) {
+        g_mqtt.subscribe(topic);
+    }
+    if (p1mqtt::inbound_topic(avail, p1mqtt::Inbound::Config, topic, sizeof(topic)) > 0) {
+        g_mqtt.subscribe(topic);
+    }
+}
+
+static void publish_reboot_state(const char* on_off)
+{
+    char topic[p1mqtt::kTopicBuf];
+    if (g_device_id[0] == '\0' ||
+        p1mqtt::sys_topic(g_device_id, "reboot", topic, sizeof(topic)) == 0) {
+        return;
+    }
+    char payload[24];
+    std::snprintf(payload, sizeof(payload), "{\"value\":\"%s\"}", on_off);
+    g_mqtt.publish(topic, payload, true);
+}
+
+static void publish_config_snapshot()
+{
+    char avail[p1pub::kTopicMax];
+    char topic[p1mqtt::kTopicBuf];
+    if (!fill_availability(avail, sizeof(avail))) {
+        return;
+    }
+    if (p1mqtt::config_snapshot_topic(avail, topic, sizeof(topic)) == 0) {
+        return;
+    }
+    const std::size_t n =
+        p1mqtt::config_snapshot(g_cfg, g_device_id, kFwVer, g_json, sizeof(g_json));
+    if (n == 0) {
+        return;
+    }
+    g_mqtt.publish(topic, std::string_view(g_json, n), true);
+}
+
+static void publish_one_diag(const char* name, const char* friendly, const char* value_json)
+{
+    char topic[p1mqtt::kTopicBuf];
+    char payload[192];
+    if (g_device_id[0] == '\0' ||
+        p1mqtt::sys_topic(g_device_id, name, topic, sizeof(topic)) == 0) {
+        return;
+    }
+    if (p1mqtt::diag_payload(friendly, value_json, g_device_id, name, payload, sizeof(payload)) ==
+        0) {
+        return;
+    }
+    g_mqtt.publish(topic, payload, true);
+}
+
+static void publish_diagnostics()
+{
+    char num[24];
+    char quoted[32];
+
+    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getFreeHeap()));
+    publish_one_diag("free_heap_size", "Free heap size", num);
+
+    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+    publish_one_diag("max_allocatable_block", "Allocatable block size", num);
+
+    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getMinFreeHeap()));
+    publish_one_diag("min_free_heap", "Lowest free heap size", num);
+
+    const IPAddress ip = WiFi.localIP();
+    std::snprintf(quoted, sizeof(quoted), "\"%u.%u.%u.%u\"", ip[0], ip[1], ip[2], ip[3]);
+    publish_one_diag("ip", "IP", quoted);
+
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"", kFwVer);
+    publish_one_diag("firmware", "Firmware", quoted);
+
+    std::snprintf(num, sizeof(num), "%ld", static_cast<long>(WiFi.RSSI()));
+    publish_one_diag("rssi", "RSSI", num);
+
+    publish_one_diag("reboot", "Reboot", "\"off\"");
+}
+
+static void on_just_connected()
+{
+    subscribe_inbound();
+    publish_online();
+    publish_reboot_state("off");
+    publish_config_snapshot();
+}
+
+static void handle_inbound()
+{
+    if (!g_mqtt.take_inbound(g_in_topic, sizeof(g_in_topic), g_in_payload, sizeof(g_in_payload))) {
+        return;
+    }
+
+    char avail[p1pub::kTopicMax];
+    if (!fill_availability(avail, sizeof(avail))) {
+        return;
+    }
+
+    const p1mqtt::Inbound kind = p1mqtt::match_inbound(avail, g_in_topic);
+    if (kind == p1mqtt::Inbound::Reboot) {
+        if (!p1mqtt::reboot_command(g_in_payload)) {
+            return;
+        }
+        g_cfg.save();
+        publish_reboot_state("on");
+        Serial.println("MQTT reboot");
+        esp_restart();
+    }
+
+    if (kind == p1mqtt::Inbound::Config) {
+        // WIFI_SSID and WIFI_PASS are writable here, same as the future web UI.
+        // A wrong value leaves the dongle on a network that does not exist,
+        // reachable only over USB — which is why the serial console stays.
+        const p1cfg::JsonStatus st = g_cfg.apply_json(g_in_payload);
+        if (st != p1cfg::JsonStatus::Ok) {
+            Serial.printf("MQTT config rejected %s\n", json_status_name(st));
+            return;
+        }
+        g_cfg.save();
+        publish_config_snapshot();
+        Serial.println("MQTT config applied");
     }
 }
 
@@ -343,10 +503,11 @@ static void cmd_status()
 {
     const IPAddress ip = WiFi.localIP();
     Serial.printf(
-        "wifi=%s ip=%u.%u.%u.%u mqtt=%s id=%s connects=%u disconnects=%u pub_fails=%u heap=%u\n",
+        "wifi=%s ip=%u.%u.%u.%u mqtt=%s id=%s connects=%u disconnects=%u pub_fails=%u "
+        "in_drops=%u heap=%u\n",
         wifi_state_name(), ip[0], ip[1], ip[2], ip[3], mqtt_state_name(g_mqtt.state()),
         g_cfg.values().mqtt_id, g_mqtt.connects(), g_mqtt.disconnects(), g_mqtt.publish_fails(),
-        static_cast<unsigned>(ESP.getFreeHeap()));
+        g_mqtt.inbound_drops(), static_cast<unsigned>(ESP.getFreeHeap()));
 }
 
 static void handle_line(char* line)
@@ -478,7 +639,14 @@ void loop()
     }
 
     if (g_mqtt.take_just_connected()) {
-        publish_online();
+        on_just_connected();
+    }
+    handle_inbound();
+
+    if (g_mqtt.state() == p1mqtt::Mqtt::State::Connected &&
+        p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, millis(), g_last_diag_ms)) {
+        publish_diagnostics();
+        g_last_diag_ms = millis();
     }
 
     std::uint8_t buf[64];

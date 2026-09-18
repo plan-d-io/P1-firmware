@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 namespace {
 
@@ -129,6 +130,118 @@ void test_throttle_gate()
     TEST_ASSERT_TRUE(p1mqtt::throttle_due(10, 25000, 10000));
 }
 
+void test_inbound_topics_match_dispatcher()
+{
+    const char* avail = "data/devices/utility_meter";
+    char reboot[p1mqtt::kTopicBuf];
+    char config[p1mqtt::kTopicBuf];
+
+    TEST_ASSERT_TRUE(p1mqtt::inbound_topic(avail, p1mqtt::Inbound::Reboot, reboot,
+                                           sizeof(reboot)) > 0);
+    TEST_ASSERT_TRUE(p1mqtt::inbound_topic(avail, p1mqtt::Inbound::Config, config,
+                                           sizeof(config)) > 0);
+    TEST_ASSERT_EQUAL_STRING("data/devices/utility_meter/set/reboot", reboot);
+    TEST_ASSERT_EQUAL_STRING("data/devices/utility_meter/set/config", config);
+
+    TEST_ASSERT_TRUE(p1mqtt::match_inbound(avail, reboot) == p1mqtt::Inbound::Reboot);
+    TEST_ASSERT_TRUE(p1mqtt::match_inbound(avail, config) == p1mqtt::Inbound::Config);
+
+    TEST_ASSERT_TRUE(p1mqtt::match_inbound(avail, "set/devices/Utility meter/config") ==
+                     p1mqtt::Inbound::None);
+    TEST_ASSERT_TRUE(p1mqtt::match_inbound(avail, "data/devices/utility_meter/set/reboot/extra") ==
+                     p1mqtt::Inbound::None);
+}
+
+void test_inbound_reassembly()
+{
+    const char* topic = "data/devices/utility_meter/set/config";
+    const char payload[] = "ABCDEFGHIJabcdefghij0123456789";
+    const int n = static_cast<int>(sizeof(payload) - 1);
+
+    p1mqtt::InboundAssembler whole;
+    TEST_ASSERT_TRUE(whole.feed(topic, payload, n, n, 0));
+    char t[p1mqtt::kTopicBuf];
+    char p[64];
+    TEST_ASSERT_TRUE(whole.take(t, sizeof(t), p, sizeof(p)));
+    TEST_ASSERT_EQUAL_STRING(topic, t);
+    TEST_ASSERT_EQUAL_STRING(payload, p);
+
+    p1mqtt::InboundAssembler split;
+    TEST_ASSERT_FALSE(split.feed(topic, payload, 10, n, 0));
+    TEST_ASSERT_FALSE(split.ready());
+    TEST_ASSERT_FALSE(split.feed(std::string_view{}, payload + 10, 10, n, 10));
+    TEST_ASSERT_TRUE(split.feed(std::string_view{}, payload + 20, n - 20, n, 20));
+    TEST_ASSERT_TRUE(split.take(t, sizeof(t), p, sizeof(p)));
+    TEST_ASSERT_EQUAL_STRING(topic, t);
+    TEST_ASSERT_EQUAL_STRING(payload, p);
+}
+
+void test_inbound_oversized_dropped()
+{
+    p1mqtt::InboundAssembler a;
+    char chunk[16]{};
+    const int too_big = static_cast<int>(p1mqtt::InboundAssembler::kMax) + 1;
+    TEST_ASSERT_FALSE(a.feed("t", chunk, 16, too_big, 0));
+    TEST_ASSERT_FALSE(a.ready());
+    TEST_ASSERT_TRUE(a.drops() >= 1u);
+
+    char t[8];
+    char p[8];
+    TEST_ASSERT_FALSE(a.take(t, sizeof(t), p, sizeof(p)));
+
+    TEST_ASSERT_FALSE(a.feed("t", chunk, 16, too_big, 16));
+    TEST_ASSERT_FALSE(a.ready());
+}
+
+void test_reboot_command()
+{
+    TEST_ASSERT_TRUE(p1mqtt::reboot_command("{\"value\":\"true\"}"));
+    TEST_ASSERT_TRUE(p1mqtt::reboot_command(" { \"value\" : \"true\" } "));
+    TEST_ASSERT_FALSE(p1mqtt::reboot_command("{\"value\":\"false\"}"));
+    TEST_ASSERT_FALSE(p1mqtt::reboot_command(""));
+    TEST_ASSERT_FALSE(p1mqtt::reboot_command("not json"));
+    TEST_ASSERT_FALSE(p1mqtt::reboot_command("{\"other\":\"true\"}"));
+    TEST_ASSERT_FALSE(p1mqtt::reboot_command("{}"));
+    TEST_ASSERT_FALSE(p1mqtt::reboot_command("{\"value\":true}"));
+}
+
+void test_config_snapshot_hides_password()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store s(mem);
+    s.load();
+    std::strcpy(s.values().mqtt_user, "alice");
+    std::strcpy(s.values().mqtt_pass, "s3cret-pass");
+    std::strcpy(s.values().wifi_ssid, "TestNet");
+    std::strcpy(s.values().mqtt_host, "192.0.2.20");
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(p1mqtt::config_snapshot(s, "P1AABBCC", "3.00", buf, sizeof(buf)) > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"MQTT_USER\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "alice"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"HOSTNAME\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "P1AABBCC"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"FW_VER\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"WIFI_SSID\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"MQTT_HOST\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"MQTT_PORT\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"MQTT_ID\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"MQTT_PFIX\""));
+    TEST_ASSERT_NULL(std::strstr(buf, "MQTT_PASS"));
+    TEST_ASSERT_NULL(std::strstr(buf, "WIFI_PASS"));
+    TEST_ASSERT_NULL(std::strstr(buf, "s3cret-pass"));
+}
+
+void test_diag_interval_gate()
+{
+    TEST_ASSERT_FALSE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 59999, 0));
+    TEST_ASSERT_TRUE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 60000, 0));
+    TEST_ASSERT_TRUE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 60001, 0));
+    TEST_ASSERT_FALSE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 119999, 60000));
+    TEST_ASSERT_TRUE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 120000, 60000));
+    TEST_ASSERT_TRUE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 180000, 60000));
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -143,5 +256,11 @@ int main()
     RUN_TEST(test_mqtt_id_leaves_user_choice);
     RUN_TEST(test_broker_uri);
     RUN_TEST(test_throttle_gate);
+    RUN_TEST(test_inbound_topics_match_dispatcher);
+    RUN_TEST(test_inbound_reassembly);
+    RUN_TEST(test_inbound_oversized_dropped);
+    RUN_TEST(test_reboot_command);
+    RUN_TEST(test_config_snapshot_hides_password);
+    RUN_TEST(test_diag_interval_gate);
     return UNITY_END();
 }
