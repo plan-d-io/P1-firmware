@@ -76,7 +76,7 @@ constexpr Field kFields[] = {
     {"0-0:96.1.1", "Equipment id", "", RegionTag::Common, false, nullptr,
      MetricKind::None},
     // Fixture-derived Be tags, not spec-checked: 0-0:17.0.0, 0-0:96.3.10,
-    // 1-0:31.4.0, 0-1:24.4.0, and the three 0-2:* water rows. Inert while
+    // 1-0:31.4.0, 0-1:24.4.0, 0-2:24.1.0 and 0-2:24.2.1. Inert while
     // REGION is auto. Verify against the specs when auto-detection lands.
     {"0-0:17.0.0", "Electricity threshold", "power", RegionTag::Be, false, nullptr,
      MetricKind::None},
@@ -113,8 +113,6 @@ constexpr Field kFields[] = {
     {"0-1:24.4.0", "Gas valve position", "", RegionTag::Be, false, nullptr,
      MetricKind::None},
     {"0-2:24.1.0", "Water device type", "", RegionTag::Be, false, nullptr,
-     MetricKind::None},
-    {"0-2:96.1.1", "Water equipment id", "", RegionTag::Be, false, nullptr,
      MetricKind::None},
     {"0-2:24.2.1", "Water consumption", "water", RegionTag::Be, false, nullptr,
      MetricKind::None},

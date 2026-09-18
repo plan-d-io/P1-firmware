@@ -386,10 +386,17 @@ void test_upl_throttle_migrates()
     TEST_ASSERT_EQUAL_UINT32(10, s3.values().upl_throttle);
 }
 
+void test_water_equipment_id_not_catalogued()
+{
+    TEST_ASSERT_NULL(p1cfg::find_field("0-2:96.1.1"));
+    TEST_ASSERT_NOT_NULL(p1cfg::find_field("0-2:24.2.1"));
+    TEST_ASSERT_NOT_NULL(p1cfg::find_field("0-1:96.1.1"));
+}
+
 void test_fixture_region_tags_unchanged()
 {
     const char* ids[] = {"0-0:17.0.0", "0-0:96.3.10", "1-0:31.4.0", "0-1:24.4.0",
-                         "0-2:24.1.0", "0-2:96.1.1", "0-2:24.2.1"};
+                         "0-2:24.1.0", "0-2:24.2.1"};
     for (const char* id : ids) {
         const p1cfg::Field* f = p1cfg::find_field(id);
         TEST_ASSERT_NOT_NULL(f);
@@ -419,6 +426,7 @@ int main()
     RUN_TEST(test_memory_backend_refuses_overlong_string);
     RUN_TEST(test_to_json_overflow_is_zero);
     RUN_TEST(test_upl_throttle_migrates);
+    RUN_TEST(test_water_equipment_id_not_catalogued);
     RUN_TEST(test_fixture_region_tags_unchanged);
     return UNITY_END();
 }
