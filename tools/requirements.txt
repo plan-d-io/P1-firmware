@@ -1,0 +1,2 @@
+# Host-side extras for tools/, not used by the firmware build.
+paho-mqtt>=2.0,<3
