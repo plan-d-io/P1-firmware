@@ -237,6 +237,12 @@ public:
     bool ha_migrated() const { return ha_mig_; }
     void set_ha_migrated();
 
+    // Last identity discovery was published under. Not a user setting.
+    bool has_published_ha_identity() const { return ha_pub_have_; }
+    const char* published_ha_slug() const { return ha_pub_slug_; }
+    const char* published_mqtt_pfix() const { return ha_pub_pfix_; }
+    void set_published_ha_identity(const char* slug, const char* pfix);
+
     JsonStatus apply_json(std::string_view json);
     // 0 means the buffer was too small (or cap == 0). Success is never 0:
     // the object is at least "{}".
@@ -256,6 +262,9 @@ private:
     std::uint8_t field_over_[kMaxFields]{};  // 0 = default, 1 = on, 2 = off
     bool migrated_ = false;
     bool ha_mig_ = false;
+    bool ha_pub_have_ = false;
+    char ha_pub_slug_[kHaMax]{};
+    char ha_pub_pfix_[kPrefixMax]{};
 };
 
 }  // namespace p1cfg

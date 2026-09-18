@@ -519,4 +519,31 @@ std::size_t for_each_legacy_discovery_topic(const p1cfg::Store& cfg, const char*
     return n;
 }
 
+std::size_t identity_clear_topics(std::string_view last_slug, std::string_view last_pfix,
+                                  std::string_view cur_slug, std::string_view cur_pfix,
+                                  void (*fn)(std::string_view, void*), void* ctx)
+{
+    if (last_slug.empty() && last_pfix.empty()) {
+        return 0;
+    }
+    const bool slug_changed = last_slug != cur_slug;
+    const bool pfix_changed = last_pfix != cur_pfix;
+    if (!slug_changed && !pfix_changed) {
+        return 0;
+    }
+
+    std::size_t n = 0;
+    char topic[kTopicMax];
+    if (!last_slug.empty() && device_discovery_topic(last_slug, topic, sizeof(topic)) > 0) {
+        emit_topic(fn, ctx, topic);
+        ++n;
+    }
+    if (pfix_changed && !last_pfix.empty() &&
+        availability_from_prefix(last_pfix, topic, sizeof(topic)) > 0) {
+        emit_topic(fn, ctx, topic);
+        ++n;
+    }
+    return n;
+}
+
 }  // namespace p1pub

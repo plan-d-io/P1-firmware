@@ -278,6 +278,69 @@ void test_ha_status_inbound_topic()
                                            "homeassistant/status") == p1mqtt::Inbound::HaStatus);
 }
 
+void test_identity_clear_ha_device()
+{
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    const std::size_t n = p1pub::identity_clear_topics(
+        "utility_meter", "data/devices/utility_meter/", "example_meter",
+        "data/devices/utility_meter/", collect, &topics);
+    TEST_ASSERT_EQUAL_UINT(1, n);
+    TEST_ASSERT_EQUAL_UINT(1, topics.size());
+    TEST_ASSERT_EQUAL_STRING("homeassistant/device/utility_meter/config", topics[0].c_str());
+}
+
+void test_identity_clear_mqtt_prefix()
+{
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    const std::size_t n = p1pub::identity_clear_topics(
+        "example_meter", "data/devices/utility_meter/", "example_meter", "data/devices/example_meter/",
+        collect, &topics);
+    TEST_ASSERT_EQUAL_UINT(2, n);
+    TEST_ASSERT_EQUAL_UINT(2, topics.size());
+    TEST_ASSERT_EQUAL_STRING("homeassistant/device/example_meter/config", topics[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("data/devices/utility_meter", topics[1].c_str());
+}
+
+void test_identity_clear_unchanged_is_noop()
+{
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    TEST_ASSERT_EQUAL_UINT(0, p1pub::identity_clear_topics(
+                                 "example_meter", "data/devices/example_meter/", "example_meter",
+                                 "data/devices/example_meter/", collect, &topics));
+    TEST_ASSERT_EQUAL_UINT(0, topics.size());
+    TEST_ASSERT_EQUAL_UINT(0, p1pub::identity_clear_topics("", "", "example_meter",
+                                                           "data/devices/example_meter/", collect,
+                                                           &topics));
+    TEST_ASSERT_EQUAL_UINT(0, topics.size());
+}
+
+void test_published_identity_survives_reload()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store a(mem);
+    a.load();
+    TEST_ASSERT_FALSE(a.has_published_ha_identity());
+    a.set_published_ha_identity("example_meter", "data/devices/example_meter/");
+    TEST_ASSERT_TRUE(a.has_published_ha_identity());
+    TEST_ASSERT_EQUAL_STRING("example_meter", a.published_ha_slug());
+    TEST_ASSERT_EQUAL_STRING("data/devices/example_meter/", a.published_mqtt_pfix());
+
+    p1cfg::Store b(mem);
+    b.load();
+    TEST_ASSERT_TRUE(b.has_published_ha_identity());
+    TEST_ASSERT_EQUAL_STRING("example_meter", b.published_ha_slug());
+    TEST_ASSERT_EQUAL_STRING("data/devices/example_meter/", b.published_mqtt_pfix());
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -295,5 +358,9 @@ int main()
     RUN_TEST(test_removal_form_platform_only);
     RUN_TEST(test_legacy_topic_enumeration);
     RUN_TEST(test_ha_status_inbound_topic);
+    RUN_TEST(test_identity_clear_ha_device);
+    RUN_TEST(test_identity_clear_mqtt_prefix);
+    RUN_TEST(test_identity_clear_unchanged_is_noop);
+    RUN_TEST(test_published_identity_survives_reload);
     return UNITY_END();
 }

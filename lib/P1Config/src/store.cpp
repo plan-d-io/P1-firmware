@@ -383,6 +383,13 @@ void Store::load()
     }
     load_overrides();
     ha_mig_ = backend_.has("HA_MIG") && backend_.get_bool("HA_MIG", false);
+    ha_pub_have_ = backend_.has("HA_SLUG");
+    ha_pub_slug_[0] = '\0';
+    ha_pub_pfix_[0] = '\0';
+    if (ha_pub_have_) {
+        backend_.get_str("HA_SLUG", ha_pub_slug_, sizeof(ha_pub_slug_), "");
+        backend_.get_str("HA_PFIX", ha_pub_pfix_, sizeof(ha_pub_pfix_), "");
+    }
     const std::uint32_t ver = ver_present ? v_.cfg_ver : 0;
     backend_.end();
 
@@ -501,6 +508,29 @@ void Store::set_ha_migrated()
     ha_mig_ = true;
     backend_.begin(false);
     backend_.put_bool("HA_MIG", true);
+    backend_.end();
+}
+
+void Store::set_published_ha_identity(const char* slug, const char* pfix)
+{
+    auto copy = [](char* dst, std::size_t cap, const char* src) {
+        if (src == nullptr) {
+            dst[0] = '\0';
+            return;
+        }
+        std::size_t n = 0;
+        while (src[n] != '\0' && n + 1 < cap) {
+            dst[n] = src[n];
+            ++n;
+        }
+        dst[n] = '\0';
+    };
+    copy(ha_pub_slug_, sizeof(ha_pub_slug_), slug);
+    copy(ha_pub_pfix_, sizeof(ha_pub_pfix_), pfix);
+    ha_pub_have_ = true;
+    backend_.begin(false);
+    backend_.put_str("HA_SLUG", ha_pub_slug_);
+    backend_.put_str("HA_PFIX", ha_pub_pfix_);
     backend_.end();
 }
 

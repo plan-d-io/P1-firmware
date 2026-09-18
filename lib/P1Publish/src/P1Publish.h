@@ -38,6 +38,16 @@ std::size_t meter_unique_id(std::string_view ha_device, std::string_view label, 
 
 std::size_t device_discovery_topic(std::string_view object_id, char* out, std::size_t cap);
 
+// MQTT_PFIX with a trailing slash stripped. Same rule as availability_topic().
+std::size_t availability_from_prefix(std::string_view pfix, char* out, std::size_t cap);
+
+// Topics to empty-retain when the published identity changes, in order:
+// old device discovery, then old availability if the prefix changed.
+// last empty → 0 (first publish). last == current → 0.
+std::size_t identity_clear_topics(std::string_view last_slug, std::string_view last_pfix,
+                                  std::string_view cur_slug, std::string_view cur_pfix,
+                                  void (*fn)(std::string_view, void*), void* ctx);
+
 const char* ha_state_class(const p1cfg::Field& field);
 const char* ha_unit(const p1cfg::Field& field);
 

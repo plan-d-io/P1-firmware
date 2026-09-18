@@ -571,13 +571,13 @@ std::size_t reading_topic(const p1cfg::Store& cfg, const p1cfg::Field& field, ch
     return n;
 }
 
-std::size_t availability_topic(const p1cfg::Store& cfg, char* out, std::size_t cap)
+std::size_t availability_from_prefix(std::string_view pfix, char* out, std::size_t cap)
 {
-    if (cap == 0) {
+    if (out == nullptr || cap == 0) {
         return 0;
     }
     std::size_t n = 0;
-    if (!append(out, cap, n, cfg.values().mqtt_pfix)) {
+    if (!append(out, cap, n, pfix)) {
         out[0] = '\0';
         return 0;
     }
@@ -586,6 +586,11 @@ std::size_t availability_topic(const p1cfg::Store& cfg, char* out, std::size_t c
     }
     out[n] = '\0';
     return n;
+}
+
+std::size_t availability_topic(const p1cfg::Store& cfg, char* out, std::size_t cap)
+{
+    return availability_from_prefix(cfg.values().mqtt_pfix, out, cap);
 }
 
 std::size_t Builder::emit_impl(const p1dsmr::Data& data, const p1cfg::Store& cfg, void* ctx,

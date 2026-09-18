@@ -415,6 +415,9 @@ static void run_ha_migration()
     Serial.println("HA migrate done");
 }
 
+static void sync_ha_identity(bool republish);
+static void restart_mqtt();
+
 static void ha_on_field_set(std::uint64_t next)
 {
     if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
@@ -427,9 +430,8 @@ static void ha_on_field_set(std::uint64_t next)
         g_disc_have = true;
         if (!g_cfg.ha_migrated()) {
             run_ha_migration();
-        } else {
-            publish_ha_devices(g_disc_mask, 0);
         }
+        sync_ha_identity(true);
         return;
     }
     if (next == g_disc_mask) {
@@ -443,6 +445,45 @@ static void ha_on_field_set(std::uint64_t next)
     publish_ha_devices(g_disc_mask, 0);
 }
 
+static void ha_clear_topic(std::string_view topic, void* /*ctx*/)
+{
+    g_mqtt.publish(topic, std::string_view{}, true);
+    Serial.printf("HA clear %.*s\n", static_cast<int>(topic.size()), topic.data());
+}
+
+static void sync_ha_identity(bool republish)
+{
+    if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
+        return;
+    }
+    char cur_slug[p1pub::kUniqueIdMax];
+    if (p1pub::slug(g_cfg.values().ha_device, cur_slug, sizeof(cur_slug)) == 0) {
+        return;
+    }
+    const char* last_slug = g_cfg.has_published_ha_identity() ? g_cfg.published_ha_slug() : "";
+    const char* last_pfix = g_cfg.has_published_ha_identity() ? g_cfg.published_mqtt_pfix() : "";
+    const std::size_t n = p1pub::identity_clear_topics(
+        last_slug, last_pfix, cur_slug, g_cfg.values().mqtt_pfix, &ha_clear_topic, nullptr);
+    if (!g_disc_have) {
+        return;
+    }
+    if (n > 0 || republish || !g_cfg.has_published_ha_identity()) {
+        if (!publish_ha_devices(g_disc_mask, 0)) {
+            return;
+        }
+    }
+    if (n > 0 || !g_cfg.has_published_ha_identity()) {
+        g_cfg.set_published_ha_identity(cur_slug, g_cfg.values().mqtt_pfix);
+    }
+}
+
+static void restart_mqtt()
+{
+    g_mqtt.stop();
+    g_mqtt_started = false;
+    try_start_mqtt();
+}
+
 static void on_just_connected()
 {
     subscribe_inbound();
@@ -452,9 +493,8 @@ static void on_just_connected()
     if (g_cfg.values().ha_en && g_disc_have) {
         if (!g_cfg.ha_migrated()) {
             run_ha_migration();
-        } else {
-            publish_ha_devices(g_disc_mask, 0);
         }
+        sync_ha_identity(true);
     }
 }
 
@@ -484,6 +524,10 @@ static void handle_inbound()
         // WIFI_SSID and WIFI_PASS are writable here, same as the future web UI.
         // A wrong value leaves the dongle on a network that does not exist,
         // reachable only over USB — which is why the serial console stays.
+        char old_pfix[p1cfg::kPrefixMax];
+        char old_dev[p1cfg::kHaMax];
+        std::snprintf(old_pfix, sizeof(old_pfix), "%s", g_cfg.values().mqtt_pfix);
+        std::snprintf(old_dev, sizeof(old_dev), "%s", g_cfg.values().ha_device);
         const p1cfg::JsonStatus st = g_cfg.apply_json(g_in_payload);
         if (st != p1cfg::JsonStatus::Ok) {
             Serial.printf("MQTT config rejected %s\n", json_status_name(st));
@@ -492,9 +536,15 @@ static void handle_inbound()
         g_cfg.save();
         publish_config_snapshot();
         Serial.println("MQTT config applied");
+        if (std::strcmp(old_pfix, g_cfg.values().mqtt_pfix) != 0) {
+            restart_mqtt();
+            return;
+        }
         if (g_cfg.values().ha_en) {
             g_mqtt.subscribe(p1mqtt::kHaStatusTopic);
-            if (g_disc_have) {
+            if (std::strcmp(old_dev, g_cfg.values().ha_device) != 0) {
+                sync_ha_identity(false);
+            } else if (g_disc_have) {
                 ha_on_field_set(g_disc_mask);
             }
         }
@@ -654,6 +704,12 @@ static void cmd_set(char* rest)
         Serial.printf("%s set\n", e->key);
     } else {
         Serial.printf("%s updated\n", e->key);
+    }
+
+    if (std::strcmp(e->key, "MQTT_PFIX") == 0) {
+        restart_mqtt();
+    } else if (std::strcmp(e->key, "HA_DEVICE") == 0) {
+        sync_ha_identity(false);
     }
 }
 
