@@ -364,10 +364,13 @@ static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_ma
     bool ok = true;
     char topic[p1pub::kTopicMax];
     char slug_id[p1pub::kUniqueIdMax];
+    char config_url[32];
+    const IPAddress ip = WiFi.localIP();
+    std::snprintf(config_url, sizeof(config_url), "http://%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
     if (p1pub::slug(g_cfg.values().ha_device, slug_id, sizeof(slug_id)) > 0 &&
         p1pub::device_discovery_topic(slug_id, topic, sizeof(topic)) > 0) {
         const std::size_t n =
-            p1pub::meter_discovery(g_cfg, kFwVer, include_mask, stub_mask, buf,
+            p1pub::meter_discovery(g_cfg, kFwVer, config_url, include_mask, stub_mask, buf,
                                    p1pub::kDiscoveryCap);
         ok = publish_discovery_buf(topic, buf, n) && ok;
     } else {
@@ -376,8 +379,8 @@ static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_ma
 
     if (g_device_id[0] != '\0' &&
         p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
-        const std::size_t n =
-            p1pub::dongle_discovery(g_cfg, g_device_id, kFwVer, buf, p1pub::kDiscoveryCap);
+        const std::size_t n = p1pub::dongle_discovery(g_cfg, g_device_id, kFwVer, config_url, buf,
+                                                     p1pub::kDiscoveryCap);
         ok = publish_discovery_buf(topic, buf, n) && ok;
     } else {
         ok = false;

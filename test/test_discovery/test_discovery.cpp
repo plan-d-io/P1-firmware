@@ -62,11 +62,336 @@ int count_key(const char* json, const char* key)
 
 const char* after_components(const char* json)
 {
-    const char* p = std::strstr(json, "\"cmps\":");
+    const char* p = std::strstr(json, "\"components\":");
     if (p == nullptr) {
-        p = std::strstr(json, "\"components\":");
+        p = std::strstr(json, "\"cmps\":");
     }
     return p != nullptr ? p : json;
+}
+
+constexpr const char kTestConfigUrl[] = "http://192.0.2.10";
+
+// DEVICE_DISCOVERY_SCHEMA in homeassistant/components/mqtt/schemas.py, after
+// abbreviation expansion, plus _MQTT_AVAILABILITY_SCHEMA. `~` is not in this
+// list — it is a single-component discovery feature.
+const char* const kHaDeviceRootKeys[] = {
+    "device",
+    "origin",
+    "components",
+    "availability",
+    "availability_mode",
+    "availability_topic",
+    "availability_template",
+    "payload_available",
+    "payload_not_available",
+    "state_topic",
+    "command_topic",
+    "message_expiry_interval",
+    "qos",
+    "encoding",
+};
+
+const char* skip_ws(const char* p)
+{
+    while (p != nullptr && *p != '\0' && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        ++p;
+    }
+    return p;
+}
+
+const char* skip_string(const char* p)
+{
+    if (p == nullptr || *p != '"') {
+        return nullptr;
+    }
+    ++p;
+    while (*p != '\0') {
+        if (*p == '\\') {
+            ++p;
+            if (*p == '\0') {
+                return nullptr;
+            }
+            ++p;
+            continue;
+        }
+        if (*p == '"') {
+            return p + 1;
+        }
+        ++p;
+    }
+    return nullptr;
+}
+
+const char* skip_value(const char* p);
+
+const char* skip_object_or_array(const char* p, char open_c, char close_c)
+{
+    if (p == nullptr || *p != open_c) {
+        return nullptr;
+    }
+    ++p;
+    p = skip_ws(p);
+    if (p != nullptr && *p == close_c) {
+        return p + 1;
+    }
+    while (p != nullptr && *p != '\0') {
+        if (open_c == '{') {
+            p = skip_string(skip_ws(p));
+            p = skip_ws(p);
+            if (p == nullptr || *p != ':') {
+                return nullptr;
+            }
+            p = skip_value(p + 1);
+        } else {
+            p = skip_value(p);
+        }
+        p = skip_ws(p);
+        if (p == nullptr) {
+            return nullptr;
+        }
+        if (*p == close_c) {
+            return p + 1;
+        }
+        if (*p != ',') {
+            return nullptr;
+        }
+        ++p;
+        p = skip_ws(p);
+    }
+    return nullptr;
+}
+
+const char* skip_value(const char* p)
+{
+    p = skip_ws(p);
+    if (p == nullptr || *p == '\0') {
+        return nullptr;
+    }
+    if (*p == '"') {
+        return skip_string(p);
+    }
+    if (*p == '{') {
+        return skip_object_or_array(p, '{', '}');
+    }
+    if (*p == '[') {
+        return skip_object_or_array(p, '[', ']');
+    }
+    if (std::strncmp(p, "true", 4) == 0) {
+        return p + 4;
+    }
+    if (std::strncmp(p, "false", 5) == 0) {
+        return p + 5;
+    }
+    if (std::strncmp(p, "null", 4) == 0) {
+        return p + 4;
+    }
+    if (*p == '-' || (*p >= '0' && *p <= '9')) {
+        if (*p == '-') {
+            ++p;
+        }
+        while (*p >= '0' && *p <= '9') {
+            ++p;
+        }
+        if (*p == '.') {
+            ++p;
+            while (*p >= '0' && *p <= '9') {
+                ++p;
+            }
+        }
+        return p;
+    }
+    return nullptr;
+}
+
+bool parse_json_string(const char* p, std::string* out, const char** after)
+{
+    if (p == nullptr || *p != '"') {
+        return false;
+    }
+    ++p;
+    std::string s;
+    while (*p != '\0') {
+        if (*p == '\\') {
+            ++p;
+            if (*p == '\0') {
+                return false;
+            }
+            s.push_back(*p++);
+            continue;
+        }
+        if (*p == '"') {
+            if (out != nullptr) {
+                *out = std::move(s);
+            }
+            if (after != nullptr) {
+                *after = p + 1;
+            }
+            return true;
+        }
+        s.push_back(*p++);
+    }
+    return false;
+}
+
+const char* object_body(const char* json)
+{
+    json = skip_ws(json);
+    if (json == nullptr || *json != '{') {
+        return nullptr;
+    }
+    return json + 1;
+}
+
+template <typename Fn>
+bool for_each_object_key(const char* obj, Fn&& fn)
+{
+    const char* p = object_body(obj);
+    if (p == nullptr) {
+        return false;
+    }
+    p = skip_ws(p);
+    if (*p == '}') {
+        return true;
+    }
+    while (p != nullptr && *p != '\0') {
+        std::string key;
+        const char* after = nullptr;
+        p = skip_ws(p);
+        if (!parse_json_string(p, &key, &after)) {
+            return false;
+        }
+        p = skip_ws(after);
+        if (p == nullptr || *p != ':') {
+            return false;
+        }
+        const char* value = skip_ws(p + 1);
+        const char* next = skip_value(value);
+        if (next == nullptr) {
+            return false;
+        }
+        if (!fn(key, value)) {
+            return false;
+        }
+        p = skip_ws(next);
+        if (*p == '}') {
+            return true;
+        }
+        if (*p != ',') {
+            return false;
+        }
+        ++p;
+    }
+    return false;
+}
+
+bool root_key_allowed(const std::string& key)
+{
+    for (const char* a : kHaDeviceRootKeys) {
+        if (key == a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool has_key_in_object(const char* obj, const char* want)
+{
+    bool found = false;
+    for_each_object_key(obj, [&](const std::string& key, const char*) {
+        if (key == want) {
+            found = true;
+        }
+        return true;
+    });
+    return found;
+}
+
+bool any_key_is_tilde(const char* obj)
+{
+    bool found = false;
+    for_each_object_key(obj, [&](const std::string& key, const char* value) {
+        if (key == "~") {
+            found = true;
+            return false;
+        }
+        const char* v = skip_ws(value);
+        if (v != nullptr && *v == '{') {
+            if (any_key_is_tilde(v)) {
+                found = true;
+                return false;
+            }
+        }
+        return true;
+    });
+    return found;
+}
+
+const char* root_value(const char* json, const char* want)
+{
+    const char* found = nullptr;
+    for_each_object_key(json, [&](const std::string& key, const char* value) {
+        if (key == want) {
+            found = value;
+            return false;
+        }
+        return true;
+    });
+    return found;
+}
+
+bool ha_device_payload_shape_ok(const char* json)
+{
+    if (!json_closed(json)) {
+        return false;
+    }
+    bool roots_ok = true;
+    if (!for_each_object_key(json, [&](const std::string& key, const char*) {
+            if (!root_key_allowed(key)) {
+                roots_ok = false;
+                return false;
+            }
+            return true;
+        })) {
+        return false;
+    }
+    if (!roots_ok) {
+        return false;
+    }
+    if (any_key_is_tilde(json)) {
+        return false;
+    }
+    const char* device = root_value(json, "device");
+    if (device == nullptr || skip_ws(device) == nullptr || *skip_ws(device) != '{') {
+        return false;
+    }
+    device = skip_ws(device);
+    if (!has_key_in_object(device, "name") || !has_key_in_object(device, "identifiers") ||
+        !has_key_in_object(device, "manufacturer") || !has_key_in_object(device, "model") ||
+        !has_key_in_object(device, "configuration_url") ||
+        !has_key_in_object(device, "sw_version")) {
+        return false;
+    }
+    const char* cmps = root_value(json, "components");
+    if (cmps == nullptr || skip_ws(cmps) == nullptr || *skip_ws(cmps) != '{') {
+        return false;
+    }
+    cmps = skip_ws(cmps);
+    bool comps_ok = true;
+    if (!for_each_object_key(cmps, [&](const std::string&, const char* value) {
+            const char* body = skip_ws(value);
+            if (body == nullptr || *body != '{') {
+                comps_ok = false;
+                return false;
+            }
+            if (!has_key_in_object(body, "p") || !has_key_in_object(body, "uniq_id")) {
+                comps_ok = false;
+                return false;
+            }
+            return true;
+        })) {
+        return false;
+    }
+    return comps_ok;
 }
 
 }  // namespace
@@ -90,11 +415,12 @@ void test_no_object_id()
     cfg.load();
     char buf[p1pub::kDiscoveryCap];
     const std::uint64_t mask = p1pub::enabled_field_mask(cfg);
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, mask, 0, buf, sizeof(buf)) > 0);
     TEST_ASSERT_NULL(std::strstr(buf, "object_id"));
     TEST_ASSERT_NULL(std::strstr(buf, "obj_id"));
 
-    TEST_ASSERT_TRUE(p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", kTestConfigUrl, buf,
+                                            sizeof(buf)) > 0);
     TEST_ASSERT_NULL(std::strstr(buf, "object_id"));
 }
 
@@ -104,7 +430,7 @@ void test_component_name_omits_device_name()
     p1cfg::Store cfg(mem);
     cfg.load();
     char buf[p1pub::kDiscoveryCap];
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf,
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, p1pub::enabled_field_mask(cfg), 0, buf,
                                             sizeof(buf)) > 0);
     const char* cmps = after_components(buf);
     TEST_ASSERT_NULL(std::strstr(cmps, "\"name\":\"Utility meter\""));
@@ -149,11 +475,12 @@ void test_availability_topic_once_at_root()
     p1cfg::Store cfg(mem);
     cfg.load();
     char buf[p1pub::kDiscoveryCap];
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf,
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, p1pub::enabled_field_mask(cfg), 0, buf,
                                             sizeof(buf)) > 0);
-    TEST_ASSERT_EQUAL_INT(1, count_key(buf, "\"avty_t\""));
-    TEST_ASSERT_EQUAL_INT(0, count_key(buf, "\"availability_topic\""));
+    TEST_ASSERT_EQUAL_INT(1, count_key(buf, "\"availability_topic\""));
+    TEST_ASSERT_EQUAL_INT(0, count_key(buf, "\"avty_t\""));
     const char* cmps = after_components(buf);
+    TEST_ASSERT_NULL(std::strstr(cmps, "availability_topic"));
     TEST_ASSERT_NULL(std::strstr(cmps, "avty_t"));
 }
 
@@ -166,16 +493,16 @@ void test_value_template_gated_on_format()
     const std::uint64_t mask = p1pub::enabled_field_mask(cfg);
 
     cfg.values().frmt_pyld = 3;
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, mask, 0, buf, sizeof(buf)) > 0);
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "val_tpl"));
     TEST_ASSERT_NULL(std::strstr(buf, "value_template"));
 
     cfg.values().frmt_pyld = 1;
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, mask, 0, buf, sizeof(buf)) > 0);
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "val_tpl"));
 
     cfg.values().frmt_pyld = 0;
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", mask, 0, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, mask, 0, buf, sizeof(buf)) > 0);
     TEST_ASSERT_NULL(std::strstr(buf, "val_tpl"));
     TEST_ASSERT_NULL(std::strstr(buf, "value_template"));
 }
@@ -187,13 +514,13 @@ void test_default_catalogue_json_size()
     cfg.load();
     char buf[p1pub::kDiscoveryCap];
     const std::size_t n =
-        p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf, sizeof(buf));
+        p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, p1pub::enabled_field_mask(cfg), 0, buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
     TEST_ASSERT_TRUE(json_closed(buf));
     printf("default meter discovery %u bytes\n", static_cast<unsigned>(n));
 
     const std::size_t d =
-        p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", buf, sizeof(buf));
+        p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", kTestConfigUrl, buf, sizeof(buf));
     TEST_ASSERT_TRUE(d > 0);
     TEST_ASSERT_TRUE(json_closed(buf));
     printf("dongle discovery %u bytes\n", static_cast<unsigned>(d));
@@ -211,7 +538,7 @@ void test_all_fields_json_size()
     }
     char buf[p1pub::kDiscoveryCap];
     const std::size_t n =
-        p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf, sizeof(buf));
+        p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, p1pub::enabled_field_mask(cfg), 0, buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
     TEST_ASSERT_TRUE(json_closed(buf));
     printf("all-fields meter discovery %u bytes\n", static_cast<unsigned>(n));
@@ -234,7 +561,7 @@ void test_removal_form_platform_only()
     }
     TEST_ASSERT_TRUE(stub != 0);
     char buf[p1pub::kDiscoveryCap];
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", 0, stub, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, 0, stub, buf, sizeof(buf)) > 0);
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"utility_meter_water_consumption\":{\"p\":\"sensor\"}"));
     const char* p = std::strstr(buf, "\"utility_meter_water_consumption\":");
     TEST_ASSERT_NOT_NULL(p);
@@ -354,18 +681,22 @@ void test_abbreviated_payload_keeps_unique_ids()
     p1cfg::Store cfg(mem);
     cfg.load();
     char buf[p1pub::kDiscoveryCap];
-    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", p1pub::enabled_field_mask(cfg), 0, buf,
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl, p1pub::enabled_field_mask(cfg), 0, buf,
                                             sizeof(buf)) > 0);
     TEST_ASSERT_TRUE(json_closed(buf));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"cmps\":"));
-    TEST_ASSERT_NULL(std::strstr(buf, "\"components\":"));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"dev\":"));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"o\":"));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"avty_t\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"components\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"cmps\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"device\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"dev\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"origin\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"o\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"availability_topic\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"avty_t\":"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":"));
     TEST_ASSERT_NULL(std::strstr(buf, "\"unique_id\":"));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"stat_t\":\"~"));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"~\":\"data/devices/utility_meter/\""));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"~\""));
+    TEST_ASSERT_NOT_NULL(
+        std::strstr(buf, "\"stat_t\":\"data/devices/utility_meter/total_energy_consumed\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"utility_meter_total_energy_consumed\""));
 
     const p1cfg::Field* all = p1cfg::catalogue();
@@ -381,12 +712,45 @@ void test_abbreviated_payload_keeps_unique_ids()
         TEST_ASSERT_NOT_NULL(std::strstr(buf, needle));
     }
 
-    TEST_ASSERT_TRUE(p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", kTestConfigUrl, buf,
+                                            sizeof(buf)) > 0);
     TEST_ASSERT_TRUE(json_closed(buf));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"P1AABBCC_free_heap_size\""));
-    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"stat_t\":\"~free_heap_size\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"stat_t\":\"sys/devices/P1AABBCC/free_heap_size\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"ent_cat\":\"diagnostic\""));
     TEST_ASSERT_NULL(std::strstr(buf, "\"unique_id\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"~\""));
+}
+
+void test_ha_device_discovery_schema_shape()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    char buf[p1pub::kDiscoveryCap];
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl,
+                                            p1pub::enabled_field_mask(cfg), 0, buf,
+                                            sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(ha_device_payload_shape_ok(buf));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"manufacturer\":\"plan-d.io\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        buf, "\"model\":\"P1 dongle for DSMR compatible utility meters\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"configuration_url\":\"http://192.0.2.10\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"sw_version\":\"3.00\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"identifiers\":[\"utility_meter\"]"));
+
+    TEST_ASSERT_TRUE(
+        p1pub::dongle_discovery(cfg, "P1AABBCC", "3.00", kTestConfigUrl, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_TRUE(ha_device_payload_shape_ok(buf));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"model\":\"P1 dongle debug monitoring\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"identifiers\":[\"P1AABBCC\"]"));
+
+    const char kBadTilde[] =
+        "{\"device\":{\"name\":\"x\",\"identifiers\":[\"x\"],\"manufacturer\":\"m\","
+        "\"model\":\"m\",\"configuration_url\":\"http://1.2.3.4\",\"sw_version\":\"1\"},"
+        "\"origin\":{\"name\":\"o\"},\"components\":{\"a\":{\"p\":\"sensor\",\"uniq_id\":\"a\"}},"
+        "\"~\":\"data/devices/x/\"}";
+    TEST_ASSERT_FALSE(ha_device_payload_shape_ok(kBadTilde));
 }
 
 extern "C" void setUp() {}
@@ -411,5 +775,6 @@ int main()
     RUN_TEST(test_identity_clear_unchanged_is_noop);
     RUN_TEST(test_published_identity_survives_reload);
     RUN_TEST(test_abbreviated_payload_keeps_unique_ids);
+    RUN_TEST(test_ha_device_discovery_schema_shape);
     return UNITY_END();
 }

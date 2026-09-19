@@ -19,6 +19,9 @@ constexpr std::size_t kUniqueIdMax = 96;
 // Product origin for device discovery (required by Home Assistant).
 constexpr const char kOriginName[] = "P1 dongle";
 constexpr const char kSupportUrl[] = "https://github.com/plan-d-io/P1-dongle";
+constexpr const char kManufacturer[] = "plan-d.io";
+constexpr const char kMeterModel[] = "P1 dongle for DSMR compatible utility meters";
+constexpr const char kDongleModel[] = "P1 dongle debug monitoring";
 
 constexpr const char kMigrateDiscovery[] = "{\"migrate_discovery\":true}";
 
@@ -56,11 +59,13 @@ std::uint64_t discovery_field_mask(const p1dsmr::Data& data, const p1cfg::Store&
 std::uint64_t enabled_field_mask(const p1cfg::Store& cfg);
 
 // include_mask: full components. stub_mask: {"p":"sensor"} only (entity removal).
-std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::uint64_t include_mask,
-                            std::uint64_t stub_mask, char* out, std::size_t cap);
+// config_url is the device configuration_url (http://<ip>).
+std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const char* config_url,
+                            std::uint64_t include_mask, std::uint64_t stub_mask, char* out,
+                            std::size_t cap);
 
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
-                             char* out, std::size_t cap);
+                             const char* config_url, char* out, std::size_t cap);
 
 // Old per-entity config topics: 50 catalogue labels + 11 sensors + reboot switch
 // under both device ids. Returns how many topics were visited.

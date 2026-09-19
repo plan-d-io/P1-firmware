@@ -130,26 +130,31 @@ constexpr LiveDiag kLiveDiag[] = {
 
 bool write_origin(Wr& w, const char* fw_ver, bool& first)
 {
-    if (!wr_key(w, "o", first) || !wr_char(w, '{')) {
+    if (!wr_key(w, "origin", first) || !wr_char(w, '{')) {
         return false;
     }
     bool f = true;
-    if (!wr_key(w, "name", f) || !wr_json_str(w, kOriginName) || !wr_key(w, "sw", f) ||
-        !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_key(w, "url", f) ||
+    if (!wr_key(w, "name", f) || !wr_json_str(w, kOriginName) || !wr_key(w, "sw_version", f) ||
+        !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_key(w, "support_url", f) ||
         !wr_json_str(w, kSupportUrl) || !wr_char(w, '}')) {
         return false;
     }
     return true;
 }
 
-bool write_device(Wr& w, std::string_view name, std::string_view ident, bool& first)
+bool write_device(Wr& w, std::string_view name, std::string_view ident, const char* model,
+                  const char* fw_ver, const char* config_url, bool& first)
 {
-    if (!wr_key(w, "dev", first) || !wr_char(w, '{')) {
+    if (!wr_key(w, "device", first) || !wr_char(w, '{')) {
         return false;
     }
     bool f = true;
-    if (!wr_key(w, "name", f) || !wr_json_str(w, name) || !wr_key(w, "ids", f) ||
-        !wr_char(w, '[') || !wr_json_str(w, ident) || !wr_append(w, "]}")) {
+    if (!wr_key(w, "name", f) || !wr_json_str(w, name) || !wr_key(w, "identifiers", f) ||
+        !wr_char(w, '[') || !wr_json_str(w, ident) || !wr_char(w, ']') ||
+        !wr_key(w, "manufacturer", f) || !wr_json_str(w, kManufacturer) || !wr_key(w, "model", f) ||
+        !wr_json_str(w, model != nullptr ? model : "") || !wr_key(w, "configuration_url", f) ||
+        !wr_json_str(w, config_url != nullptr ? config_url : "") || !wr_key(w, "sw_version", f) ||
+        !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_char(w, '}')) {
         return false;
     }
     return true;
@@ -176,13 +181,8 @@ bool write_meter_component(Wr& w, const p1cfg::Store& cfg, const p1cfg::Field& f
         !wr_json_str(w, field.label)) {
         return false;
     }
-    char lab[kUniqueIdMax];
-    if (slug(field.label, lab, sizeof(lab)) == 0) {
-        return false;
-    }
     char topic[kTopicMax];
-    Wr tw{topic, sizeof(topic)};
-    if (!wr_char(tw, '~') || !wr_append(tw, lab) || finish(tw) == 0) {
+    if (reading_topic(cfg, field, topic, sizeof(topic)) == 0) {
         return false;
     }
     if (!wr_key(w, "stat_t", f) || !wr_json_str(w, topic)) {
@@ -331,8 +331,9 @@ const char* ha_unit(const p1cfg::Field& field)
     return nullptr;
 }
 
-std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::uint64_t include_mask,
-                            std::uint64_t stub_mask, char* out, std::size_t cap)
+std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const char* config_url,
+                            std::uint64_t include_mask, std::uint64_t stub_mask, char* out,
+                            std::size_t cap)
 {
     if (out == nullptr || cap == 0) {
         return 0;
@@ -346,8 +347,7 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::ui
     if (slug(cfg.values().ha_device, slug_id, sizeof(slug_id)) == 0) {
         return 0;
     }
-    if (!wr_key(w, "~", first) || !wr_json_str(w, cfg.values().mqtt_pfix) ||
-        !write_device(w, cfg.values().ha_device, slug_id, first) ||
+    if (!write_device(w, cfg.values().ha_device, slug_id, kMeterModel, fw_ver, config_url, first) ||
         !write_origin(w, fw_ver, first)) {
         return 0;
     }
@@ -355,8 +355,8 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::ui
     if (availability_topic(cfg, avail, sizeof(avail)) == 0) {
         return 0;
     }
-    if (!wr_key(w, "avty_t", first) || !wr_json_str(w, avail) || !wr_key(w, "cmps", first) ||
-        !wr_char(w, '{')) {
+    if (!wr_key(w, "availability_topic", first) || !wr_json_str(w, avail) ||
+        !wr_key(w, "components", first) || !wr_char(w, '{')) {
         return 0;
     }
 
@@ -388,7 +388,7 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, std::ui
 }
 
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
-                             char* out, std::size_t cap)
+                             const char* config_url, char* out, std::size_t cap)
 {
     if (device_id == nullptr || device_id[0] == '\0' || out == nullptr || cap == 0) {
         return 0;
@@ -398,24 +398,16 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
         return 0;
     }
     bool first = true;
-    char base[kTopicMax];
-    Wr bw{base, sizeof(base)};
-    wr_append(bw, "sys/devices/");
-    wr_append(bw, device_id);
-    wr_char(bw, '/');
-    if (finish(bw) == 0) {
-        return 0;
-    }
-    if (!wr_key(w, "~", first) || !wr_json_str(w, base) ||
-        !write_device(w, device_id, device_id, first) || !write_origin(w, fw_ver, first)) {
+    if (!write_device(w, device_id, device_id, kDongleModel, fw_ver, config_url, first) ||
+        !write_origin(w, fw_ver, first)) {
         return 0;
     }
     char avail[kTopicMax];
     if (availability_topic(cfg, avail, sizeof(avail)) == 0) {
         return 0;
     }
-    if (!wr_key(w, "avty_t", first) || !wr_json_str(w, avail) || !wr_key(w, "cmps", first) ||
-        !wr_char(w, '{')) {
+    if (!wr_key(w, "availability_topic", first) || !wr_json_str(w, avail) ||
+        !wr_key(w, "components", first) || !wr_char(w, '{')) {
         return 0;
     }
 
@@ -448,7 +440,9 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
         }
         char state[kTopicMax];
         Wr sw{state, sizeof(state)};
-        wr_char(sw, '~');
+        wr_append(sw, "sys/devices/");
+        wr_append(sw, device_id);
+        wr_char(sw, '/');
         wr_append(sw, d.channel);
         if (finish(sw) == 0) {
             return 0;
