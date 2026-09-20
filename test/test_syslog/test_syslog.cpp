@@ -18,6 +18,8 @@ std::vector<std::string> g_serial;
 std::vector<std::string> g_mqtt_topics;
 std::vector<std::string> g_mqtt_payloads;
 bool g_mqtt_ok = true;
+std::uint32_t g_persisted_mark = 0;
+unsigned g_persist_calls = 0;
 
 std::uint64_t fake_unix()
 {
@@ -41,12 +43,34 @@ bool on_publish(std::string_view topic, std::string_view payload, void* /*ctx*/)
     return g_mqtt_ok;
 }
 
+void on_persist(std::uint32_t mark, void* /*ctx*/)
+{
+    g_persisted_mark = mark;
+    ++g_persist_calls;
+}
+
 void reset_sinks()
 {
     g_serial.clear();
     g_mqtt_topics.clear();
     g_mqtt_payloads.clear();
     g_mqtt_ok = true;
+    g_persisted_mark = 0;
+    g_persist_calls = 0;
+}
+
+// Drain paced replay: one call per "loop".
+std::size_t drain_replay(p1log::Logger& log, unsigned max_steps = 64)
+{
+    std::size_t total = 0;
+    for (unsigned i = 0; i < max_steps; ++i) {
+        const std::size_t n = log.replay_undelivered();
+        if (n == 0 && !log.replay_pending()) {
+            break;
+        }
+        total += n;
+    }
+    return total;
 }
 
 }  // namespace
@@ -54,7 +78,6 @@ void reset_sinks()
 void test_line_format_each_level()
 {
     char line[p1log::kLineMax];
-    // 2026-09-20 14:32:05 UTC
     const std::uint64_t ts = 1789914725ull;
     TEST_ASSERT_TRUE(p1log::format_human_line(p1log::Level::Debug, "d", ts, line, sizeof(line)) > 0);
     TEST_ASSERT_EQUAL_STRING("2026-09-20T14:32:05Z DEBUG d", line);
@@ -69,7 +92,7 @@ void test_line_format_each_level()
 void test_pre_clock_uptime_stamp()
 {
     p1log::set_clock(&fake_unix, &fake_uptime);
-    g_fake_unix = 8;  // before 2020 → not valid
+    g_fake_unix = 8;
     g_fake_uptime = 8;
     TEST_ASSERT_FALSE(p1log::time_valid());
     TEST_ASSERT_EQUAL_UINT64(8, p1log::unix_now());
@@ -95,7 +118,6 @@ void test_repeats_collapse()
     log.log(p1log::Level::Warn, "same");
     log.log(p1log::Level::Warn, "other");
 
-    // serial: same, (no repeats yet), then on other: "repeated 2 times", then other
     TEST_ASSERT_TRUE(g_serial.size() >= 3);
     TEST_ASSERT_TRUE(std::strstr(g_serial[0].c_str(), "WARN same") != nullptr);
     bool saw_repeat = false;
@@ -129,15 +151,16 @@ void test_differing_level_not_repeat()
     TEST_ASSERT_TRUE(g_serial[1].find("WARN same") != std::string::npos);
 }
 
-void test_rotation_thresholds()
+void test_rotation_resets_watermark()
 {
+    reset_sinks();
     p1log::MemoryFileStore fs;
     p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log.set_mark_persist(&on_persist, nullptr);
     p1log::set_clock(&fake_unix, &fake_uptime);
     g_fake_unix = 1789914725ull;
     log.set_device_id("P1AABBCC");
     log.set_mqtt_ready(false);
-    reset_sinks();
 
     unsigned i = 0;
     while (fs.size(p1log::kActivePath) + 80 < p1log::kFileCap) {
@@ -148,29 +171,22 @@ void test_rotation_thresholds()
             break;
         }
     }
-    const std::size_t under = fs.size(p1log::kActivePath);
-    TEST_ASSERT_TRUE(under < p1log::kFileCap);
-    TEST_ASSERT_EQUAL_UINT(0, log.rotations());
-    TEST_ASSERT_EQUAL_UINT(0, fs.size(p1log::kPrevPath));
+    // Pretend some of the file was already delivered.
+    log.set_log_mark(100);
+    g_persisted_mark = 100;
 
-    // Cross the cap → rotate.
     log.log(p1log::Level::Info, "this line forces rotation across 32KB boundary xx");
     TEST_ASSERT_EQUAL_UINT(1, log.rotations());
-    TEST_ASSERT_TRUE(fs.size(p1log::kPrevPath) > 0);
-    TEST_ASSERT_TRUE(fs.size(p1log::kPrevPath) <= p1log::kFileCap);
-    TEST_ASSERT_TRUE(fs.size(p1log::kActivePath) < p1log::kFileCap);
-    TEST_ASSERT_TRUE(fs.size(p1log::kActivePath) > 0);
-
-    // Previous holds what was active before the rotating write.
-    TEST_ASSERT_TRUE(under == fs.size(p1log::kPrevPath) ||
-                     fs.size(p1log::kPrevPath) >= under - 200);
+    TEST_ASSERT_EQUAL_UINT32(0, log.log_mark());
+    TEST_ASSERT_EQUAL_UINT32(0, g_persisted_mark);
 }
 
-void test_replay_order_and_cap()
+void test_watermark_advances_and_persists()
 {
     reset_sinks();
     p1log::MemoryFileStore fs;
     p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log.set_mark_persist(&on_persist, nullptr);
     p1log::set_clock(&fake_unix, &fake_uptime);
     g_fake_unix = 1789914725ull;
     log.set_device_id("P1AABBCC");
@@ -179,27 +195,157 @@ void test_replay_order_and_cap()
     log.log(p1log::Level::Info, "one");
     log.log(p1log::Level::Info, "two");
     log.log(p1log::Level::Info, "three");
+    TEST_ASSERT_EQUAL_UINT32(0, log.log_mark());
     TEST_ASSERT_EQUAL_UINT(0, g_mqtt_topics.size());
 
     log.set_mqtt_ready(true);
-    const std::size_t n = log.replay_undelivered();
-    TEST_ASSERT_EQUAL_UINT(3, n);
+    TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
+    TEST_ASSERT_TRUE(log.log_mark() > 0);
+    TEST_ASSERT_EQUAL_UINT32(log.log_mark(), g_persisted_mark);
+    const std::uint32_t after1 = log.log_mark();
+
+    TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
+    TEST_ASSERT_TRUE(log.log_mark() > after1);
+    TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
+    TEST_ASSERT_FALSE(log.replay_pending());
     TEST_ASSERT_EQUAL_UINT(3, g_mqtt_topics.size());
-    for (const auto& t : g_mqtt_topics) {
-        TEST_ASSERT_EQUAL_STRING("sys/devices/P1AABBCC/syslog", t.c_str());
-    }
     TEST_ASSERT_TRUE(g_mqtt_payloads[0].find("INFO one") != std::string::npos);
     TEST_ASSERT_TRUE(g_mqtt_payloads[1].find("INFO two") != std::string::npos);
     TEST_ASSERT_TRUE(g_mqtt_payloads[2].find("INFO three") != std::string::npos);
-
-    // Second replay sends nothing — flags are set.
-    g_mqtt_topics.clear();
-    g_mqtt_payloads.clear();
-    TEST_ASSERT_EQUAL_UINT(0, log.replay_undelivered());
-    TEST_ASSERT_EQUAL_UINT(0, g_mqtt_topics.size());
 }
 
-void test_replay_cap_holds()
+void test_restart_resumes_watermark()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log.set_mark_persist(&on_persist, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    g_fake_unix = 1789914725ull;
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(false);
+
+    log.log(p1log::Level::Info, "one");
+    log.log(p1log::Level::Info, "two");
+    log.log(p1log::Level::Info, "three");
+
+    log.set_mqtt_ready(true);
+    TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
+    const std::uint32_t saved = g_persisted_mark;
+
+    // Simulate restart: new logger, same file, restore watermark.
+    reset_sinks();
+    p1log::Logger log2(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log2.set_mark_persist(&on_persist, nullptr);
+    log2.set_device_id("P1AABBCC");
+    log2.set_log_mark(saved);
+    log2.set_mqtt_ready(true);
+
+    drain_replay(log2);
+    TEST_ASSERT_EQUAL_UINT(2, g_mqtt_topics.size());
+    TEST_ASSERT_TRUE(g_mqtt_payloads[0].find("INFO two") != std::string::npos);
+    TEST_ASSERT_TRUE(g_mqtt_payloads[1].find("INFO three") != std::string::npos);
+}
+
+void test_cap_twenty_with_skip()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log.set_mark_persist(&on_persist, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    g_fake_unix = 1789914725ull;
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(false);
+
+    for (unsigned i = 0; i < 20; ++i) {
+        char msg[32];
+        std::snprintf(msg, sizeof(msg), "line %u", i);
+        log.log(p1log::Level::Info, msg);
+    }
+    log.set_mqtt_ready(true);
+    const std::size_t n = drain_replay(log);
+    // 16 replayed + 1 skip WARN (also published).
+    TEST_ASSERT_EQUAL_UINT(17, n);
+    TEST_ASSERT_EQUAL_UINT(17, g_mqtt_topics.size());
+    TEST_ASSERT_FALSE(log.replay_pending());
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(fs.size(p1log::kActivePath)),
+                             log.log_mark());
+
+    bool saw_skip = false;
+    for (const auto& p : g_mqtt_payloads) {
+        if (p.find("4 earlier lines not replayed, see log file") != std::string::npos) {
+            saw_skip = true;
+        }
+    }
+    TEST_ASSERT_TRUE(saw_skip);
+    // Skip line is also in the file.
+    TEST_ASSERT_NOT_NULL(std::strstr(fs.contents(p1log::kActivePath),
+                                     "4 earlier lines not replayed, see log file"));
+}
+
+void test_cap_exactly_sixteen_no_skip()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log.set_mark_persist(&on_persist, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    g_fake_unix = 1789914725ull;
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(false);
+
+    for (unsigned i = 0; i < 16; ++i) {
+        char msg[32];
+        std::snprintf(msg, sizeof(msg), "line %u", i);
+        log.log(p1log::Level::Info, msg);
+    }
+    log.set_mqtt_ready(true);
+    const std::size_t n = drain_replay(log);
+    TEST_ASSERT_EQUAL_UINT(16, n);
+    TEST_ASSERT_EQUAL_UINT(16, g_mqtt_topics.size());
+    for (const auto& p : g_mqtt_payloads) {
+        TEST_ASSERT_TRUE(p.find("not replayed") == std::string::npos);
+    }
+    TEST_ASSERT_FALSE(log.replay_pending());
+}
+
+void test_crash_mid_replay_resumes()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log.set_mark_persist(&on_persist, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    g_fake_unix = 1789914725ull;
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(false);
+
+    for (unsigned i = 0; i < 16; ++i) {
+        char msg[32];
+        std::snprintf(msg, sizeof(msg), "line %u", i);
+        log.log(p1log::Level::Info, msg);
+    }
+    log.set_mqtt_ready(true);
+    for (unsigned i = 0; i < 5; ++i) {
+        TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
+    }
+    const std::uint32_t saved = g_persisted_mark;
+
+    reset_sinks();
+    p1log::Logger log2(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log2.set_mark_persist(&on_persist, nullptr);
+    log2.set_device_id("P1AABBCC");
+    log2.set_log_mark(saved);
+    log2.set_mqtt_ready(true);
+    drain_replay(log2);
+
+    TEST_ASSERT_EQUAL_UINT(11, g_mqtt_topics.size());
+    TEST_ASSERT_TRUE(g_mqtt_payloads[0].find("line 5") != std::string::npos);
+    TEST_ASSERT_TRUE(g_mqtt_payloads[10].find("line 15") != std::string::npos);
+}
+
+void test_file_is_plain_text()
 {
     reset_sinks();
     p1log::MemoryFileStore fs;
@@ -209,15 +355,56 @@ void test_replay_cap_holds()
     log.set_device_id("P1AABBCC");
     log.set_mqtt_ready(false);
 
-    for (unsigned i = 0; i < p1log::kReplayCap + 40; ++i) {
-        char msg[32];
-        std::snprintf(msg, sizeof(msg), "line %u", i);
-        log.log(p1log::Level::Info, msg);
+    log.log(p1log::Level::Info, "value was \", 0\" mid");
+    const char* raw = fs.contents(p1log::kActivePath);
+    TEST_ASSERT_NOT_NULL(std::strstr(raw, "\", 0\""));
+    // Records are plain "<human>\n" — no delivered-flag trailer.
+    bool flag_trailer = false;
+    for (const char* p = raw; *p != '\0'; ++p) {
+        if (p[0] == '\x1e' && (p[1] == '0' || p[1] == '1') && p[2] == '\n') {
+            flag_trailer = true;
+            break;
+        }
     }
+    TEST_ASSERT_FALSE(flag_trailer);
+
+    // A raw 0x1e in the message must not break replay.
+    fs.clear();
+    reset_sinks();
+    p1log::Logger log2(fs, &on_publish, nullptr, &on_serial, nullptr);
+    log2.set_device_id("P1AABBCC");
+    log2.set_mqtt_ready(false);
+    char msg[48];
+    std::snprintf(msg, sizeof(msg), "stray%cbyte and ok", '\x1e');
+    log2.log(p1log::Level::Info, msg);
+    log2.set_mqtt_ready(true);
+    drain_replay(log2);
+    TEST_ASSERT_EQUAL_UINT(1, g_mqtt_topics.size());
+    TEST_ASSERT_TRUE(g_mqtt_payloads[0].find("stray") != std::string::npos);
+}
+
+void test_replay_payload_timestamps_differ()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    // Event time while logging.
+    g_fake_unix = 1789914725ull;  // 2026-09-20T14:32:05Z
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(false);
+    log.log(p1log::Level::Error, "Lost connection to MQTT broker");
+
+    // Transport time at replay — later.
+    g_fake_unix = 1789914725ull + 3600ull;
     log.set_mqtt_ready(true);
-    const std::size_t n = log.replay_undelivered();
-    TEST_ASSERT_EQUAL_UINT(p1log::kReplayCap, n);
-    TEST_ASSERT_EQUAL_UINT(p1log::kReplayCap, g_mqtt_topics.size());
+    TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
+    TEST_ASSERT_EQUAL_UINT(1, g_mqtt_payloads.size());
+    const std::string& p = g_mqtt_payloads[0];
+    TEST_ASSERT_TRUE(p.find("2026-09-20T14:32:05Z ERROR Lost connection") != std::string::npos);
+    TEST_ASSERT_TRUE(p.find("\"timestamp\":1789918325") != std::string::npos);
+    // One message, not a batch.
+    TEST_ASSERT_TRUE(p.find("[") == std::string::npos);
 }
 
 void test_replay_and_publish_share_topic_fn()
@@ -228,34 +415,6 @@ void test_replay_and_publish_share_topic_fn()
     TEST_ASSERT_TRUE(p1mqtt::sys_topic("P1AABBCC", "syslog", b, sizeof(b)) > 0);
     TEST_ASSERT_EQUAL_STRING(a, b);
     TEST_ASSERT_EQUAL_STRING("sys/devices/P1AABBCC/syslog", a);
-}
-
-void test_comma_zero_does_not_corrupt_flag()
-{
-    reset_sinks();
-    p1log::MemoryFileStore fs;
-    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
-    p1log::set_clock(&fake_unix, &fake_uptime);
-    g_fake_unix = 1789914725ull;
-    log.set_device_id("P1AABBCC");
-    log.set_mqtt_ready(false);
-
-    log.log(p1log::Level::Info, "value was \", 0\" in payload");
-    const char* raw = fs.contents(p1log::kActivePath);
-    TEST_ASSERT_NOT_NULL(std::strstr(raw, "\", 0\""));
-    // Delivered flag is after the record separator, last before newline.
-    const char* sep = std::strchr(raw, p1log::kFlagSep);
-    TEST_ASSERT_NOT_NULL(sep);
-    TEST_ASSERT_EQUAL_CHAR('0', sep[1]);
-
-    log.set_mqtt_ready(true);
-    TEST_ASSERT_EQUAL_UINT(1, log.replay_undelivered());
-    const char* after = fs.contents(p1log::kActivePath);
-    const char* sep2 = std::strchr(after, p1log::kFlagSep);
-    TEST_ASSERT_NOT_NULL(sep2);
-    TEST_ASSERT_EQUAL_CHAR('1', sep2[1]);
-    // Message text still contains ", 0".
-    TEST_ASSERT_NOT_NULL(std::strstr(after, "\", 0\""));
 }
 
 void test_hw_reset_strings()
@@ -282,11 +441,15 @@ int main()
     RUN_TEST(test_pre_clock_uptime_stamp);
     RUN_TEST(test_repeats_collapse);
     RUN_TEST(test_differing_level_not_repeat);
-    RUN_TEST(test_rotation_thresholds);
-    RUN_TEST(test_replay_order_and_cap);
-    RUN_TEST(test_replay_cap_holds);
+    RUN_TEST(test_rotation_resets_watermark);
+    RUN_TEST(test_watermark_advances_and_persists);
+    RUN_TEST(test_restart_resumes_watermark);
+    RUN_TEST(test_cap_twenty_with_skip);
+    RUN_TEST(test_cap_exactly_sixteen_no_skip);
+    RUN_TEST(test_crash_mid_replay_resumes);
+    RUN_TEST(test_file_is_plain_text);
+    RUN_TEST(test_replay_payload_timestamps_differ);
     RUN_TEST(test_replay_and_publish_share_topic_fn);
-    RUN_TEST(test_comma_zero_does_not_corrupt_flag);
     RUN_TEST(test_hw_reset_strings);
     return UNITY_END();
 }

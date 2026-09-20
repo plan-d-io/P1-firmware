@@ -321,6 +321,8 @@ void Store::bind_table()
     add_u32("REBOOTS", "Boot count", CFG_IN_API, &v_.reboots, 0);
     add_str("LAST_RESET", "Last reset reason (firmware)", CFG_IN_API, v_.last_reset,
             sizeof(v_.last_reset), "");
+    // Internal store-and-forward cursor — not a user setting.
+    add_u32("LOG_MARK", "Syslog replay watermark", CFG_HIDDEN, &v_.log_mark, 0);
     add_u32("CFG_VER", "Config schema version", CFG_HIDDEN, &v_.cfg_ver, 0);
 }
 

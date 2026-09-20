@@ -42,6 +42,11 @@ static void g_syslog_serial(std::string_view line, void* /*ctx*/)
 {
     Serial.println(line.data());
 }
+static void g_persist_log_mark(std::uint32_t mark, void* /*ctx*/)
+{
+    g_cfg.values().log_mark = mark;
+    g_cfg.save();
+}
 static p1log::Logger g_log{g_fs, &g_syslog_publish, nullptr, &g_syslog_serial, nullptr};
 
 static unsigned g_ok = 0;
@@ -538,13 +543,7 @@ static void restart_mqtt()
 static void on_just_connected()
 {
     g_log.set_mqtt_ready(true);
-    const std::size_t replayed = g_log.replay_undelivered();
-    if (replayed > 0) {
-        char msg[64];
-        std::snprintf(msg, sizeof(msg), "Syslog replayed %u lines",
-                      static_cast<unsigned>(replayed));
-        g_log.log(p1log::Level::Info, msg);
-    }
+    // Replay runs one line per loop via replay_undelivered() — not in a burst here.
     subscribe_inbound();
     publish_online();
     publish_reboot_state("off");
@@ -876,7 +875,9 @@ static void handle_line(char* line)
         }
         if (*rest == '\0' || std::strcmp(rest, "dump") == 0) {
             const std::size_t n = g_fs.size(p1log::kActivePath);
-            Serial.printf("--- %s %u bytes ---\n", p1log::kActivePath, static_cast<unsigned>(n));
+            Serial.printf("--- %s %u bytes mark=%u ---\n", p1log::kActivePath,
+                          static_cast<unsigned>(n),
+                          static_cast<unsigned>(g_cfg.values().log_mark));
             char buf[128];
             std::size_t off = 0;
             while (off < n) {
@@ -884,18 +885,7 @@ static void handle_line(char* line)
                 if (got == 0) {
                     break;
                 }
-                buf[got] = '\0';
-                // Strip delivered flags for human dump.
-                for (std::size_t i = 0; i < got; ++i) {
-                    if (buf[i] == p1log::kFlagSep) {
-                        // skip sep + flag
-                        if (i + 1 < got) {
-                            ++i;
-                        }
-                        continue;
-                    }
-                    Serial.write(buf[i]);
-                }
+                Serial.write(reinterpret_cast<const std::uint8_t*>(buf), got);
                 off += got;
             }
             Serial.println("--- end ---");
@@ -911,16 +901,7 @@ static void handle_line(char* line)
                 if (got == 0) {
                     break;
                 }
-                buf[got] = '\0';
-                for (std::size_t i = 0; i < got; ++i) {
-                    if (buf[i] == p1log::kFlagSep) {
-                        if (i + 1 < got) {
-                            ++i;
-                        }
-                        continue;
-                    }
-                    Serial.write(buf[i]);
-                }
+                Serial.write(reinterpret_cast<const std::uint8_t*>(buf), got);
                 off += got;
             }
             Serial.println("--- end ---");
@@ -1031,6 +1012,8 @@ void setup()
     }
 
     g_cfg.load();
+    g_log.set_mark_persist(&g_persist_log_mark, nullptr);
+    g_log.set_log_mark(g_cfg.values().log_mark);
     // Capture last deliberate reason for this boot, then clear NVS so a later
     // unexpected restart shows empty.
     std::snprintf(g_fw_reset_reason, sizeof(g_fw_reset_reason), "%s", g_cfg.values().last_reset);
@@ -1096,6 +1079,10 @@ void loop()
         on_just_connected();
     }
     handle_inbound();
+
+    if (mqtt_up) {
+        g_log.replay_undelivered();
+    }
 
     if (mqtt_up && p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, millis(), g_last_diag_ms)) {
         publish_diagnostics();

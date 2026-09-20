@@ -35,9 +35,10 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
-    TEST_ASSERT_EQUAL_UINT(19, s.setting_count());
+    TEST_ASSERT_EQUAL_UINT(20, s.setting_count());
     TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
     TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
+    TEST_ASSERT_EQUAL_UINT32(0, s.values().log_mark);
 
     mem.begin(false);
     mem.put_u32("MQTT_PORT", 8883);
@@ -430,11 +431,33 @@ void test_boot_facts_migrate()
     Store s(old);
     s.load();
     TEST_ASSERT_TRUE(s.migrated());
-    TEST_ASSERT_EQUAL_UINT32(4, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
     TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
     TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
     TEST_ASSERT_NOT_NULL(s.find_setting("REBOOTS"));
     TEST_ASSERT_NOT_NULL(s.find_setting("LAST_RESET"));
+}
+
+void test_log_mark_migrate_hidden()
+{
+    MemoryBackend old;
+    old.begin(false);
+    old.put_u32("CFG_VER", 4);
+    old.put_u32("REBOOTS", 3);
+    old.end();
+
+    Store s(old);
+    s.load();
+    TEST_ASSERT_TRUE(s.migrated());
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT32(0, s.values().log_mark);
+    TEST_ASSERT_EQUAL_UINT32(3, s.values().reboots);
+    TEST_ASSERT_NOT_NULL(s.find_setting("LOG_MARK"));
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(s.to_json(buf, sizeof(buf)) > 0);
+    TEST_ASSERT_FALSE(json_has(buf, "\"LOG_MARK\""));
+    TEST_ASSERT_FALSE(json_has(buf, "\"CFG_VER\""));
 }
 
 void test_water_equipment_id_not_catalogued()
@@ -479,6 +502,7 @@ int main()
     RUN_TEST(test_upl_throttle_migrates);
     RUN_TEST(test_wifi_settings_migrate);
     RUN_TEST(test_boot_facts_migrate);
+    RUN_TEST(test_log_mark_migrate_hidden);
     RUN_TEST(test_water_equipment_id_not_catalogued);
     RUN_TEST(test_fixture_region_tags_unchanged);
     return UNITY_END();

@@ -177,7 +177,7 @@ std::size_t format_human_line(Level level, std::string_view msg, std::uint64_t u
         return 0;
     }
     for (char c : msg) {
-        if (c == '\n' || c == '\r' || c == kFlagSep) {
+        if (c == '\n' || c == '\r') {
             c = ' ';
         }
         if (!append_char(out, cap, n, c)) {
@@ -213,11 +213,41 @@ void Logger::set_device_id(const char* id)
 void Logger::set_mqtt_ready(bool ready)
 {
     mqtt_ready_ = ready;
+    if (ready) {
+        session_sent_ = 0;
+    }
+}
+
+void Logger::set_log_mark(std::uint32_t mark)
+{
+    mark_ = mark;
+}
+
+void Logger::set_mark_persist(PersistMarkFn fn, void* ctx)
+{
+    persist_mark_ = fn;
+    persist_ctx_ = ctx;
+}
+
+void Logger::persist_mark()
+{
+    if (persist_mark_ != nullptr) {
+        persist_mark_(mark_, persist_ctx_);
+    }
 }
 
 std::size_t Logger::active_size() const
 {
     return fs_.size(kActivePath);
+}
+
+bool Logger::replay_pending() const
+{
+    if (!mqtt_ready_ || device_id_[0] == '\0') {
+        return false;
+    }
+    const std::size_t total = fs_.size(kActivePath);
+    return static_cast<std::size_t>(mark_) < total;
 }
 
 void Logger::flush_repeat()
@@ -228,12 +258,10 @@ void Logger::flush_repeat()
     char msg[48];
     std::snprintf(msg, sizeof(msg), "Previous message repeated %lu times",
                   static_cast<unsigned long>(repeat_));
-    const std::uint32_t count = repeat_;
     repeat_ = 0;
     // Do not fold the summary into another repeat of itself.
     have_last_ = false;
     emit_line(Level::Warn, msg, false);
-    (void)count;
 }
 
 void Logger::log(Level level, std::string_view msg)
@@ -261,13 +289,16 @@ void Logger::emit_line(Level level, std::string_view msg, bool count_as_content)
         serial_(human, serial_ctx_);
     }
 
-    bool delivered = true;
     if (level != Level::Debug) {
-        delivered = false;
+        const std::size_t before = fs_.size(kActivePath);
+        write_record(human);
         if (mqtt_ready_) {
-            delivered = mqtt_publish_human(human);
+            if (mqtt_publish_human(human) && mark_ == before) {
+                // Contiguous prefix was caught up; this live line extends it.
+                mark_ = static_cast<std::uint32_t>(fs_.size(kActivePath));
+                persist_mark();
+            }
         }
-        write_record(human, delivered);
     }
 
     if (count_as_content) {
@@ -313,6 +344,10 @@ bool Logger::mqtt_publish_human(std::string_view human)
     }
     esc[e] = '\0';
     char payload[kLineMax + 160];
+    // value's ISO stamp is event time (when the line was logged). The numeric
+    // timestamp field is transport time (when this MQTT message is sent). On a
+    // live line they coincide; on a replayed line the gap is how long delivery
+    // was blocked — that mismatch is intentional, not a bug.
     const std::uint64_t ts = unix_now();
     const int m =
         std::snprintf(payload, sizeof(payload),
@@ -334,19 +369,94 @@ void Logger::rotate_if_needed(std::size_t incoming)
     fs_.remove(kPrevPath);
     fs_.rename(kActivePath, kPrevPath);
     ++rotations_;
+    mark_ = 0;
+    persist_mark();
 }
 
-bool Logger::write_record(std::string_view human, bool delivered)
+bool Logger::write_record(std::string_view human)
 {
-    char rec[kLineMax + 8];
+    char rec[kLineMax + 4];
     std::size_t n = 0;
-    if (!append_view(rec, sizeof(rec), n, human) || !append_char(rec, sizeof(rec), n, kFlagSep) ||
-        !append_char(rec, sizeof(rec), n, delivered ? '1' : '0') ||
-        !append_char(rec, sizeof(rec), n, '\n')) {
+    if (!append_view(rec, sizeof(rec), n, human) || !append_char(rec, sizeof(rec), n, '\n')) {
         return false;
     }
     rotate_if_needed(n);
     return fs_.append(kActivePath, std::string_view(rec, n));
+}
+
+bool Logger::read_line_at(std::size_t offset, char* out, std::size_t cap,
+                          std::size_t* line_end) const
+{
+    if (out == nullptr || cap == 0 || line_end == nullptr) {
+        return false;
+    }
+    write_nul(out, cap);
+    const std::size_t total = fs_.size(kActivePath);
+    if (offset >= total) {
+        *line_end = offset;
+        return false;
+    }
+    std::size_t n = 0;
+    std::size_t pos = offset;
+    char chunk[64];
+    while (pos < total) {
+        const std::size_t got = fs_.read(kActivePath, pos, chunk, sizeof(chunk));
+        if (got == 0) {
+            break;
+        }
+        for (std::size_t i = 0; i < got; ++i) {
+            const char c = chunk[i];
+            ++pos;
+            if (c == '\n') {
+                out[n] = '\0';
+                *line_end = pos;
+                return true;
+            }
+            if (c == '\r') {
+                continue;
+            }
+            if (n + 1 < cap) {
+                out[n++] = c;
+            }
+        }
+    }
+    out[n] = '\0';
+    *line_end = pos;
+    return n > 0;
+}
+
+std::size_t Logger::count_lines(std::size_t from, std::size_t to) const
+{
+    if (from >= to) {
+        return 0;
+    }
+    std::size_t count = 0;
+    std::size_t pos = from;
+    char chunk[64];
+    bool in_line = false;
+    while (pos < to) {
+        const std::size_t want = (to - pos) < sizeof(chunk) ? (to - pos) : sizeof(chunk);
+        const std::size_t got = fs_.read(kActivePath, pos, chunk, want);
+        if (got == 0) {
+            break;
+        }
+        for (std::size_t i = 0; i < got; ++i) {
+            const char c = chunk[i];
+            if (c == '\n') {
+                if (in_line) {
+                    ++count;
+                }
+                in_line = false;
+            } else if (c != '\r') {
+                in_line = true;
+            }
+        }
+        pos += got;
+    }
+    if (in_line) {
+        ++count;
+    }
+    return count;
 }
 
 std::size_t Logger::replay_undelivered()
@@ -355,94 +465,46 @@ std::size_t Logger::replay_undelivered()
         return 0;
     }
     const std::size_t total = fs_.size(kActivePath);
-    if (total == 0) {
+    if (static_cast<std::size_t>(mark_) > total) {
+        mark_ = static_cast<std::uint32_t>(total);
+        persist_mark();
+    }
+    if (static_cast<std::size_t>(mark_) >= total) {
         return 0;
     }
 
-    // Rewrite active file with delivered flags updated. Cap how many we send.
-    char* rewritten = new char[total + 1];
-    if (rewritten == nullptr) {
+    if (session_sent_ >= kReplayCap) {
+        const std::size_t remaining = count_lines(mark_, total);
+        mark_ = static_cast<std::uint32_t>(total);
+        persist_mark();
+        char msg[72];
+        std::snprintf(msg, sizeof(msg), "%u earlier lines not replayed, see log file",
+                      static_cast<unsigned>(remaining));
+        // Through the normal logger so it lands in the file and on MQTT.
+        log(Level::Warn, msg);
+        return 1;
+    }
+
+    char human[kLineMax];
+    std::size_t line_end = mark_;
+    if (!read_line_at(mark_, human, sizeof(human), &line_end)) {
+        mark_ = static_cast<std::uint32_t>(total);
+        persist_mark();
         return 0;
     }
-    std::size_t out_n = 0;
-    std::size_t sent = 0;
-    std::size_t offset = 0;
-    char chunk[256];
-    char line[kLineMax + 8];
-    std::size_t line_n = 0;
-
-    auto handle_line = [&](std::string_view raw) {
-        if (raw.empty()) {
-            return;
-        }
-        // Find flag separator.
-        std::size_t sep = raw.size();
-        for (std::size_t i = 0; i < raw.size(); ++i) {
-            if (raw[i] == kFlagSep) {
-                sep = i;
-                break;
-            }
-        }
-        if (sep >= raw.size() || sep + 1 >= raw.size()) {
-            // Malformed — keep as-is.
-            if (out_n + raw.size() + 1 <= total + 1) {
-                for (char c : raw) {
-                    rewritten[out_n++] = c;
-                }
-                rewritten[out_n++] = '\n';
-            }
-            return;
-        }
-        const std::string_view human = raw.substr(0, sep);
-        const char flag = raw[sep + 1];
-        bool delivered = flag == '1';
-        if (!delivered && sent < kReplayCap) {
-            if (mqtt_publish_human(human)) {
-                delivered = true;
-                ++sent;
-            }
-        }
-        if (out_n + human.size() + 3 <= total + 1) {
-            for (char c : human) {
-                rewritten[out_n++] = c;
-            }
-            rewritten[out_n++] = kFlagSep;
-            rewritten[out_n++] = delivered ? '1' : '0';
-            rewritten[out_n++] = '\n';
-        }
-    };
-
-    while (offset < total) {
-        const std::size_t got = fs_.read(kActivePath, offset, chunk, sizeof(chunk));
-        if (got == 0) {
-            break;
-        }
-        offset += got;
-        for (std::size_t i = 0; i < got; ++i) {
-            const char c = chunk[i];
-            if (c == '\n') {
-                handle_line(std::string_view(line, line_n));
-                line_n = 0;
-                continue;
-            }
-            if (c == '\r') {
-                continue;
-            }
-            if (line_n + 1 < sizeof(line)) {
-                line[line_n++] = c;
-            }
-        }
+    if (human[0] == '\0') {
+        // Blank line — advance past it without counting against the cap.
+        mark_ = static_cast<std::uint32_t>(line_end);
+        persist_mark();
+        return 0;
     }
-    if (line_n > 0) {
-        handle_line(std::string_view(line, line_n));
+    if (!mqtt_publish_human(human)) {
+        return 0;
     }
-
-    fs_.remove(kActivePath);
-    if (out_n > 0) {
-        fs_.append(kActivePath, std::string_view(rewritten, out_n));
-    }
-    delete[] rewritten;
-    return sent;
+    mark_ = static_cast<std::uint32_t>(line_end);
+    persist_mark();
+    ++session_sent_;
+    return 1;
 }
 
 const char* hw_reset_reason_string(int esp_reset_reason)

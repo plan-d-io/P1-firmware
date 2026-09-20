@@ -22,7 +22,7 @@ constexpr CfgFlags CFG_SECRET = 2;
 constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
 
-constexpr std::uint32_t kSchemaVersion = 4;
+constexpr std::uint32_t kSchemaVersion = 5;
 
 constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;
@@ -70,6 +70,8 @@ struct Settings {
     char wifi_pass[kPassMax]{};
     std::uint32_t reboots = 0;
     char last_reset[kLastResetMax]{};
+    // Byte offset in /syslog.txt up to which lines have been MQTT-published.
+    std::uint32_t log_mark = 0;
     std::uint32_t cfg_ver = 0;
 };
 
@@ -217,7 +219,7 @@ enum class JsonStatus : std::uint8_t { Ok, Parse, UnknownKey, WrongType, Invalid
 
 class Store {
 public:
-    static constexpr std::size_t kSettingCount = 19;
+    static constexpr std::size_t kSettingCount = 20;
 
     explicit Store(StoreBackend& backend);
 
