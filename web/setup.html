@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P1 dongle setup</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <p class="brand">P1 dongle</p>
+  <h1>WiFi setup</h1>
+  <p class="lede">Choose a network, enter the password, and save. The dongle will restart and join that network.</p>
+</header>
+<main>
+  <form method="POST" action="/save">
+    <fieldset>
+      <legend>Network</legend>
+      <div id="nets">{{NETWORKS}}</div>
+      <label for="ssid_other">Or type a hidden SSID</label>
+      <input id="ssid_other" name="ssid_other" type="text" maxlength="32" autocomplete="off" placeholder="Network name">
+    </fieldset>
+    <fieldset>
+      <legend>Password</legend>
+      <label for="pass">WiFi password</label>
+      <input id="pass" name="pass" type="password" maxlength="63" autocomplete="current-password">
+    </fieldset>
+    <button type="submit">Save and restart</button>
+  </form>
+</main>
+</body>
+</html>

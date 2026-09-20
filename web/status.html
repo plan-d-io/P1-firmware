@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>P1 dongle status</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <p class="brand">P1 dongle</p>
+  <h1>Status</h1>
+  <p class="lede">Read-only facts for support. Page refreshes every 10 seconds.</p>
+</header>
+<main>
+  <dl class="facts">
+    <dt>Device id</dt><dd>{{DEVICE_ID}}</dd>
+    <dt>Firmware</dt><dd>{{FW_VER}}</dd>
+    <dt>IP</dt><dd>{{IP}}</dd>
+    <dt>Uptime</dt><dd>{{UPTIME}}</dd>
+    <dt>Free heap</dt><dd>{{HEAP}}</dd>
+    <dt>WiFi RSSI</dt><dd>{{RSSI}}</dd>
+    <dt>MQTT</dt><dd>{{MQTT}}</dd>
+    <dt>Telegrams</dt><dd>{{TELEGRAMS}}</dd>
+  </dl>
+</main>
+</body>
+</html>

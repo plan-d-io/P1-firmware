@@ -6,6 +6,7 @@
 #include <P1Mqtt.h>
 #include <P1Publish.h>
 #include <P1Syslog.h>
+#include <P1Web.h>
 #include <WiFi.h>
 #include <esp_mac.h>
 #include <esp_system.h>
@@ -28,6 +29,8 @@ static constexpr int kDataRequest = 25;
 // Rebuild generation. Fielded firmware was 2.23; keep this above that line.
 static constexpr char kFwVer[] = "3.00";
 
+static void request_reboot(const char* reason);
+
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
 static p1mqtt::Mqtt g_mqtt;
@@ -49,6 +52,22 @@ static void g_persist_log_mark(std::uint32_t mark, void* /*ctx*/)
 }
 static p1log::Logger g_log{g_fs, &g_syslog_publish, nullptr, &g_syslog_serial, nullptr};
 
+static p1web::Server g_web;
+static p1web::CaptiveDns g_dns;
+static p1web::ProvisionMachine g_prov;
+static p1web::ScanCache g_scan{};
+static bool g_ap_up = false;
+static bool g_scan_started = false;
+static std::uint32_t g_last_scan_ms = 0;
+static char g_begun_ssid[p1web::kSsidMax]{};
+static char g_begun_pass[p1web::kPassMax]{};
+static char g_status_ip[16]{};
+static char g_status_uptime[24]{};
+static char g_status_heap[16]{};
+static char g_status_rssi[12]{};
+static char g_status_tele[48]{};
+static p1web::StatusView g_status_view{};
+
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
 static volatile unsigned g_ovf = 0;
@@ -59,7 +78,6 @@ static volatile bool g_got_ip = false;
 static bool g_wifi_started = false;
 static bool g_mdns_started = false;
 static bool g_mqtt_started = false;
-static bool g_ssid_empty_logged = false;
 static bool g_host_empty_logged = false;
 static bool g_ntp_started = false;
 static bool g_mqtt_was_connected = false;
@@ -127,30 +145,222 @@ static const char* wifi_state_name()
     return "idle";
 }
 
-static void start_wifi()
+static void start_sta()
 {
     if (g_cfg.values().wifi_ssid[0] == '\0') {
-        if (!g_ssid_empty_logged) {
-            g_log.log(p1log::Level::Warn, "WIFI_SSID empty; not connecting");
-            g_ssid_empty_logged = true;
-        }
         return;
     }
-    if (g_wifi_started) {
+    const bool same = g_wifi_started &&
+                      std::strcmp(g_begun_ssid, g_cfg.values().wifi_ssid) == 0 &&
+                      std::strcmp(g_begun_pass, g_cfg.values().wifi_pass) == 0;
+    if (same && !g_ap_up) {
         return;
     }
-
-    WiFi.mode(WIFI_STA);
     if (g_device_id[0] != '\0') {
         WiFi.setHostname(g_device_id);
     }
     WiFi.setAutoReconnect(true);
+    if (g_wifi_started) {
+        WiFi.disconnect(false, false);
+    }
     WiFi.begin(g_cfg.values().wifi_ssid, g_cfg.values().wifi_pass);
+    std::snprintf(g_begun_ssid, sizeof(g_begun_ssid), "%s", g_cfg.values().wifi_ssid);
+    std::snprintf(g_begun_pass, sizeof(g_begun_pass), "%s", g_cfg.values().wifi_pass);
     g_wifi_started = true;
     char msg[96];
     std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", g_cfg.values().wifi_ssid,
                   g_device_id);
     g_log.log(p1log::Level::Info, msg);
+}
+
+static void start_ap()
+{
+    if (g_ap_up) {
+        return;
+    }
+    // AP+STA so a timed-out connect can keep trying in the background.
+    WiFi.mode(WIFI_AP_STA);
+    if (!WiFi.softAP(p1web::kApSsid)) {
+        g_log.log(p1log::Level::Error, "SoftAP start failed");
+        return;
+    }
+    g_ap_up = true;
+    const IPAddress ip = WiFi.softAPIP();
+    char msg[64];
+    std::snprintf(msg, sizeof(msg), "SoftAP %s %u.%u.%u.%u", p1web::kApSsid, ip[0], ip[1], ip[2],
+                  ip[3]);
+    g_log.log(p1log::Level::Info, msg);
+    const std::uint32_t host =
+        (static_cast<std::uint32_t>(ip[0]) << 24) | (static_cast<std::uint32_t>(ip[1]) << 16) |
+        (static_cast<std::uint32_t>(ip[2]) << 8) | static_cast<std::uint32_t>(ip[3]);
+    if (!g_dns.begin(host)) {
+        g_log.log(p1log::Level::Warn, "Captive DNS failed");
+    }
+    if (!g_web.running()) {
+        if (g_web.begin(p1web::Mode::Ap)) {
+            g_log.log(p1log::Level::Info, "HTTP server started (AP)");
+        } else {
+            g_log.log(p1log::Level::Error, "HTTP server start failed");
+        }
+    } else {
+        g_web.set_mode(p1web::Mode::Ap);
+    }
+    g_web.set_scan(&g_scan);
+    g_last_scan_ms = 0;
+    g_scan_started = false;
+}
+
+static void stop_ap()
+{
+    if (!g_ap_up) {
+        return;
+    }
+    g_dns.end();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    g_ap_up = false;
+    g_log.log(p1log::Level::Info, "SoftAP stopped");
+    if (g_web.running()) {
+        g_web.set_mode(p1web::Mode::Station);
+    }
+}
+
+static void ensure_web_station()
+{
+    if (!g_web.running()) {
+        if (g_web.begin(p1web::Mode::Station)) {
+            g_log.log(p1log::Level::Info, "HTTP server started (station)");
+        } else {
+            g_log.log(p1log::Level::Error, "HTTP server start failed");
+        }
+    } else {
+        g_web.set_mode(p1web::Mode::Station);
+    }
+    g_web.set_status(&g_status_view);
+}
+
+static void refresh_status_view()
+{
+    const IPAddress ip = WiFi.localIP();
+    std::snprintf(g_status_ip, sizeof(g_status_ip), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    const std::uint32_t sec = millis() / 1000u;
+    std::snprintf(g_status_uptime, sizeof(g_status_uptime), "%lu s",
+                  static_cast<unsigned long>(sec));
+    std::snprintf(g_status_heap, sizeof(g_status_heap), "%u",
+                  static_cast<unsigned>(ESP.getFreeHeap()));
+    std::snprintf(g_status_rssi, sizeof(g_status_rssi), "%ld", static_cast<long>(WiFi.RSSI()));
+    std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u", g_ok, g_rejected);
+    g_status_view.device_id = g_device_id;
+    g_status_view.fw_ver = kFwVer;
+    g_status_view.ip = g_status_ip;
+    g_status_view.uptime = g_status_uptime;
+    g_status_view.heap = g_status_heap;
+    g_status_view.rssi = g_status_rssi;
+    g_status_view.mqtt = mqtt_state_name(g_mqtt.state());
+    g_status_view.telegrams = g_status_tele;
+}
+
+static void poll_wifi_scan()
+{
+    if (!g_ap_up) {
+        return;
+    }
+    const std::int16_t done = WiFi.scanComplete();
+    if (done >= 0) {
+        g_scan.count = 0;
+        for (std::int16_t i = 0; i < done && g_scan.count < p1web::kMaxScanResults; ++i) {
+            p1web::ScanEntry& e = g_scan.entries[g_scan.count];
+            WiFi.SSID(i).toCharArray(e.ssid, sizeof(e.ssid));
+            if (e.ssid[0] == '\0') {
+                continue;
+            }
+            e.rssi = WiFi.RSSI(i);
+            ++g_scan.count;
+        }
+        WiFi.scanDelete();
+        p1web::sort_scan_strongest_first(g_scan);
+        g_scan.ready = true;
+        g_scan_started = false;
+        g_last_scan_ms = millis();
+        return;
+    }
+    if (done == -1) {
+        return;  // still scanning
+    }
+    // -2 = not started / idle
+    if (!g_scan_started && (g_last_scan_ms == 0 || millis() - g_last_scan_ms > 15000u)) {
+        if (WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING) {
+            g_scan_started = true;
+        }
+    }
+}
+
+static void handle_web_actions()
+{
+    p1web::Actions* act = g_web.actions();
+    if (act == nullptr) {
+        return;
+    }
+    if (act->save_wifi) {
+        act->save_wifi = false;
+        char json[192];
+        if (p1web::wifi_creds_json(act->wifi_ssid, act->wifi_pass, json, sizeof(json)) == 0) {
+            g_log.log(p1log::Level::Error, "WiFi save JSON overflow");
+            act->reboot = false;
+            return;
+        }
+        const p1cfg::JsonStatus st = g_cfg.apply_json(json);
+        if (st != p1cfg::JsonStatus::Ok) {
+            g_log.log(p1log::Level::Warn, "WiFi save rejected");
+            act->reboot = false;
+            return;
+        }
+        g_cfg.save();
+        g_log.log(p1log::Level::Info, "WiFi credentials saved from setup page");
+    }
+    if (act->reboot) {
+        act->reboot = false;
+        request_reboot("Reboot requested from web UI");
+    }
+}
+
+static void service_provisioning()
+{
+    p1web::ProvInput in{};
+    in.have_ssid = g_cfg.values().wifi_ssid[0] != '\0';
+    in.sta_connected = WiFi.status() == WL_CONNECTED;
+    in.now_ms = millis();
+    const p1web::ProvOutput out = g_prov.tick(in);
+
+    if (out.want_ap && !g_ap_up) {
+        start_ap();
+    } else if (!out.want_ap && g_ap_up) {
+        stop_ap();
+    }
+
+    if (out.want_sta) {
+        start_sta();
+    }
+
+    if (out.phase == p1web::ProvPhase::Station) {
+        ensure_web_station();
+        refresh_status_view();
+    }
+
+    if (g_ap_up) {
+        g_dns.loop();
+        poll_wifi_scan();
+        g_web.set_mode(p1web::Mode::Ap);
+        g_web.set_scan(&g_scan);
+    }
+
+    handle_web_actions();
+}
+
+static void start_wifi()
+{
+    // Legacy name: provisioning state machine owns AP/STA now.
+    service_provisioning();
 }
 
 static void ensure_mdns()
@@ -1046,10 +1256,8 @@ void setup()
 void loop()
 {
     poll_serial();
+    service_provisioning();
 
-    if (!g_wifi_started) {
-        start_wifi();
-    }
     if (WiFi.status() == WL_CONNECTED) {
         if (!g_got_ip) {
             g_got_ip = true;
