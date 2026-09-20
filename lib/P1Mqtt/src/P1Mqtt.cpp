@@ -466,7 +466,7 @@ bool reboot_command(std::string_view payload)
 
 std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
                          std::string_view entity, std::string_view sensor_id, char* out,
-                         std::size_t cap)
+                         std::size_t cap, std::uint64_t unix_ts)
 {
     write_nul(out, cap);
     if (out == nullptr || cap == 0) {
@@ -476,8 +476,21 @@ std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
     if (!append(out, cap, n, "{\"friendly_name\":") || !append_json_str(out, cap, n, friendly) ||
         !append(out, cap, n, ",\"value\":") || !append(out, cap, n, value_json) ||
         !append(out, cap, n, ",\"entity\":") || !append_json_str(out, cap, n, entity) ||
-        !append(out, cap, n, ",\"sensorId\":") || !append_json_str(out, cap, n, sensor_id) ||
-        !append_char(out, cap, n, '}')) {
+        !append(out, cap, n, ",\"sensorId\":") || !append_json_str(out, cap, n, sensor_id)) {
+        write_nul(out, cap);
+        return 0;
+    }
+    if (unix_ts != 0) {
+        char num[24];
+        const int w = std::snprintf(num, sizeof(num), "%llu",
+                                    static_cast<unsigned long long>(unix_ts));
+        if (w <= 0 || !append(out, cap, n, ",\"timestamp\":") ||
+            !append(out, cap, n, std::string_view(num, static_cast<std::size_t>(w)))) {
+            write_nul(out, cap);
+            return 0;
+        }
+    }
+    if (!append_char(out, cap, n, '}')) {
         write_nul(out, cap);
         return 0;
     }

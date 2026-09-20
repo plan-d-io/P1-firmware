@@ -65,9 +65,10 @@ std::size_t config_snapshot(const p1cfg::Store& cfg, const char* hostname, const
 bool reboot_command(std::string_view payload);
 
 // value_json is a raw JSON token (193140 or "192.0.2.10"), not a C string to quote.
+// unix_ts == 0 omits the timestamp field (clock not yet valid).
 std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
                          std::string_view entity, std::string_view sensor_id, char* out,
-                         std::size_t cap);
+                         std::size_t cap, std::uint64_t unix_ts = 0);
 
 // Reassembles MQTT_EVENT_DATA chunks. The handler copies; the loop takes.
 class InboundAssembler {

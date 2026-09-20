@@ -318,6 +318,9 @@ void Store::bind_table()
     add_str("WIFI_SSID", "WiFi network", CFG_IN_API, v_.wifi_ssid, sizeof(v_.wifi_ssid), "");
     add_str("WIFI_PASS", "WiFi password", CFG_IN_API | CFG_SECRET, v_.wifi_pass,
             sizeof(v_.wifi_pass), "");
+    add_u32("REBOOTS", "Boot count", CFG_IN_API, &v_.reboots, 0);
+    add_str("LAST_RESET", "Last reset reason (firmware)", CFG_IN_API, v_.last_reset,
+            sizeof(v_.last_reset), "");
     add_u32("CFG_VER", "Config schema version", CFG_HIDDEN, &v_.cfg_ver, 0);
 }
 

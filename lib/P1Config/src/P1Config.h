@@ -22,7 +22,7 @@ constexpr CfgFlags CFG_SECRET = 2;
 constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
 
-constexpr std::uint32_t kSchemaVersion = 3;
+constexpr std::uint32_t kSchemaVersion = 4;
 
 constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;
@@ -32,6 +32,7 @@ constexpr std::size_t kPrefixMax = 48;
 constexpr std::size_t kHaMax = 32;
 constexpr std::size_t kRegionMax = 8;
 constexpr std::size_t kSsidMax = 33;  // IEEE 802.11 SSID is 32 octets + NUL
+constexpr std::size_t kLastResetMax = 64;
 
 // Largest string setting. JSON parse uses each entry's str_cap; this is the
 // bound a scratch buffer would need, and a tripwire if a longer setting is added.
@@ -42,6 +43,7 @@ static_assert(kPrefixMax <= kHostMax);
 static_assert(kHaMax <= kHostMax);
 static_assert(kRegionMax <= kHostMax);
 static_assert(kSsidMax <= kHostMax);
+static_assert(kLastResetMax <= kHostMax);
 
 // Worst-case FLD_OVR: every catalogue slot as "id=0,". Catalogue static_assert
 // checks the real table fits. identification is 14 chars; 16 is headroom.
@@ -66,6 +68,8 @@ struct Settings {
     char region[kRegionMax]{};
     char wifi_ssid[kSsidMax]{};
     char wifi_pass[kPassMax]{};
+    std::uint32_t reboots = 0;
+    char last_reset[kLastResetMax]{};
     std::uint32_t cfg_ver = 0;
 };
 
@@ -213,7 +217,7 @@ enum class JsonStatus : std::uint8_t { Ok, Parse, UnknownKey, WrongType, Invalid
 
 class Store {
 public:
-    static constexpr std::size_t kSettingCount = 17;
+    static constexpr std::size_t kSettingCount = 19;
 
     explicit Store(StoreBackend& backend);
 

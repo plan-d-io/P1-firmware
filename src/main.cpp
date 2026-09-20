@@ -1,16 +1,20 @@
 #include <Arduino.h>
 #include <ESPmDNS.h>
+#include <LittleFS.h>
 #include <P1Config.h>
 #include <P1DSMR.h>
 #include <P1Mqtt.h>
 #include <P1Publish.h>
+#include <P1Syslog.h>
 #include <WiFi.h>
 #include <esp_mac.h>
+#include <esp_system.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <new>
 #include <span>
 #include <string_view>
@@ -29,6 +33,16 @@ static p1pub::Builder g_builder;
 static p1mqtt::Mqtt g_mqtt;
 static p1cfg::NvsBackend g_nvs;
 static p1cfg::Store g_cfg{g_nvs};
+static p1log::LittleFsStore g_fs;
+static bool g_syslog_publish(std::string_view topic, std::string_view payload, void* /*ctx*/)
+{
+    return g_mqtt.publish(topic, payload, false);
+}
+static void g_syslog_serial(std::string_view line, void* /*ctx*/)
+{
+    Serial.println(line.data());
+}
+static p1log::Logger g_log{g_fs, &g_syslog_publish, nullptr, &g_syslog_serial, nullptr};
 
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
@@ -42,6 +56,8 @@ static bool g_mdns_started = false;
 static bool g_mqtt_started = false;
 static bool g_ssid_empty_logged = false;
 static bool g_host_empty_logged = false;
+static bool g_ntp_started = false;
+static bool g_mqtt_was_connected = false;
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
@@ -50,6 +66,8 @@ static char g_resolved_host[p1cfg::kHostMax]{};
 static std::uint32_t g_last_diag_ms = 0;
 static std::uint64_t g_disc_mask = 0;
 static bool g_disc_have = false;
+static char g_fw_reset_reason[p1cfg::kLastResetMax]{};
+static const char* g_hw_reset_reason = "NO_MEAN";
 static char g_json[3072];
 static char g_in_topic[p1mqtt::kTopicBuf];
 static char g_in_payload[p1mqtt::InboundAssembler::kMax + 1];
@@ -108,7 +126,7 @@ static void start_wifi()
 {
     if (g_cfg.values().wifi_ssid[0] == '\0') {
         if (!g_ssid_empty_logged) {
-            Serial.println("WIFI_SSID empty; not connecting");
+            g_log.log(p1log::Level::Warn, "WIFI_SSID empty; not connecting");
             g_ssid_empty_logged = true;
         }
         return;
@@ -124,7 +142,10 @@ static void start_wifi()
     WiFi.setAutoReconnect(true);
     WiFi.begin(g_cfg.values().wifi_ssid, g_cfg.values().wifi_pass);
     g_wifi_started = true;
-    Serial.printf("WiFi begin ssid=%s hostname=%s\n", g_cfg.values().wifi_ssid, g_device_id);
+    char msg[96];
+    std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", g_cfg.values().wifi_ssid,
+                  g_device_id);
+    g_log.log(p1log::Level::Info, msg);
 }
 
 static void ensure_mdns()
@@ -134,7 +155,9 @@ static void ensure_mdns()
     }
     if (MDNS.begin(g_device_id)) {
         g_mdns_started = true;
-        Serial.printf("mDNS %s.local\n", g_device_id);
+        char msg[48];
+        std::snprintf(msg, sizeof(msg), "mDNS %s.local", g_device_id);
+        g_log.log(p1log::Level::Info, msg);
     }
 }
 
@@ -170,7 +193,7 @@ static void try_start_mqtt()
     const char* host = g_cfg.values().mqtt_host;
     if (host[0] == '\0') {
         if (!g_host_empty_logged) {
-            Serial.println("MQTT_HOST empty; not connecting");
+            g_log.log(p1log::Level::Warn, "MQTT_HOST empty; not connecting");
             g_host_empty_logged = true;
         }
         return;
@@ -287,13 +310,14 @@ static void publish_config_snapshot()
 static void publish_one_diag(const char* name, const char* friendly, const char* value_json)
 {
     char topic[p1mqtt::kTopicBuf];
-    char payload[192];
+    char payload[256];
     if (g_device_id[0] == '\0' ||
         p1mqtt::sys_topic(g_device_id, name, topic, sizeof(topic)) == 0) {
         return;
     }
-    if (p1mqtt::diag_payload(friendly, value_json, g_device_id, name, payload, sizeof(payload)) ==
-        0) {
+    const std::uint64_t ts = p1log::time_valid() ? p1log::unix_now() : 0;
+    if (p1mqtt::diag_payload(friendly, value_json, g_device_id, name, payload, sizeof(payload),
+                             ts) == 0) {
         return;
     }
     g_mqtt.publish(topic, payload, true);
@@ -302,7 +326,7 @@ static void publish_one_diag(const char* name, const char* friendly, const char*
 static void publish_diagnostics()
 {
     char num[24];
-    char quoted[32];
+    char quoted[96];
 
     std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getFreeHeap()));
     publish_one_diag("free_heap_size", "Free heap size", num);
@@ -323,7 +347,31 @@ static void publish_diagnostics()
     std::snprintf(num, sizeof(num), "%ld", static_cast<long>(WiFi.RSSI()));
     publish_one_diag("rssi", "RSSI", num);
 
+    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(g_cfg.values().reboots));
+    publish_one_diag("reboots", "Reboots", num);
+
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_hw_reset_reason);
+    publish_one_diag("last_reset_reason_hw", "Last reset reason (hardware)", quoted);
+
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_fw_reset_reason);
+    publish_one_diag("last_reset_reason_fw", "Last reset reason (firmware)", quoted);
+
     publish_one_diag("reboot", "Reboot", "\"off\"");
+}
+
+static void request_reboot(const char* reason)
+{
+    if (reason != nullptr) {
+        std::snprintf(g_cfg.values().last_reset, sizeof(g_cfg.values().last_reset), "%s", reason);
+    } else {
+        g_cfg.values().last_reset[0] = '\0';
+    }
+    g_cfg.save();
+    char msg[96];
+    std::snprintf(msg, sizeof(msg), "Reboot requested: %s", reason != nullptr ? reason : "");
+    g_log.log(p1log::Level::Info, msg);
+    g_log.flush_repeat();
+    esp_restart();
 }
 
 static bool publish_retained(std::string_view topic, std::string_view payload)
@@ -334,19 +382,17 @@ static bool publish_retained(std::string_view topic, std::string_view payload)
 static bool publish_discovery_buf(std::string_view topic, const char* buf, std::size_t n)
 {
     if (n == 0) {
-        Serial.printf("HA discovery overflow topic=%.*s cap=%u mqtt_out=%u\n",
-                      static_cast<int>(topic.size()), topic.data(),
-                      static_cast<unsigned>(p1pub::kDiscoveryCap),
-                      static_cast<unsigned>(p1mqtt::kMqttOutSize));
+        g_log.log(p1log::Level::Error, "HA discovery overflow");
         return false;
     }
     if (!publish_retained(topic, std::string_view(buf, n))) {
-        Serial.printf("HA discovery publish failed %.*s\n", static_cast<int>(topic.size()),
-                      topic.data());
+        g_log.log(p1log::Level::Error, "HA discovery publish failed");
         return false;
     }
-    Serial.printf("HA discovery %.*s n=%u\n", static_cast<int>(topic.size()), topic.data(),
-                  static_cast<unsigned>(n));
+    char msg[96];
+    std::snprintf(msg, sizeof(msg), "HA discovery %.*s n=%u", static_cast<int>(topic.size()),
+                  topic.data(), static_cast<unsigned>(n));
+    g_log.log(p1log::Level::Info, msg);
     return true;
 }
 
@@ -357,7 +403,7 @@ static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_ma
     }
     char* buf = new (std::nothrow) char[p1pub::kDiscoveryCap];
     if (buf == nullptr) {
-        Serial.println("HA discovery alloc failed");
+        g_log.log(p1log::Level::Error, "HA discovery alloc failed");
         return false;
     }
 
@@ -402,20 +448,20 @@ static void run_ha_migration()
     char legacy[p1mqtt::kDeviceIdCap];
     p1mqtt::legacy_device_id(g_mac, legacy, sizeof(legacy));
 
-    Serial.println("HA migrate step 1");
+    g_log.log(p1log::Level::Info, "HA migrate step 1");
     p1pub::for_each_legacy_discovery_topic(g_cfg, g_device_id, legacy, &for_legacy_pub,
                                            const_cast<char*>(p1pub::kMigrateDiscovery));
 
-    Serial.println("HA migrate step 2");
+    g_log.log(p1log::Level::Info, "HA migrate step 2");
     if (!publish_ha_devices(g_disc_mask, 0)) {
-        Serial.println("HA migrate step 2 failed; not clearing old topics");
+        g_log.log(p1log::Level::Error, "HA migrate step 2 failed; not clearing old topics");
         return;
     }
 
-    Serial.println("HA migrate step 3");
+    g_log.log(p1log::Level::Info, "HA migrate step 3");
     p1pub::for_each_legacy_discovery_topic(g_cfg, g_device_id, legacy, &for_legacy_pub, nullptr);
     g_cfg.set_ha_migrated();
-    Serial.println("HA migrate done");
+    g_log.log(p1log::Level::Info, "HA migrate done");
 }
 
 static void sync_ha_identity(bool republish);
@@ -451,7 +497,9 @@ static void ha_on_field_set(std::uint64_t next)
 static void ha_clear_topic(std::string_view topic, void* /*ctx*/)
 {
     g_mqtt.publish(topic, std::string_view{}, true);
-    Serial.printf("HA clear %.*s\n", static_cast<int>(topic.size()), topic.data());
+    char msg[96];
+    std::snprintf(msg, sizeof(msg), "HA clear %.*s", static_cast<int>(topic.size()), topic.data());
+    g_log.log(p1log::Level::Info, msg);
 }
 
 static void sync_ha_identity(bool republish)
@@ -489,10 +537,19 @@ static void restart_mqtt()
 
 static void on_just_connected()
 {
+    g_log.set_mqtt_ready(true);
+    const std::size_t replayed = g_log.replay_undelivered();
+    if (replayed > 0) {
+        char msg[64];
+        std::snprintf(msg, sizeof(msg), "Syslog replayed %u lines",
+                      static_cast<unsigned>(replayed));
+        g_log.log(p1log::Level::Info, msg);
+    }
     subscribe_inbound();
     publish_online();
     publish_reboot_state("off");
     publish_config_snapshot();
+    g_log.log(p1log::Level::Info, "MQTT connected");
     if (g_cfg.values().ha_en && g_disc_have) {
         if (!g_cfg.ha_migrated()) {
             run_ha_migration();
@@ -519,8 +576,7 @@ static void handle_inbound()
         }
         g_cfg.save();
         publish_reboot_state("on");
-        Serial.println("MQTT reboot");
-        esp_restart();
+        request_reboot("Reboot requested by MQTT");
     }
 
     if (kind == p1mqtt::Inbound::Config) {
@@ -533,12 +589,14 @@ static void handle_inbound()
         std::snprintf(old_dev, sizeof(old_dev), "%s", g_cfg.values().ha_device);
         const p1cfg::JsonStatus st = g_cfg.apply_json(g_in_payload);
         if (st != p1cfg::JsonStatus::Ok) {
-            Serial.printf("MQTT config rejected %s\n", json_status_name(st));
+            char msg[64];
+            std::snprintf(msg, sizeof(msg), "MQTT config rejected %s", json_status_name(st));
+            g_log.log(p1log::Level::Warn, msg);
             return;
         }
         g_cfg.save();
         publish_config_snapshot();
-        Serial.println("MQTT config applied");
+        g_log.log(p1log::Level::Info, "MQTT config applied");
         if (std::strcmp(old_pfix, g_cfg.values().mqtt_pfix) != 0) {
             restart_mqtt();
             return;
@@ -558,7 +616,7 @@ static void handle_inbound()
         if (std::strcmp(g_in_payload, "online") != 0) {
             return;
         }
-        Serial.println("HA status online");
+        g_log.log(p1log::Level::Info, "HA status online");
         if (g_disc_have) {
             publish_ha_devices(g_disc_mask, 0);
         }
@@ -590,8 +648,10 @@ static void on_telegram(const p1dsmr::Data& data)
         ++n;
     });
     g_last_pub_ms = millis();
-    Serial.printf("P n=%u heap=%u fails=%u\n", n,
+    char msg[64];
+    std::snprintf(msg, sizeof(msg), "P n=%u heap=%u fails=%u", n,
                   static_cast<unsigned>(ESP.getFreeHeap()), g_mqtt.publish_fails());
+    g_log.log(p1log::Level::Debug, msg);
 }
 
 static bool parse_u32(const char* s, std::uint32_t& v)
@@ -745,6 +805,7 @@ static void handle_line(char* line)
     }
     if (std::strcmp(line, "save") == 0) {
         g_cfg.save();
+        g_log.log(p1log::Level::Info, "Config saved");
         Serial.println("saved");
         return;
     }
@@ -808,7 +869,82 @@ static void handle_line(char* line)
         }
         return;
     }
-    Serial.println("commands: set <KEY> <value> | get | save | status | field <id> on|off");
+    if (std::memcmp(line, "syslog", 6) == 0) {
+        const char* rest = line + 6;
+        while (*rest == ' ') {
+            ++rest;
+        }
+        if (*rest == '\0' || std::strcmp(rest, "dump") == 0) {
+            const std::size_t n = g_fs.size(p1log::kActivePath);
+            Serial.printf("--- %s %u bytes ---\n", p1log::kActivePath, static_cast<unsigned>(n));
+            char buf[128];
+            std::size_t off = 0;
+            while (off < n) {
+                const std::size_t got = g_fs.read(p1log::kActivePath, off, buf, sizeof(buf) - 1);
+                if (got == 0) {
+                    break;
+                }
+                buf[got] = '\0';
+                // Strip delivered flags for human dump.
+                for (std::size_t i = 0; i < got; ++i) {
+                    if (buf[i] == p1log::kFlagSep) {
+                        // skip sep + flag
+                        if (i + 1 < got) {
+                            ++i;
+                        }
+                        continue;
+                    }
+                    Serial.write(buf[i]);
+                }
+                off += got;
+            }
+            Serial.println("--- end ---");
+            return;
+        }
+        if (std::strcmp(rest, "prev") == 0) {
+            const std::size_t n = g_fs.size(p1log::kPrevPath);
+            Serial.printf("--- %s %u bytes ---\n", p1log::kPrevPath, static_cast<unsigned>(n));
+            char buf[128];
+            std::size_t off = 0;
+            while (off < n) {
+                const std::size_t got = g_fs.read(p1log::kPrevPath, off, buf, sizeof(buf) - 1);
+                if (got == 0) {
+                    break;
+                }
+                buf[got] = '\0';
+                for (std::size_t i = 0; i < got; ++i) {
+                    if (buf[i] == p1log::kFlagSep) {
+                        if (i + 1 < got) {
+                            ++i;
+                        }
+                        continue;
+                    }
+                    Serial.write(buf[i]);
+                }
+                off += got;
+            }
+            Serial.println("--- end ---");
+            return;
+        }
+        if (std::strcmp(rest, "fill") == 0) {
+            // Force rotation for hardware check 7. ~80 B/line → ~450 lines past 32 KB.
+            for (unsigned i = 0; i < 500; ++i) {
+                char msg[64];
+                std::snprintf(msg, sizeof(msg), "fill line %u for rotation test", i);
+                g_log.log(p1log::Level::Info, msg);
+            }
+            g_log.flush_repeat();
+            Serial.printf("syslog fill done rotations=%u active=%u prev=%u\n",
+                          static_cast<unsigned>(g_log.rotations()),
+                          static_cast<unsigned>(g_fs.size(p1log::kActivePath)),
+                          static_cast<unsigned>(g_fs.size(p1log::kPrevPath)));
+            return;
+        }
+        Serial.println("usage: syslog | syslog dump | syslog prev | syslog fill");
+        return;
+    }
+    Serial.println(
+        "commands: set <KEY> <value> | get | save | status | field <id> on|off | syslog");
 }
 
 static void poll_serial()
@@ -872,24 +1008,53 @@ void setup()
     read_mac(mac);
     std::memcpy(g_mac, mac, 6);
     if (!p1mqtt::mac_usable(mac)) {
-        Serial.println("MAC read failed (all zeros); refusing P1000000 as device id");
         g_device_id[0] = '\0';
     } else {
         p1mqtt::device_id(mac, g_device_id, sizeof(g_device_id));
     }
+    g_log.set_device_id(g_device_id);
 
-    Serial.printf("P1 UART rx=%u id=%s\n", static_cast<unsigned>(rx), g_device_id);
+    g_hw_reset_reason = p1log::hw_reset_reason_string(static_cast<int>(esp_reset_reason()));
+
+    bool formatted = false;
+    if (!g_fs.begin(&formatted)) {
+        Serial.println("ERROR filesystem mount failed");
+    } else {
+        if (formatted) {
+            g_log.log(p1log::Level::Error, "Filesystem formatted on mount failure");
+        }
+        if (!g_fs.self_test()) {
+            g_log.log(p1log::Level::Error, "Filesystem self-test failed");
+        } else {
+            g_log.log(p1log::Level::Info, "Filesystem mounted");
+        }
+    }
 
     g_cfg.load();
+    // Capture last deliberate reason for this boot, then clear NVS so a later
+    // unexpected restart shows empty.
+    std::snprintf(g_fw_reset_reason, sizeof(g_fw_reset_reason), "%s", g_cfg.values().last_reset);
+    g_cfg.values().last_reset[0] = '\0';
+    g_cfg.values().reboots += 1;
+    g_cfg.save();
+
     if (p1mqtt::mac_usable(mac) &&
         p1mqtt::migrate_mqtt_id(g_cfg.values().mqtt_id, sizeof(g_cfg.values().mqtt_id), mac)) {
         g_cfg.save();
-        Serial.printf("MQTT_ID migrated to %s\n", g_cfg.values().mqtt_id);
+        char msg[48];
+        std::snprintf(msg, sizeof(msg), "MQTT_ID migrated to %s", g_cfg.values().mqtt_id);
+        g_log.log(p1log::Level::Info, msg);
     }
 
-    Serial.printf("P1Config ver=%u mqtt_en=%d host=%s\n",
-                  static_cast<unsigned>(g_cfg.values().cfg_ver),
-                  static_cast<int>(g_cfg.values().mqtt_en), g_cfg.values().mqtt_host);
+    char boot[96];
+    std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u", kFwVer,
+                  g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
+                  static_cast<unsigned>(rx));
+    g_log.log(p1log::Level::Info, boot);
+    char reasons[128];
+    std::snprintf(reasons, sizeof(reasons), "Reset hw=%s fw=%s", g_hw_reset_reason,
+                  g_fw_reset_reason[0] != '\0' ? g_fw_reset_reason : "(none)");
+    g_log.log(p1log::Level::Info, reasons);
 
     WiFi.onEvent(on_wifi_event);
     start_wifi();
@@ -903,18 +1068,36 @@ void loop()
         start_wifi();
     }
     if (WiFi.status() == WL_CONNECTED) {
-        g_got_ip = true;
+        if (!g_got_ip) {
+            g_got_ip = true;
+        }
+        if (!g_ntp_started) {
+            configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+            g_ntp_started = true;
+            g_log.log(p1log::Level::Info, "NTP started");
+            const IPAddress ip = WiFi.localIP();
+            char msg[64];
+            std::snprintf(msg, sizeof(msg), "WiFi connected %u.%u.%u.%u", ip[0], ip[1], ip[2],
+                          ip[3]);
+            g_log.log(p1log::Level::Info, msg);
+        }
         ensure_mdns();
         try_start_mqtt();
     }
+
+    const bool mqtt_up = g_mqtt.state() == p1mqtt::Mqtt::State::Connected;
+    if (g_mqtt_was_connected && !mqtt_up) {
+        g_log.set_mqtt_ready(false);
+        g_log.log(p1log::Level::Error, "MQTT connection lost");
+    }
+    g_mqtt_was_connected = mqtt_up;
 
     if (g_mqtt.take_just_connected()) {
         on_just_connected();
     }
     handle_inbound();
 
-    if (g_mqtt.state() == p1mqtt::Mqtt::State::Connected &&
-        p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, millis(), g_last_diag_ms)) {
+    if (mqtt_up && p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, millis(), g_last_diag_ms)) {
         publish_diagnostics();
         g_last_diag_ms = millis();
     }
@@ -927,16 +1110,20 @@ void loop()
             g_reader.feed(std::span<const std::uint8_t>(buf, n), on_telegram);
         g_ok += static_cast<unsigned>(stats.ok);
         g_rejected += static_cast<unsigned>(stats.rejected);
+        if (stats.rejected > 0) {
+            g_log.log(p1log::Level::Warn, "Telegram rejected (CRC)");
+        }
 
         const unsigned now = g_ok + g_rejected;
         for (unsigned k = prev + 1; k <= now; ++k) {
             if (k % 10 == 0) {
-                Serial.printf("S ok=%u rejected=%u heap=%u ovf=%u full=%u frm=%u\n",
-                              g_ok, g_rejected,
+                char msg[96];
+                std::snprintf(msg, sizeof(msg),
+                              "S ok=%u rejected=%u heap=%u ovf=%u full=%u frm=%u", g_ok, g_rejected,
                               static_cast<unsigned>(ESP.getFreeHeap()),
-                              static_cast<unsigned>(g_ovf),
-                              static_cast<unsigned>(g_full),
+                              static_cast<unsigned>(g_ovf), static_cast<unsigned>(g_full),
                               static_cast<unsigned>(g_frm));
+                g_log.log(p1log::Level::Debug, msg);
             }
         }
     }

@@ -125,6 +125,10 @@ constexpr LiveDiag kLiveDiag[] = {
     {"ip", "IP", false},
     {"firmware", "Firmware", false},
     {"rssi", "RSSI", false},
+    {"reboots", "Reboots", false},
+    {"last_reset_reason_hw", "Last reset reason (hardware)", false},
+    {"last_reset_reason_fw", "Last reset reason (firmware)", false},
+    {"syslog", "System log", false},
     {"reboot", "Reboot", true},
 };
 

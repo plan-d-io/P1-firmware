@@ -35,7 +35,9 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
-    TEST_ASSERT_EQUAL_UINT(17, s.setting_count());
+    TEST_ASSERT_EQUAL_UINT(19, s.setting_count());
+    TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
+    TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
 
     mem.begin(false);
     mem.put_u32("MQTT_PORT", 8883);
@@ -417,6 +419,24 @@ void test_wifi_settings_migrate()
                       static_cast<int>(s.find_setting("WIFI_PASS")->flags));
 }
 
+void test_boot_facts_migrate()
+{
+    MemoryBackend old;
+    old.begin(false);
+    old.put_u32("CFG_VER", 3);
+    old.put_u32("MQTT_PORT", 1883);
+    old.end();
+
+    Store s(old);
+    s.load();
+    TEST_ASSERT_TRUE(s.migrated());
+    TEST_ASSERT_EQUAL_UINT32(4, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
+    TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
+    TEST_ASSERT_NOT_NULL(s.find_setting("REBOOTS"));
+    TEST_ASSERT_NOT_NULL(s.find_setting("LAST_RESET"));
+}
+
 void test_water_equipment_id_not_catalogued()
 {
     TEST_ASSERT_NULL(p1cfg::find_field("0-2:96.1.1"));
@@ -458,6 +478,7 @@ int main()
     RUN_TEST(test_to_json_overflow_is_zero);
     RUN_TEST(test_upl_throttle_migrates);
     RUN_TEST(test_wifi_settings_migrate);
+    RUN_TEST(test_boot_facts_migrate);
     RUN_TEST(test_water_equipment_id_not_catalogued);
     RUN_TEST(test_fixture_region_tags_unchanged);
     return UNITY_END();
