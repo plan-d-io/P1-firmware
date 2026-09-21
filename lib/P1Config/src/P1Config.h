@@ -277,6 +277,13 @@ public:
     void load();
     void save();
 
+    // Clear WiFi credentials and disable fixed IP; leave static IP fields and
+    // every other setting alone.
+    void reset_wifi();
+    // Every catalogue setting back to its table default, including clearing
+    // HA_MIG / HA_SLUG / HA_PFIX which are not settings.
+    void factory_reset();
+
     bool migrated() const { return migrated_; }
 
     Settings& values() { return v_; }

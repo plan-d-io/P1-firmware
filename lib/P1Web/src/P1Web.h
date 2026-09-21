@@ -40,6 +40,8 @@ enum class Route : std::uint8_t {
     ApiStatus,
     ApiData,
     Reboot,
+    ResetWifi,
+    ResetFactory,
     NotFound,
 };
 
@@ -123,6 +125,8 @@ struct Actions {
     char wifi_ssid[kSsidMax]{};
     char wifi_pass[kPassMax]{};
     bool reboot = false;
+    bool reset_wifi = false;
+    bool reset_factory = false;
     bool republish_config = false;
 };
 

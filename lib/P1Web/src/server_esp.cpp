@@ -132,6 +132,16 @@ esp_err_t dispatch(httpd_req_t* req)
         httpd_resp_set_type(req, "text/plain");
         return httpd_resp_send(req, "Ok", 2);
     }
+    case Route::ResetWifi: {
+        g_server->actions()->reset_wifi = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
+    case Route::ResetFactory: {
+        g_server->actions()->reset_factory = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
     case Route::ConfigGet: {
         p1cfg::Store* store = g_server->store_ptr();
         if (store == nullptr) {
@@ -326,6 +336,8 @@ bool Server::begin(Mode mode)
     register_one(handle, "/api/status", HTTP_GET);
     register_one(handle, "/api/data", HTTP_GET);
     register_one(handle, "/reboot", HTTP_POST);
+    register_one(handle, "/reset/wifi", HTTP_POST);
+    register_one(handle, "/reset/factory", HTTP_POST);
     httpd_register_err_handler(handle, HTTPD_404_NOT_FOUND, on_404);
 
     running_ = true;

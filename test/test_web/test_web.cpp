@@ -45,6 +45,15 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reboot"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/reboot"));
+    TEST_ASSERT_EQUAL(p1web::Route::ResetWifi,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reset/wifi"));
+    TEST_ASSERT_EQUAL(p1web::Route::ResetFactory,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reset/factory"));
+    TEST_ASSERT_EQUAL(p1web::Route::NotFound,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/reset/factory"));
+    TEST_ASSERT_EQUAL(p1web::Route::Rebooting,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get,
+                                     "/rebooting?reset=wifi"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/nope"));
     TEST_ASSERT_EQUAL(p1web::Route::Style,

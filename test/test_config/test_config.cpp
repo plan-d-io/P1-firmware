@@ -716,6 +716,93 @@ void test_apply_json_reports_bad_key()
     TEST_ASSERT_EQUAL_STRING("", bad);
 }
 
+void test_reset_wifi_clears_creds_keeps_rest()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_EQUAL(JsonStatus::Ok,
+                      s.apply_json(R"({
+      "WIFI_SSID":"DeskNet","WIFI_PASS":"secretwifi",
+      "FIP_EN":true,"FIPADDR":"192.0.2.30","FSUBN":"255.255.255.0",
+      "FDEFGTW":"192.0.2.1","FDNS1":"1.1.1.1","FDNS2":"8.8.8.8",
+      "MQTT_EN":true,"MQTT_HOST":"192.0.2.20","MQTT_PORT":1883,
+      "MQTT_PFIX":"data/devices/example_meter/",
+      "HA_EN":true,"HA_DEVICE":"Example meter","UPL_THROTTLE":15
+    })"));
+    s.save();
+
+    s.reset_wifi();
+
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
+    TEST_ASSERT_FALSE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.30", s.values().fipaddr);
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", s.values().fsubn);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.1", s.values().fdefgtw);
+    TEST_ASSERT_EQUAL_STRING("1.1.1.1", s.values().fdns1);
+    TEST_ASSERT_EQUAL_STRING("8.8.8.8", s.values().fdns2);
+    TEST_ASSERT_TRUE(s.values().mqtt_en);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.20", s.values().mqtt_host);
+    TEST_ASSERT_EQUAL_UINT32(1883, s.values().mqtt_port);
+    TEST_ASSERT_EQUAL_STRING("data/devices/example_meter/", s.values().mqtt_pfix);
+    TEST_ASSERT_TRUE(s.values().ha_en);
+    TEST_ASSERT_EQUAL_STRING("Example meter", s.values().ha_device);
+    TEST_ASSERT_EQUAL_UINT32(15, s.values().upl_throttle);
+}
+
+void test_factory_reset_defaults_and_clears_ha_keys()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_EQUAL(JsonStatus::Ok,
+                      s.apply_json(R"({
+      "WIFI_SSID":"DeskNet","WIFI_PASS":"secretwifi",
+      "MQTT_EN":true,"MQTT_HOST":"broker.example","MQTT_PORT":8883,
+      "MQTT_PFIX":"data/devices/example_meter/",
+      "HA_EN":true,"HA_DEVICE":"Example meter","UPL_THROTTLE":15,
+      "EMAIL":"desk@example.com","PUSH_FULL":true
+    })"));
+    s.set_field_on("1-0:1.8.1", false);
+    s.save();
+    s.set_ha_migrated();
+    s.set_published_ha_identity("example_meter", "data/devices/example_meter/");
+    TEST_ASSERT_TRUE(s.ha_migrated());
+    TEST_ASSERT_TRUE(s.has_published_ha_identity());
+    TEST_ASSERT_TRUE(mem.has("HA_MIG"));
+    TEST_ASSERT_TRUE(mem.has("HA_SLUG"));
+    TEST_ASSERT_TRUE(mem.has("HA_PFIX"));
+
+    s.factory_reset();
+
+    TEST_ASSERT_FALSE(s.values().mqtt_en);
+    TEST_ASSERT_EQUAL_UINT32(1883, s.values().mqtt_port);
+    TEST_ASSERT_EQUAL_STRING("", s.values().mqtt_host);
+    TEST_ASSERT_EQUAL_STRING("data/devices/utility_meter/", s.values().mqtt_pfix);
+    TEST_ASSERT_FALSE(s.values().ha_en);
+    TEST_ASSERT_EQUAL_STRING("Utility meter", s.values().ha_device);
+    TEST_ASSERT_EQUAL_UINT32(10, s.values().upl_throttle);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
+    TEST_ASSERT_EQUAL_STRING("", s.values().email);
+    TEST_ASSERT_FALSE(s.values().push_full);
+    TEST_ASSERT_TRUE(s.values().upd_auto);
+    TEST_ASSERT_TRUE(s.values().upd_autochk);
+    TEST_ASSERT_EQUAL_STRING("auto", s.values().region);
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+    TEST_ASSERT_EQUAL_INT32(3, s.values().frmt_pyld);
+    // Overrides cleared → catalogue default_on.
+    TEST_ASSERT_TRUE(s.field_on("1-0:1.8.1"));
+    TEST_ASSERT_FALSE(s.ha_migrated());
+    TEST_ASSERT_FALSE(s.has_published_ha_identity());
+    TEST_ASSERT_EQUAL_STRING("", s.published_ha_slug());
+    TEST_ASSERT_EQUAL_STRING("", s.published_mqtt_pfix());
+    TEST_ASSERT_FALSE(mem.has("HA_MIG"));
+    TEST_ASSERT_FALSE(mem.has("HA_SLUG"));
+    TEST_ASSERT_FALSE(mem.has("HA_PFIX"));
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -750,5 +837,7 @@ int main()
     RUN_TEST(test_to_json_fits_max_strings);
     RUN_TEST(test_config_api_apply_semantics);
     RUN_TEST(test_apply_json_reports_bad_key);
+    RUN_TEST(test_reset_wifi_clears_creds_keeps_rest);
+    RUN_TEST(test_factory_reset_defaults_and_clears_ha_keys);
     return UNITY_END();
 }

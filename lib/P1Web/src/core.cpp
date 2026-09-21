@@ -57,6 +57,12 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/reboot" && method == Method::Post) {
         return Route::Reboot;
     }
+    if (uri == "/reset/wifi" && method == Method::Post) {
+        return Route::ResetWifi;
+    }
+    if (uri == "/reset/factory" && method == Method::Post) {
+        return Route::ResetFactory;
+    }
     if (uri == "/rebooting.html" || uri == "/rebooting") {
         return Route::Rebooting;
     }

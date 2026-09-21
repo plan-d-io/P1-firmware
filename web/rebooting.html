@@ -8,12 +8,37 @@
 </head>
 <body>
 <div class="container">
-  <h2>Restarting</h2>
+  <h2 id="heading">Restarting</h2>
   <div class="loader" aria-hidden="true"></div>
-  <p class="lede" style="text-align:center;margin-top:1.5rem">The dongle is restarting. You can close this window.</p>
+  <p class="lede" id="lede" style="text-align:center;margin-top:1.5rem">The dongle is restarting. You can close this window.</p>
 </div>
 <script>
-fetch("/reboot", {method: "POST"}).catch(function () {});
+(function () {
+  var q = new URLSearchParams(location.search).get("reset");
+  var heading = document.getElementById("heading");
+  var lede = document.getElementById("lede");
+  var endpoint = null;
+  if (q === null || q === "") {
+    heading.textContent = "Restarting";
+    endpoint = "/reboot";
+  } else if (q === "wifi") {
+    heading.textContent = "WiFi settings cleared";
+    lede.textContent =
+      "The dongle is restarting and will reopen its setup network, p1dongle. You can close this window.";
+    endpoint = "/reset/wifi";
+  } else if (q === "factory") {
+    heading.textContent = "Factory reset";
+    lede.textContent =
+      "The dongle is restarting and will reopen its setup network, p1dongle. You can close this window.";
+    endpoint = "/reset/factory";
+  } else {
+    heading.textContent = "Unknown request";
+    lede.textContent = "No action was taken. You can close this window.";
+  }
+  if (endpoint) {
+    fetch(endpoint, {method: "POST"}).catch(function () {});
+  }
+})();
 </script>
 </body>
 </html>

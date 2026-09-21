@@ -591,6 +591,29 @@ void Store::save()
     backend_.end();
 }
 
+void Store::reset_wifi()
+{
+    v_.wifi_ssid[0] = '\0';
+    v_.wifi_pass[0] = '\0';
+    v_.fip_en = false;
+    save();
+}
+
+void Store::factory_reset()
+{
+    apply_defaults();
+    save();
+    ha_mig_ = false;
+    ha_pub_have_ = false;
+    ha_pub_slug_[0] = '\0';
+    ha_pub_pfix_[0] = '\0';
+    backend_.begin(false);
+    backend_.remove("HA_MIG");
+    backend_.remove("HA_SLUG");
+    backend_.remove("HA_PFIX");
+    backend_.end();
+}
+
 void Store::load_overrides()
 {
     std::memset(field_over_, 0, sizeof(field_over_));

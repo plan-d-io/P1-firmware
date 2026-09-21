@@ -47,6 +47,10 @@
     <button type="submit" class="submit">Submit</button>
   </form>
   <button type="button" class="reboot" id="rebootBtn">Reboot</button>
+  <div class="danger-row">
+    <button type="button" class="reboot reset-wifi" id="resetWifiBtn">Reset WiFi</button>
+    <button type="button" class="reboot" id="factoryResetBtn">Factory reset</button>
+  </div>
   <footer><a href="https://www.plan-d.io" target="_blank" rel="noopener">Digital meter dongle by plan-d.io</a></footer>
 </div>
 <script>
@@ -380,6 +384,18 @@
 
   document.getElementById("rebootBtn").addEventListener("click", function () {
     window.location.href = "/rebooting";
+  });
+  document.getElementById("resetWifiBtn").addEventListener("click", function () {
+    if (window.confirm(
+          "Clear the WiFi network and password? The dongle will restart and reopen its 'p1dongle' setup network. All other settings are kept.")) {
+      window.location.href = "/rebooting?reset=wifi";
+    }
+  });
+  document.getElementById("factoryResetBtn").addEventListener("click", function () {
+    if (window.confirm(
+          "Reset every setting to factory defaults? WiFi, MQTT, Home Assistant and everything else will be erased. The dongle will restart and reopen its 'p1dongle' setup network. This cannot be undone.")) {
+      window.location.href = "/rebooting?reset=factory";
+    }
   });
 
   renderForm();

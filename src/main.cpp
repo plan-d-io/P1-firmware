@@ -28,9 +28,11 @@
 // Pins from archive/P1-dongle/P1-dongle.ino:
 //   HWSERIAL.begin(115200, SERIAL_8N1, 21, 22);
 //   TRIGGER 25, HIGH for continuous telegrams.
+// Face button: M5Atom.h Button Btn = Button(39, true, 10) — GPIO 39, active low.
 static constexpr int kP1Rx = 21;
 static constexpr int kP1Tx = 22;
 static constexpr int kDataRequest = 25;
+static constexpr int kBtn = 39;
 // Rebuild generation. Fielded firmware was 2.23; keep this above that line.
 static constexpr char kFwVer[] = "3.00";
 
@@ -484,6 +486,20 @@ static void handle_web_actions()
         act->republish_config = false;
         publish_config_snapshot();
     }
+    if (act->reset_wifi) {
+        act->reset_wifi = false;
+        g_cfg.reset_wifi();
+        g_log.log(p1log::Level::Info, "WiFi credentials reset by user");
+        request_reboot("Rebooting for WiFi reset");
+        return;
+    }
+    if (act->reset_factory) {
+        act->reset_factory = false;
+        g_cfg.factory_reset();
+        g_log.log(p1log::Level::Info, "Factory reset by user");
+        request_reboot("Rebooting for factory reset");
+        return;
+    }
     if (act->reboot) {
         act->reboot = false;
         request_reboot("Reboot requested from web UI");
@@ -521,6 +537,44 @@ static void service_provisioning()
     }
 
     handle_web_actions();
+}
+
+// Face button (GPIO 39, active low). Decide on release. Ignore until the pin
+// has been seen high once so a stuck button cannot factory-reset every boot.
+static bool g_btn_seen_up = false;
+static bool g_btn_down = false;
+static std::uint32_t g_btn_down_ms = 0;
+
+static void poll_button()
+{
+    const bool pressed = digitalRead(kBtn) == LOW;
+    if (!g_btn_seen_up) {
+        if (!pressed) {
+            g_btn_seen_up = true;
+        }
+        return;
+    }
+    if (pressed) {
+        if (!g_btn_down) {
+            g_btn_down = true;
+            g_btn_down_ms = millis();
+        }
+        return;
+    }
+    if (!g_btn_down) {
+        return;
+    }
+    const std::uint32_t held = millis() - g_btn_down_ms;
+    g_btn_down = false;
+    if (held >= 5000u) {
+        g_cfg.factory_reset();
+        g_log.log(p1log::Level::Info, "Factory reset by user");
+        request_reboot("Rebooting for factory reset");
+    } else if (held >= 2000u) {
+        g_cfg.reset_wifi();
+        g_log.log(p1log::Level::Info, "WiFi credentials reset by user");
+        request_reboot("Rebooting for WiFi reset");
+    }
 }
 
 static void start_wifi()
@@ -1399,6 +1453,7 @@ void setup()
 
     pinMode(kDataRequest, OUTPUT);
     digitalWrite(kDataRequest, HIGH);
+    pinMode(kBtn, INPUT_PULLUP);
 
     const size_t rx = Serial1.setRxBufferSize(1024);
     Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
@@ -1493,6 +1548,7 @@ void setup()
 void loop()
 {
     poll_serial();
+    poll_button();
     service_provisioning();
     service_gateway_reach_check();
 
