@@ -41,6 +41,16 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/status"));
     TEST_ASSERT_EQUAL(p1web::Route::ApiData,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/data"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiFields,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/fields"));
+    TEST_ASSERT_EQUAL(p1web::Route::FieldsPost,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/fields"));
+    TEST_ASSERT_EQUAL(p1web::Route::Syslog,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/syslog"));
+    TEST_ASSERT_EQUAL(p1web::Route::Syslog0,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/syslog0"));
+    TEST_ASSERT_EQUAL(p1web::Route::LogPage,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/log"));
     TEST_ASSERT_EQUAL(p1web::Route::Reboot,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reboot"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
@@ -83,6 +93,10 @@ void test_gzip_blobs()
     TEST_ASSERT_TRUE(p1web::assets::kRebootingHtmlGzLen > 2);
     TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kRebootingHtmlGz[0]);
     TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kRebootingHtmlGz[1]);
+
+    TEST_ASSERT_TRUE(p1web::assets::kLogHtmlGzLen > 2);
+    TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kLogHtmlGz[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kLogHtmlGz[1]);
 }
 
 void test_status_render()
@@ -158,6 +172,33 @@ void test_api_data_json_max()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"label\":"));
     TEST_ASSERT_NULL(std::strstr(buf, "WIFI_PASS"));
     TEST_ASSERT_NULL(std::strstr(buf, "MQTT_PASS"));
+}
+
+void test_api_fields_json_max()
+{
+    // Worst-case constant: N = kMaxFields, each entry 104 B → 6721.
+    TEST_ASSERT_EQUAL_UINT(6721, p1web::kApiFieldsMax);
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store s(mem);
+    s.load();
+    char buf[p1web::kApiFieldsMax];
+    const std::size_t n = p1web::render_api_fields(s, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
+    TEST_ASSERT_EQUAL('[', buf[0]);
+    TEST_ASSERT_EQUAL(']', buf[n - 1]);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"1-0:1.8.1\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"region\":\""));
+    TEST_ASSERT_NULL(std::strstr(buf, "identification"));
+    // Synthetic fill: every catalogue slot as a max-size entry must fit.
+    std::size_t need = 2;
+    for (std::size_t i = 0; i < p1cfg::kMaxFields; ++i) {
+        if (i > 0) {
+            need += 1;
+        }
+        need += p1web::kApiFieldsEntryMax;
+    }
+    TEST_ASSERT_TRUE(p1web::kApiFieldsMax >= need);
 }
 
 void test_format_config_error()
@@ -261,6 +302,7 @@ int main()
     RUN_TEST(test_status_render);
     RUN_TEST(test_api_status_json);
     RUN_TEST(test_api_data_json_max);
+    RUN_TEST(test_api_fields_json_max);
     RUN_TEST(test_format_config_error);
     RUN_TEST(test_provision_machine);
     RUN_TEST(test_save_form_and_json);

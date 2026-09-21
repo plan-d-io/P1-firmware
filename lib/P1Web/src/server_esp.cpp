@@ -127,6 +127,99 @@ esp_err_t dispatch(httpd_req_t* req)
         free(json);
         return err;
     }
+    case Route::ApiFields: {
+        p1cfg::Store* store = g_server->store_ptr();
+        if (store == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no store");
+            return ESP_FAIL;
+        }
+        char* json = static_cast<char*>(malloc(kApiFieldsMax));
+        if (json == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        const std::size_t n = render_api_fields(*store, json, kApiFieldsMax);
+        if (n == 0) {
+            free(json);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "fields json");
+            return ESP_FAIL;
+        }
+        const esp_err_t err = send_json(req, json, n);
+        free(json);
+        return err;
+    }
+    case Route::FieldsPost: {
+        p1cfg::Store* store = g_server->store_ptr();
+        if (store == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no store");
+            return ESP_FAIL;
+        }
+        if (req->content_len <= 0 ||
+            static_cast<std::size_t>(req->content_len) > kConfigBodyMax) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "TooLarge");
+            return ESP_FAIL;
+        }
+        char* body = static_cast<char*>(malloc(static_cast<std::size_t>(req->content_len) + 1));
+        if (body == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        int got = 0;
+        while (got < req->content_len) {
+            const int r = httpd_req_recv(req, body + got, req->content_len - got);
+            if (r <= 0) {
+                free(body);
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv");
+                return ESP_FAIL;
+            }
+            got += r;
+        }
+        body[got] = '\0';
+        char bad_key[p1cfg::kMaxFieldId + 1]{};
+        const p1cfg::JsonStatus st = store->apply_fields_json(
+            std::string_view(body, static_cast<std::size_t>(got)), bad_key, sizeof(bad_key));
+        free(body);
+        if (st != p1cfg::JsonStatus::Ok) {
+            char err[kConfigErrMax];
+            format_config_error(st, bad_key, err, sizeof(err));
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
+            return ESP_FAIL;
+        }
+        store->save();
+        g_server->actions()->republish_config = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
+    case Route::LogPage:
+        return send_gzip(req, "text/html", assets::kLogHtmlGz, assets::kLogHtmlGzLen);
+    case Route::Syslog:
+    case Route::Syslog0: {
+        p1log::FileStore* fs = g_server->files_ptr();
+        const char* path =
+            (route == Route::Syslog) ? p1log::kActivePath : p1log::kPrevPath;
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        if (fs == nullptr) {
+            return httpd_resp_send(req, "", 0);
+        }
+        const std::size_t total = fs->size(path);
+        char chunk[kSyslogChunk];
+        std::size_t off = 0;
+        while (off < total) {
+            const std::size_t want =
+                (total - off) < sizeof(chunk) ? (total - off) : sizeof(chunk);
+            const std::size_t got = fs->read(path, off, chunk, want);
+            if (got == 0) {
+                break;
+            }
+            if (httpd_resp_send_chunk(req, chunk, static_cast<ssize_t>(got)) != ESP_OK) {
+                httpd_resp_sendstr_chunk(req, nullptr);
+                return ESP_FAIL;
+            }
+            off += got;
+        }
+        return httpd_resp_send_chunk(req, nullptr, 0);
+    }
     case Route::Reboot: {
         g_server->actions()->reboot = true;
         httpd_resp_set_type(req, "text/plain");
@@ -299,6 +392,11 @@ p1cfg::Store* Server::store_ptr() const
     return store_;
 }
 
+p1log::FileStore* Server::files_ptr() const
+{
+    return files_;
+}
+
 bool Server::begin(Mode mode)
 {
     if (running_) {
@@ -306,7 +404,7 @@ bool Server::begin(Mode mode)
         return true;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 24;
+    cfg.max_uri_handlers = 32;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;
     httpd_handle_t handle = nullptr;
@@ -335,6 +433,12 @@ bool Server::begin(Mode mode)
     register_one(handle, "/config", HTTP_POST);
     register_one(handle, "/api/status", HTTP_GET);
     register_one(handle, "/api/data", HTTP_GET);
+    register_one(handle, "/api/fields", HTTP_GET);
+    register_one(handle, "/fields", HTTP_POST);
+    register_one(handle, "/syslog", HTTP_GET);
+    register_one(handle, "/syslog0", HTTP_GET);
+    register_one(handle, "/log", HTTP_GET);
+    register_one(handle, "/log.html", HTTP_GET);
     register_one(handle, "/reboot", HTTP_POST);
     register_one(handle, "/reset/wifi", HTTP_POST);
     register_one(handle, "/reset/factory", HTTP_POST);
@@ -380,6 +484,11 @@ void Server::set_readings(const ReadingsView* readings)
 void Server::set_store(p1cfg::Store* store)
 {
     store_ = store;
+}
+
+void Server::set_files(p1log::FileStore* files)
+{
+    files_ = files;
 }
 
 Actions* Server::actions()

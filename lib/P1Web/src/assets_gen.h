@@ -21,6 +21,10 @@ extern const std::uint8_t kConfigHtmlGz[];
 extern const std::size_t kConfigHtmlGzLen;
 extern const std::size_t kConfigHtmlRawLen;
 
+extern const std::uint8_t kLogHtmlGz[];
+extern const std::size_t kLogHtmlGzLen;
+extern const std::size_t kLogHtmlRawLen;
+
 extern const char kSetupHtmlTpl[];
 extern const char kStatusHtmlTpl[];
 

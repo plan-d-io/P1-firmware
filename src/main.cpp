@@ -1543,6 +1543,7 @@ void setup()
     g_log.log(p1log::Level::Info, reasons);
 
     g_web.set_store(&g_cfg);
+    g_web.set_files(&g_fs);
     WiFi.onEvent(on_wifi_event);
     start_wifi();
 }

@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include <P1Config.h>
+#include <P1Syslog.h>
 
 #include "assets_gen.h"
 
@@ -21,9 +22,19 @@ constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
 constexpr std::size_t kApiStatusMax = 768;
 constexpr std::size_t kApiDataMax = 6144;
+// Worst case: every catalogue slot selectable, id at kMaxFieldId, label at
+// kFieldLabelMax, region "common", on false.
+// Entry: {"id":"<16>","label":"<40>","region":"common","on":false} = 104 B
+// Array: '[' + N*104 + (N-1)*',' + ']' with N = kMaxFields (64) → 6721.
+constexpr std::size_t kFieldLabelMax = 40;
+constexpr std::size_t kApiFieldsEntryMax =
+    7 + p1cfg::kMaxFieldId + 10 + kFieldLabelMax + 12 + 6 + 7 + 5 + 1;
+constexpr std::size_t kApiFieldsMax =
+    2 + p1cfg::kMaxFields * kApiFieldsEntryMax + (p1cfg::kMaxFields - 1);
 constexpr std::size_t kReadingValueMax = 16;
 constexpr std::size_t kReadingUnitMax = 8;
 constexpr std::size_t kConfigErrMax = 48;
+constexpr std::size_t kSyslogChunk = 512;
 
 enum class Mode : std::uint8_t { Ap, Station };
 
@@ -39,6 +50,11 @@ enum class Route : std::uint8_t {
     ConfigPost,
     ApiStatus,
     ApiData,
+    ApiFields,
+    FieldsPost,
+    Syslog,
+    Syslog0,
+    LogPage,
     Reboot,
     ResetWifi,
     ResetFactory,
@@ -137,8 +153,9 @@ std::size_t render_setup_page(const ScanCache& cache, char* out, std::size_t cap
 std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap);
 std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap);
 std::size_t render_api_data(const ReadingsView& r, char* out, std::size_t cap);
+std::size_t render_api_fields(const p1cfg::Store& store, char* out, std::size_t cap);
 
-// "Invalid:MQTT_PORT" style body for POST /config failures.
+// "Invalid:MQTT_PORT" style body for POST /config and POST /fields failures.
 std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char* out,
                                 std::size_t cap);
 
@@ -165,6 +182,7 @@ public:
     void set_status(const StatusView* status);
     void set_readings(const ReadingsView* readings);
     void set_store(p1cfg::Store* store);
+    void set_files(p1log::FileStore* files);
     Actions* actions();
     bool running() const { return running_; }
 
@@ -174,6 +192,7 @@ public:
     const StatusView* status_ptr() const;
     const ReadingsView* readings_ptr() const;
     p1cfg::Store* store_ptr() const;
+    p1log::FileStore* files_ptr() const;
 
 private:
     bool running_ = false;
@@ -183,6 +202,7 @@ private:
     const StatusView* status_ = nullptr;
     const ReadingsView* readings_ = nullptr;
     p1cfg::Store* store_ = nullptr;
+    p1log::FileStore* files_ = nullptr;
     Actions actions_{};
 };
 

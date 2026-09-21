@@ -139,6 +139,7 @@ struct Field {
     const char* ha_class;  // "" if none
     RegionTag region;
     bool default_on;
+    bool selectable;  // appears in the user's field list
     const char* metric;  // nullptr = no mapping; "" = omit the key
     MetricKind kind;
 };
@@ -311,6 +312,10 @@ public:
     // empty on success. Existing one-argument call sites keep working.
     JsonStatus apply_json(std::string_view json, char* bad_key = nullptr,
                           std::size_t bad_key_cap = 0);
+    // Object of field-id → bool. Rejects unknown / non-selectable ids as
+    // UnknownKey and non-bools as WrongType. Restores overrides on failure.
+    JsonStatus apply_fields_json(std::string_view json, char* bad_key = nullptr,
+                                 std::size_t bad_key_cap = 0);
     // 0 means the buffer was too small (or cap == 0). Success is never 0:
     // the object is at least "{}".
     std::size_t to_json(char* out, std::size_t cap) const;

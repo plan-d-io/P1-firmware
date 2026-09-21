@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dongle log</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container log-page">
+  <h2>Dongle log</h2>
+  <p class="lede">Debug lines are not stored. They appear on the serial console only.</p>
+  <div class="log-toolbar">
+    <label>Level
+      <select id="levelFilter">
+        <option value="all">All</option>
+        <option value="info">Info and above</option>
+        <option value="warn">Warnings and above</option>
+        <option value="error">Errors only</option>
+      </select>
+    </label>
+    <button type="button" id="reloadBtn" class="log-reload">Reload</button>
+  </div>
+  <table class="log-table" id="logTable">
+    <thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead>
+    <tbody id="logBody"></tbody>
+  </table>
+  <p class="log-foot" id="logFoot"></p>
+  <p class="lede"><a href="/">Back to configuration</a></p>
+</div>
+<script>
+(function () {
+  var LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+  var MIN = { all: 0, info: 1, warn: 2, error: 3 };
+  var COLOR = { WARN: "#d9a441", ERROR: "#ff8a8a", INFO: "#eaeaea", DEBUG: "#eaeaea" };
+  var MAX_ROWS = 500;
+  var rows = [];
+
+  function parseLine(line) {
+    var m = /^(\S+)\s+(DEBUG|INFO|WARN|ERROR)\s+(.*)$/.exec(line);
+    if (m) {
+      return { ts: m[1], level: m[2], msg: m[3] };
+    }
+    return { ts: "", level: "", msg: line };
+  }
+
+  function render() {
+    var min = MIN[document.getElementById("levelFilter").value] || 0;
+    var body = document.getElementById("logBody");
+    body.innerHTML = "";
+    var shown = 0;
+    var matched = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var lv = r.level ? (LEVELS[r.level] !== undefined ? LEVELS[r.level] : 0) : 0;
+      if (r.level && lv < min) continue;
+      if (!r.level && min > 0) continue;
+      matched++;
+      if (shown >= MAX_ROWS) continue;
+      shown++;
+      var tr = document.createElement("tr");
+      var tdT = document.createElement("td");
+      tdT.textContent = r.ts;
+      var tdL = document.createElement("td");
+      tdL.textContent = r.level;
+      tdL.style.color = COLOR[r.level] || "#eaeaea";
+      var tdM = document.createElement("td");
+      tdM.textContent = r.msg;
+      tr.appendChild(tdT);
+      tr.appendChild(tdL);
+      tr.appendChild(tdM);
+      body.appendChild(tr);
+    }
+    var foot = document.getElementById("logFoot");
+    if (matched > MAX_ROWS) {
+      foot.textContent = "Showing " + MAX_ROWS + " of " + matched + " lines (newest first).";
+    } else {
+      foot.textContent = matched + " line" + (matched === 1 ? "" : "s") + ".";
+    }
+  }
+
+  function load() {
+    return Promise.all([
+      fetch("/syslog0").then(function (r) { return r.text(); }),
+      fetch("/syslog").then(function (r) { return r.text(); })
+    ]).then(function (parts) {
+      var text = (parts[0] || "") + (parts[1] || "");
+      var lines = text.split(/\n/);
+      rows = [];
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (!line) continue;
+        rows.push(parseLine(line));
+      }
+      rows.reverse();
+      render();
+    }).catch(function (e) {
+      document.getElementById("logFoot").textContent = String(e);
+    });
+  }
+
+  document.getElementById("levelFilter").addEventListener("change", render);
+  document.getElementById("reloadBtn").addEventListener("click", load);
+  load();
+})();
+</script>
+</body>
+</html>

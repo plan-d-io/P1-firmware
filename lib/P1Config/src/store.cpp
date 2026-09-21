@@ -876,6 +876,70 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
     return JsonStatus::Ok;
 }
 
+JsonStatus Store::apply_fields_json(std::string_view json, char* bad_key, std::size_t bad_key_cap)
+{
+    if (bad_key != nullptr && bad_key_cap > 0) {
+        bad_key[0] = '\0';
+    }
+    auto set_bad = [&](const char* key) {
+        if (bad_key == nullptr || bad_key_cap == 0 || key == nullptr) {
+            return;
+        }
+        std::snprintf(bad_key, bad_key_cap, "%s", key);
+    };
+
+    std::uint8_t saved[kMaxFields];
+    std::memcpy(saved, field_over_, sizeof(field_over_));
+    auto fail = [&](JsonStatus st, const char* key = nullptr) {
+        std::memcpy(field_over_, saved, sizeof(field_over_));
+        if (key != nullptr) {
+            set_bad(key);
+        }
+        return st;
+    };
+
+    Cur c{json.data(), json.data() + json.size()};
+    if (!c.eat('{')) {
+        return fail(JsonStatus::Parse);
+    }
+    bool first = true;
+    while (!c.peek('}')) {
+        if (!first && !c.eat(',')) {
+            return fail(JsonStatus::Parse);
+        }
+        first = false;
+        char key[kMaxFieldId + 1];
+        bool overflow = false;
+        if (!parse_string(c, key, sizeof(key), overflow)) {
+            return fail(JsonStatus::Parse);
+        }
+        if (overflow) {
+            return fail(JsonStatus::UnknownKey);
+        }
+        if (!c.eat(':')) {
+            return fail(JsonStatus::Parse);
+        }
+        const Field* f = find_field(key);
+        if (f == nullptr || !f->selectable) {
+            return fail(JsonStatus::UnknownKey, key);
+        }
+        bool on = false;
+        if (!parse_bool(c, on)) {
+            return fail(JsonStatus::WrongType, key);
+        }
+        set_field_on(key, on);
+        c.skip();
+    }
+    if (!c.eat('}')) {
+        return fail(JsonStatus::Parse);
+    }
+    c.skip();
+    if (c.p != c.end) {
+        return fail(JsonStatus::Parse);
+    }
+    return JsonStatus::Ok;
+}
+
 std::size_t Store::to_json(char* out, std::size_t cap) const
 {
     if (cap == 0) {

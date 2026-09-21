@@ -136,6 +136,7 @@
 
   var initial = {};
   var secretsSet = {};
+  var fieldInitial = {};
 
   function el(tag, attrs, kids) {
     var n = document.createElement(tag);
@@ -200,7 +201,68 @@
       if (!host) return;
       host.innerHTML = "";
       LAYOUT[sec].forEach(function (spec) { host.appendChild(buildField(spec)); });
+      if (sec === "tg") {
+        var box = el("div", {class: "field-list", id: "fieldList"});
+        box.appendChild(el("h3", {text: "Select meter readings to push over MQTT"}));
+        box.appendChild(el("p", {class: "lede", text:
+          "The list of all meter readings supported by the dongle. If a meter reading is not present in the meter telegram, it will not be pushed."}));
+        box.appendChild(el("div", {id: "fieldChecks"}));
+        host.appendChild(box);
+      }
+      if (sec === "dongle") {
+        host.appendChild(el("p", {class: "lede"}, [
+          el("a", {href: "/log", text: "View dongle log"})
+        ]));
+      }
     });
+  }
+
+  function fieldErrId(id) {
+    return "fld_" + String(id).replace(/[^A-Za-z0-9]/g, "_") + "_err";
+  }
+
+  function renderFieldChecks(list) {
+    var host = document.getElementById("fieldChecks");
+    if (!host) return;
+    host.innerHTML = "";
+    fieldInitial = {};
+    var counts = {};
+    (list || []).forEach(function (item) {
+      counts[item.label] = (counts[item.label] || 0) + 1;
+    });
+    (list || []).forEach(function (item) {
+      var lab = item.label;
+      if (counts[item.label] > 1) {
+        lab = lab + " (" + String(item.region || "").toUpperCase() + ")";
+      }
+      var cid = "fld_" + String(item.id).replace(/[^A-Za-z0-9]/g, "_");
+      var cb = el("input", {type: "checkbox", id: cid});
+      cb.dataset.id = item.id;
+      cb.checked = !!item.on;
+      cb.dataset.initial = item.on ? "1" : "0";
+      fieldInitial[item.id] = !!item.on;
+      var wrap = el("label", {class: "fld", for: cid}, [cb, document.createTextNode(" " + lab)]);
+      host.appendChild(wrap);
+      host.appendChild(el("div", {class: "field-error", id: fieldErrId(item.id)}));
+    });
+  }
+
+  function loadFields() {
+    return fetch("/api/fields").then(function (r) { return r.json(); }).then(renderFieldChecks);
+  }
+
+  function collectFieldChanges() {
+    var body = {};
+    var any = false;
+    document.querySelectorAll("#fieldChecks input[type=checkbox]").forEach(function (cb) {
+      var id = cb.dataset.id;
+      var on = !!cb.checked;
+      if (fieldInitial[id] !== on) {
+        body[id] = on;
+        any = true;
+      }
+    });
+    return any ? body : null;
   }
 
   function applyValues(cfg) {
@@ -241,10 +303,11 @@
   }
 
   function markError(key, msg) {
-    var box = document.getElementById(key + "_err");
+    var box = document.getElementById(key + "_err") || document.getElementById(fieldErrId(key));
     if (box) box.textContent = msg;
     document.getElementById("infoMessage").textContent = key + ": " + msg;
-    var input = document.getElementById(key);
+    var input = document.getElementById(key) ||
+      document.getElementById("fld_" + String(key).replace(/[^A-Za-z0-9]/g, "_"));
     if (input) input.focus();
   }
 
@@ -352,34 +415,72 @@
   document.getElementById("configForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     clearErrors();
-    var body = collectChanges();
-    if (!body) {
+    var cfgBody = collectChanges();
+    var fldBody = collectFieldChanges();
+    if (!cfgBody && !fldBody) {
       document.getElementById("infoMessage").textContent = "No changes.";
       document.getElementById("infoMessage").style.color = "#5aaf6f";
       return;
     }
-    fetch("/config", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(body)
-    }).then(function (r) {
-      return r.text().then(function (t) { return {ok: r.ok, status: r.status, text: t}; });
-    }).then(function (res) {
-      if (res.ok) {
-        document.getElementById("infoMessage").style.color = "#5aaf6f";
-        document.getElementById("infoMessage").textContent = "Saved.";
-        return fetch("/config").then(function (r) { return r.json(); }).then(applyValues);
-      }
+    function handleErr(res) {
       document.getElementById("infoMessage").style.color = "#ff8a8a";
-      var m = /^(Parse|UnknownKey|WrongType|Invalid):([A-Za-z0-9_]+)$/.exec(res.text.trim());
+      var m = /^(Parse|UnknownKey|WrongType|Invalid):(.+)$/.exec(res.text.trim());
       if (m) {
         markError(m[2], m[1] === "Invalid" ? "Invalid value" : m[1]);
       } else {
         document.getElementById("infoMessage").textContent = res.text || ("Error " + res.status);
       }
-    }).catch(function (e) {
-      document.getElementById("infoMessage").textContent = String(e);
-    });
+    }
+    function postFields() {
+      if (!fldBody) {
+        return loadFields();
+      }
+      return fetch("/fields", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(fldBody)
+      }).then(function (r) {
+        return r.text().then(function (t) { return {ok: r.ok, status: r.status, text: t}; });
+      }).then(function (res) {
+        if (!res.ok) {
+          handleErr(res);
+          return null;
+        }
+        return loadFields();
+      });
+    }
+    function finishOk() {
+      document.getElementById("infoMessage").style.color = "#5aaf6f";
+      document.getElementById("infoMessage").textContent = "Saved.";
+    }
+    if (cfgBody) {
+      fetch("/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(cfgBody)
+      }).then(function (r) {
+        return r.text().then(function (t) { return {ok: r.ok, status: r.status, text: t}; });
+      }).then(function (res) {
+        if (!res.ok) {
+          handleErr(res);
+          return;
+        }
+        return postFields().then(function (ok) {
+          if (ok === null) return;
+          finishOk();
+          return fetch("/config").then(function (r) { return r.json(); }).then(applyValues);
+        });
+      }).catch(function (e) {
+        document.getElementById("infoMessage").textContent = String(e);
+      });
+    } else {
+      postFields().then(function (ok) {
+        if (ok === null) return;
+        finishOk();
+      }).catch(function (e) {
+        document.getElementById("infoMessage").textContent = String(e);
+      });
+    }
   });
 
   document.getElementById("rebootBtn").addEventListener("click", function () {
@@ -400,6 +501,7 @@
 
   renderForm();
   fetch("/config").then(function (r) { return r.json(); }).then(applyValues).catch(function () {});
+  loadFields().catch(function () {});
   refreshStatus();
   refreshReadings();
   setInterval(refreshStatus, 5000);

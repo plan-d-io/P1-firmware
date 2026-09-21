@@ -803,6 +803,55 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     TEST_ASSERT_FALSE(mem.has("HA_PFIX"));
 }
 
+void test_selectable_field_count()
+{
+    // Literal from the catalogue: 50 entries, 9 identifiers/type codes off.
+    TEST_ASSERT_EQUAL_UINT(50, p1cfg::catalogue_size());
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < p1cfg::catalogue_size(); ++i) {
+        if (p1cfg::catalogue()[i].selectable) {
+            ++n;
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT(41, n);
+    TEST_ASSERT_FALSE(p1cfg::find_field("identification")->selectable);
+    TEST_ASSERT_FALSE(p1cfg::find_field("0-0:1.0.0")->selectable);
+    TEST_ASSERT_TRUE(p1cfg::find_field("A-0:0.0.1")->selectable);
+    TEST_ASSERT_TRUE(p1cfg::find_field("0-2:24.2.1")->selectable);
+}
+
+void test_apply_fields_json()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_TRUE(s.field_on("1-0:1.8.1"));
+    TEST_ASSERT_FALSE(s.field_on("0-2:24.2.1"));
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok,
+                      s.apply_fields_json(R"({"1-0:1.8.1":false,"0-2:24.2.1":true})"));
+    TEST_ASSERT_FALSE(s.field_on("1-0:1.8.1"));
+    TEST_ASSERT_TRUE(s.field_on("0-2:24.2.1"));
+    s.save();
+
+    char bad[24];
+    TEST_ASSERT_EQUAL(JsonStatus::UnknownKey,
+                      s.apply_fields_json(R"({"no-such":true})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("no-such", bad);
+    TEST_ASSERT_FALSE(s.field_on("1-0:1.8.1"));
+    TEST_ASSERT_TRUE(s.field_on("0-2:24.2.1"));
+
+    TEST_ASSERT_EQUAL(JsonStatus::UnknownKey,
+                      s.apply_fields_json(R"({"identification":true})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("identification", bad);
+    TEST_ASSERT_FALSE(s.field_on("1-0:1.8.1"));
+
+    TEST_ASSERT_EQUAL(JsonStatus::WrongType,
+                      s.apply_fields_json(R"({"1-0:1.8.2":"yes"})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("1-0:1.8.2", bad);
+    TEST_ASSERT_TRUE(s.field_on("1-0:1.8.2"));
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -839,5 +888,7 @@ int main()
     RUN_TEST(test_apply_json_reports_bad_key);
     RUN_TEST(test_reset_wifi_clears_creds_keeps_rest);
     RUN_TEST(test_factory_reset_defaults_and_clears_ha_keys);
+    RUN_TEST(test_selectable_field_count);
+    RUN_TEST(test_apply_fields_json);
     return UNITY_END();
 }

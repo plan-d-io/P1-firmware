@@ -195,6 +195,82 @@ button.submit,
 .reset-wifi { background-color: #4f4f4f; }
 .reset-wifi:hover { background-color: #5f5f5f; }
 
+.field-list {
+    text-align: left;
+    margin: 1rem 0 0.5rem;
+}
+
+.field-list .lede {
+    text-align: left;
+    margin: 0.4rem 0 0.8rem;
+    color: #b0b0b0;
+    font-size: 0.9rem;
+}
+
+.field-list label.fld {
+    display: block;
+    padding: 0.25rem 0;
+    font-weight: normal;
+}
+
+.field-list input[type="checkbox"] {
+    margin-right: 0.5rem;
+}
+
+.log-page {
+    text-align: left;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 12px;
+}
+
+.log-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+}
+
+.log-toolbar select {
+    margin-left: 0.4rem;
+    background: #333;
+    color: #eaeaea;
+    border: 1px solid #555;
+    padding: 4px 8px;
+}
+
+.log-reload {
+    background: #1fa3ec;
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.log-table th, .log-table td {
+    text-align: left;
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid #3a3a3a;
+    vertical-align: top;
+    word-break: break-word;
+}
+
+.log-table th { color: #1fa3ec; }
+
+.log-foot {
+    color: #b0b0b0;
+    font-size: 0.85rem;
+    margin-top: 0.8rem;
+}
+
 .svg-container {
     display: flex;
     justify-content: space-between;

@@ -54,6 +54,21 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/api/data" && method == Method::Get) {
         return Route::ApiData;
     }
+    if (uri == "/api/fields" && method == Method::Get) {
+        return Route::ApiFields;
+    }
+    if (uri == "/fields" && method == Method::Post) {
+        return Route::FieldsPost;
+    }
+    if (uri == "/syslog" && method == Method::Get) {
+        return Route::Syslog;
+    }
+    if (uri == "/syslog0" && method == Method::Get) {
+        return Route::Syslog0;
+    }
+    if (uri == "/log" || uri == "/log.html") {
+        return Route::LogPage;
+    }
     if (uri == "/reboot" && method == Method::Post) {
         return Route::Reboot;
     }
@@ -411,6 +426,61 @@ std::size_t render_api_data(const ReadingsView& r, char* out, std::size_t cap)
             !put("\",\"value\":\"") || !json_escape_append(out, cap, n, r.fields[i].value) ||
             !put("\",\"unit\":\"") || !json_escape_append(out, cap, n, r.fields[i].unit) ||
             !put("\"}")) {
+            return 0;
+        }
+    }
+    if (!putc(']')) {
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+std::size_t render_api_fields(const p1cfg::Store& store, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap < 2) {
+        return 0;
+    }
+    std::size_t n = 0;
+    auto putc = [&](char c) -> bool {
+        if (n + 1 >= cap) {
+            return false;
+        }
+        out[n++] = c;
+        return true;
+    };
+    auto put = [&](const char* s) -> bool {
+        for (const char* p = s; *p; ++p) {
+            if (!putc(*p)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!putc('[')) {
+        return 0;
+    }
+    bool first = true;
+    const p1cfg::Field* cat = p1cfg::catalogue();
+    const std::size_t nf = p1cfg::catalogue_size();
+    for (std::size_t i = 0; i < nf; ++i) {
+        if (!cat[i].selectable) {
+            continue;
+        }
+        if (!first && !putc(',')) {
+            return 0;
+        }
+        first = false;
+        const char* region = "common";
+        if (cat[i].region == p1cfg::RegionTag::Be) {
+            region = "be";
+        } else if (cat[i].region == p1cfg::RegionTag::Nl) {
+            region = "nl";
+        }
+        if (!put("{\"id\":\"") || !json_escape_append(out, cap, n, cat[i].id) ||
+            !put("\",\"label\":\"") || !json_escape_append(out, cap, n, cat[i].label) ||
+            !put("\",\"region\":\"") || !put(region) || !put("\",\"on\":") ||
+            !put(store.field_on(cat[i].id) ? "true" : "false") || !putc('}')) {
             return 0;
         }
     }
