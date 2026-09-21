@@ -43,6 +43,7 @@ def generate(root: pathlib.Path) -> int:
         "setup.html": web / "setup.html",
         "status.html": web / "status.html",
         "restarting.html": web / "restarting.html",
+        "rebooting.html": web / "rebooting.html",
         "config.html": web / "config.html",
     }
     for path in files.values():
@@ -53,17 +54,20 @@ def generate(root: pathlib.Path) -> int:
     style_gz = gzip.compress(style_raw, mtime=0, compresslevel=9)
     restart_raw = files["restarting.html"].read_bytes()
     restart_gz = gzip.compress(restart_raw, mtime=0, compresslevel=9)
+    reboot_raw = files["rebooting.html"].read_bytes()
+    reboot_gz = gzip.compress(reboot_raw, mtime=0, compresslevel=9)
     config_raw = files["config.html"].read_bytes()
     config_gz = gzip.compress(config_raw, mtime=0, compresslevel=9)
     setup_tpl = files["setup.html"].read_text(encoding="utf-8")
     status_tpl = files["status.html"].read_text(encoding="utf-8")
 
-    report = root / "_local" / "reports" / "12-asset-sizes.txt"
+    report = root / ".pio" / "asset-sizes.txt"
     report.parent.mkdir(parents=True, exist_ok=True)
     with report.open("w", encoding="utf-8") as fh:
         fh.write("asset raw_bytes gzip_bytes\n")
         fh.write(f"style.css {len(style_raw)} {len(style_gz)}\n")
         fh.write(f"restarting.html {len(restart_raw)} {len(restart_gz)}\n")
+        fh.write(f"rebooting.html {len(reboot_raw)} {len(reboot_gz)}\n")
         fh.write(f"config.html {len(config_raw)} {len(config_gz)}\n")
         fh.write(f"setup.html {len(setup_tpl.encode('utf-8'))} -\n")
         fh.write(f"status.html {len(status_tpl.encode('utf-8'))} -\n")
@@ -84,6 +88,10 @@ extern const std::size_t kStyleCssRawLen;
 extern const std::uint8_t kRestartingHtmlGz[];
 extern const std::size_t kRestartingHtmlGzLen;
 extern const std::size_t kRestartingHtmlRawLen;
+
+extern const std::uint8_t kRebootingHtmlGz[];
+extern const std::size_t kRebootingHtmlGzLen;
+extern const std::size_t kRebootingHtmlRawLen;
 
 extern const std::uint8_t kConfigHtmlGz[];
 extern const std::size_t kConfigHtmlGzLen;
@@ -112,6 +120,10 @@ extern const char kStatusHtmlTpl[];
         "const std::size_t kRestartingHtmlGzLen = sizeof(kRestartingHtmlGz);",
         f"const std::size_t kRestartingHtmlRawLen = {len(restart_raw)};",
         "",
+        c_bytes(reboot_gz, "kRebootingHtmlGz"),
+        "const std::size_t kRebootingHtmlGzLen = sizeof(kRebootingHtmlGz);",
+        f"const std::size_t kRebootingHtmlRawLen = {len(reboot_raw)};",
+        "",
         c_bytes(config_gz, "kConfigHtmlGz"),
         "const std::size_t kConfigHtmlGzLen = sizeof(kConfigHtmlGz);",
         f"const std::size_t kConfigHtmlRawLen = {len(config_raw)};",
@@ -128,6 +140,7 @@ extern const char kStatusHtmlTpl[];
     print(
         f"embed_web: style {len(style_raw)}->{len(style_gz)}  "
         f"restarting {len(restart_raw)}->{len(restart_gz)}  "
+        f"rebooting {len(reboot_raw)}->{len(reboot_gz)}  "
         f"config {len(config_raw)}->{len(config_gz)}"
     )
     return 0

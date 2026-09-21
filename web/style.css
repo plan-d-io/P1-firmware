@@ -181,24 +181,20 @@ button.submit,
 .ind {
     width: 48px;
     height: 48px;
-    border-radius: 50%;
-    border: 3px solid #4f4f4f;
-    background: #1f1f1f;
     box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.ind.on {
-    background: #47c266;
-    border-color: #5aaf6f;
+.ind svg {
+    width: 48px;
+    height: 48px;
+    fill: #eaeaea;
 }
 
-.ind.off {
-    background: #8B0000;
-    border-color: #a01010;
-}
-
-.ind.unknown {
-    background: #4f4f4f;
+.ind .icons {
+    fill: #eaeaea;
 }
 
 footer {

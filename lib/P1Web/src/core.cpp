@@ -57,6 +57,9 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/reboot" && method == Method::Post) {
         return Route::Reboot;
     }
+    if (uri == "/rebooting.html" || uri == "/rebooting") {
+        return Route::Rebooting;
+    }
     if (method == Method::Post && uri == "/save") {
         return Route::Save;
     }
@@ -352,8 +355,9 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put_str("uptime", v.uptime) || !put(",") || !put_str("heap", v.heap) || !put(",") ||
         !put_str("rssi", v.rssi) || !put(",") || !put_str("mqtt", v.mqtt) || !put(",") ||
         !put_bool("wifi", v.wifi) || !put(",") || !put_bool("meter", v.meter) || !put(",") ||
-        !put_bool("ha_en", v.ha_en) || !put(",") || !put_u("telegrams_ok", v.telegrams_ok) ||
-        !put(",") || !put_u("telegrams_rejected", v.telegrams_rejected) || !put("}")) {
+        !put_bool("ha_en", v.ha_en) || !put(",") || !put_bool("mqtt_en", v.mqtt_en) || !put(",") ||
+        !put_u("telegrams_ok", v.telegrams_ok) || !put(",") ||
+        !put_u("telegrams_rejected", v.telegrams_rejected) || !put("}")) {
         return 0;
     }
     out[n] = '\0';

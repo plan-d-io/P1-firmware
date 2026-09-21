@@ -85,6 +85,7 @@ static p1web::ReadingsView g_readings_view{g_last_readings, 0};
 
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
+static std::uint32_t g_last_telegram_ms = 0;
 static volatile unsigned g_ovf = 0;
 static volatile unsigned g_full = 0;
 static volatile unsigned g_frm = 0;
@@ -413,8 +414,9 @@ static void refresh_status_view()
     g_status_view.mqtt = mqtt_state_name(g_mqtt.state());
     g_status_view.telegrams = g_status_tele;
     g_status_view.wifi = (WiFi.status() == WL_CONNECTED);
-    g_status_view.meter = (g_ok > 0);
+    g_status_view.meter = (g_ok > 0) && (millis() - g_last_telegram_ms < 15000u);
     g_status_view.ha_en = g_cfg.values().ha_en;
+    g_status_view.mqtt_en = g_cfg.values().mqtt_en;
     g_status_view.telegrams_ok = g_ok;
     g_status_view.telegrams_rejected = g_rejected;
 }
@@ -978,8 +980,25 @@ static void handle_inbound()
     }
 }
 
+static void snapshot_readings(const p1dsmr::Data& data)
+{
+    const p1cfg::Field* cat = p1cfg::catalogue();
+    const std::size_t nf = p1cfg::catalogue_size();
+    for (std::size_t i = 0; i < nf && i < p1cfg::kMaxFields; ++i) {
+        g_last_readings[i].value[0] = '\0';
+        g_last_readings[i].unit[0] = '\0';
+        p1pub::reading_text(data, cat[i].id, g_last_readings[i].value,
+                            sizeof(g_last_readings[i].value), g_last_readings[i].unit,
+                            sizeof(g_last_readings[i].unit));
+    }
+    g_readings_view.count = nf;
+}
+
 static void on_telegram(const p1dsmr::Data& data)
 {
+    g_last_telegram_ms = millis();
+    snapshot_readings(data);
+
     if (g_cfg.values().ha_en) {
         const std::uint64_t next = p1pub::discovery_field_mask(data, g_cfg);
         if (g_mqtt.state() == p1mqtt::Mqtt::State::Connected) {
@@ -1002,22 +1021,6 @@ static void on_telegram(const p1dsmr::Data& data)
         g_mqtt.publish(topic, payload, false);
         ++n;
     });
-    // Snapshot display values for the config page (/api/data). Fixed buffers only.
-    {
-        const p1cfg::Field* cat = p1cfg::catalogue();
-        const std::size_t nf = p1cfg::catalogue_size();
-        for (std::size_t i = 0; i < nf && i < p1cfg::kMaxFields; ++i) {
-            if (!g_cfg.field_on(cat[i].id)) {
-                continue;
-            }
-            if (p1pub::reading_text(data, cat[i].id, g_last_readings[i].value,
-                                    sizeof(g_last_readings[i].value), g_last_readings[i].unit,
-                                    sizeof(g_last_readings[i].unit))) {
-                // keep
-            }
-        }
-        g_readings_view.count = nf;
-    }
     if (g_cfg.values().push_full) {
         char topic[p1mqtt::kTopicBuf];
         const int tw =
@@ -1252,6 +1255,19 @@ static void handle_line(char* line)
         }
         return;
     }
+    if (std::memcmp(line, "req ", 4) == 0) {
+        // Desk helper: drop DATA_REQUEST to stop meter telegrams (Fluvius continuous mode).
+        if (std::strcmp(line + 4, "on") == 0) {
+            digitalWrite(kDataRequest, HIGH);
+            Serial.println("req on");
+        } else if (std::strcmp(line + 4, "off") == 0) {
+            digitalWrite(kDataRequest, LOW);
+            Serial.println("req off");
+        } else {
+            Serial.println("usage: req on|off");
+        }
+        return;
+    }
     if (std::memcmp(line, "syslog", 6) == 0) {
         const char* rest = line + 6;
         while (*rest == ' ') {
@@ -1309,7 +1325,7 @@ static void handle_line(char* line)
         return;
     }
     Serial.println(
-        "commands: set <KEY> <value> | get | save | status | field <id> on|off | syslog");
+        "commands: set <KEY> <value> | get | save | status | field <id> on|off | req on|off | syslog");
 }
 
 static void poll_serial()

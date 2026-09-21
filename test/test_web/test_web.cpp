@@ -33,6 +33,10 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/index.html"));
     TEST_ASSERT_EQUAL(p1web::Route::Status,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/status"));
+    TEST_ASSERT_EQUAL(p1web::Route::Rebooting,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/rebooting"));
+    TEST_ASSERT_EQUAL(p1web::Route::Rebooting,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/rebooting.html"));
     TEST_ASSERT_EQUAL(p1web::Route::ApiStatus,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/status"));
     TEST_ASSERT_EQUAL(p1web::Route::ApiData,
@@ -66,6 +70,10 @@ void test_gzip_blobs()
     TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kConfigHtmlGz[0]);
     TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kConfigHtmlGz[1]);
     TEST_ASSERT_TRUE(p1web::assets::kConfigHtmlRawLen > p1web::assets::kConfigHtmlGzLen);
+
+    TEST_ASSERT_TRUE(p1web::assets::kRebootingHtmlGzLen > 2);
+    TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kRebootingHtmlGz[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kRebootingHtmlGz[1]);
 }
 
 void test_status_render()
@@ -101,6 +109,7 @@ void test_api_status_json()
     v.wifi = true;
     v.meter = true;
     v.ha_en = true;
+    v.mqtt_en = true;
     v.telegrams_ok = 10;
     v.telegrams_rejected = 1;
     char buf[p1web::kApiStatusMax];
@@ -110,6 +119,7 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"device_id\":\"P1AABBCC\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt\":\"Connected\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
     TEST_ASSERT_NULL(std::strstr(buf, "password"));
     TEST_ASSERT_NULL(std::strstr(buf, "secret"));

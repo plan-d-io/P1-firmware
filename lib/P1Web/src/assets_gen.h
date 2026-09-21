@@ -13,6 +13,10 @@ extern const std::uint8_t kRestartingHtmlGz[];
 extern const std::size_t kRestartingHtmlGzLen;
 extern const std::size_t kRestartingHtmlRawLen;
 
+extern const std::uint8_t kRebootingHtmlGz[];
+extern const std::size_t kRebootingHtmlGzLen;
+extern const std::size_t kRebootingHtmlRawLen;
+
 extern const std::uint8_t kConfigHtmlGz[];
 extern const std::size_t kConfigHtmlGzLen;
 extern const std::size_t kConfigHtmlRawLen;

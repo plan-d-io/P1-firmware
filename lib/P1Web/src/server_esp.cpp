@@ -50,6 +50,8 @@ esp_err_t dispatch(httpd_req_t* req)
         return send_gzip(req, "text/css", assets::kStyleCssGz, assets::kStyleCssGzLen);
     case Route::Restarting:
         return send_gzip(req, "text/html", assets::kRestartingHtmlGz, assets::kRestartingHtmlGzLen);
+    case Route::Rebooting:
+        return send_gzip(req, "text/html", assets::kRebootingHtmlGz, assets::kRebootingHtmlGzLen);
     case Route::ConfigPage:
         return send_gzip(req, "text/html", assets::kConfigHtmlGz, assets::kConfigHtmlGzLen);
     case Route::Setup: {
@@ -294,7 +296,7 @@ bool Server::begin(Mode mode)
         return true;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 24;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;
     httpd_handle_t handle = nullptr;
@@ -314,6 +316,8 @@ bool Server::begin(Mode mode)
     register_one(handle, "/style.css", HTTP_GET);
     register_one(handle, "/restarting", HTTP_GET);
     register_one(handle, "/restarting.html", HTTP_GET);
+    register_one(handle, "/rebooting", HTTP_GET);
+    register_one(handle, "/rebooting.html", HTTP_GET);
     register_one(handle, "/generate_204", HTTP_GET);
     register_one(handle, "/hotspot-detect.html", HTTP_GET);
     register_one(handle, "/save", HTTP_POST);

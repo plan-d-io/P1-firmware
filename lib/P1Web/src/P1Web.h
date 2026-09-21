@@ -34,6 +34,7 @@ enum class Route : std::uint8_t {
     Style,
     Save,
     Restarting,
+    Rebooting,
     ConfigGet,
     ConfigPost,
     ApiStatus,
@@ -101,6 +102,7 @@ struct StatusView {
     bool wifi = false;
     bool meter = false;
     bool ha_en = false;
+    bool mqtt_en = false;
     unsigned telegrams_ok = 0;
     unsigned telegrams_rejected = 0;
 };

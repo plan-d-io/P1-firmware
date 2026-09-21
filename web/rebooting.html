@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Restarting</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+  <h2>Restarting</h2>
+  <div class="loader" aria-hidden="true"></div>
+  <p class="lede" style="text-align:center;margin-top:1.5rem">The dongle is restarting. You can close this window.</p>
+</div>
+<script>
+fetch("/reboot", {method: "POST"}).catch(function () {});
+</script>
+</body>
+</html>
