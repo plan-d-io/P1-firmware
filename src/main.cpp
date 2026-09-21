@@ -1453,7 +1453,9 @@ void setup()
 
     pinMode(kDataRequest, OUTPUT);
     digitalWrite(kDataRequest, HIGH);
-    pinMode(kBtn, INPUT_PULLUP);
+    // GPIO 39 is input-only on ESP32-PICO-D4 — no internal pull-up. The Atom
+    // board provides an external pull-up; pressed = LOW (M5Atom Button invert).
+    pinMode(kBtn, INPUT);
 
     const size_t rx = Serial1.setRxBufferSize(1024);
     Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
