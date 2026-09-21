@@ -46,6 +46,7 @@
 
     <button type="submit" class="submit">Submit</button>
   </form>
+  <button type="button" class="log-link" id="logBtn">View log</button>
   <button type="button" class="reboot" id="rebootBtn">Reboot</button>
   <div class="danger-row">
     <button type="button" class="reboot reset-wifi" id="resetWifiBtn">Reset WiFi</button>
@@ -209,11 +210,6 @@
         box.appendChild(el("div", {id: "fieldChecks"}));
         host.appendChild(box);
       }
-      if (sec === "dongle") {
-        host.appendChild(el("p", {class: "lede"}, [
-          el("a", {href: "/log", text: "View dongle log"})
-        ]));
-      }
     });
   }
 
@@ -241,9 +237,12 @@
       cb.checked = !!item.on;
       cb.dataset.initial = item.on ? "1" : "0";
       fieldInitial[item.id] = !!item.on;
-      var wrap = el("label", {class: "fld", for: cid}, [cb, document.createTextNode(" " + lab)]);
-      host.appendChild(wrap);
-      host.appendChild(el("div", {class: "field-error", id: fieldErrId(item.id)}));
+      var wrap = el("label", {class: "fld", for: cid}, [cb, document.createTextNode(lab)]);
+      var cell = el("div", {class: "fld-cell"}, [
+        wrap,
+        el("div", {class: "field-error", id: fieldErrId(item.id)})
+      ]);
+      host.appendChild(cell);
     });
   }
 
@@ -483,6 +482,9 @@
     }
   });
 
+  document.getElementById("logBtn").addEventListener("click", function () {
+    window.location.href = "/log";
+  });
   document.getElementById("rebootBtn").addEventListener("click", function () {
     window.location.href = "/rebooting";
   });
