@@ -86,6 +86,7 @@ static p1web::ReadingsView g_readings_view{g_last_readings, 0};
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
 static std::uint32_t g_last_telegram_ms = 0;
+static bool g_hold_p1 = false;  // desk: pause telegram handling without unplugging
 static volatile unsigned g_ovf = 0;
 static volatile unsigned g_full = 0;
 static volatile unsigned g_frm = 0;
@@ -996,6 +997,9 @@ static void snapshot_readings(const p1dsmr::Data& data)
 
 static void on_telegram(const p1dsmr::Data& data)
 {
+    if (g_hold_p1) {
+        return;
+    }
     g_last_telegram_ms = millis();
     snapshot_readings(data);
 
@@ -1255,6 +1259,20 @@ static void handle_line(char* line)
         }
         return;
     }
+    if (std::memcmp(line, "hold ", 5) == 0) {
+        // Desk helper: drop parsed telegrams so the meter indicator can go false
+        // without unplugging (DATA_REQUEST is ignored by some sources).
+        if (std::strcmp(line + 5, "on") == 0) {
+            g_hold_p1 = true;
+            Serial.println("hold on");
+        } else if (std::strcmp(line + 5, "off") == 0) {
+            g_hold_p1 = false;
+            Serial.println("hold off");
+        } else {
+            Serial.println("usage: hold on|off");
+        }
+        return;
+    }
     if (std::memcmp(line, "req ", 4) == 0) {
         // Desk helper: drop DATA_REQUEST to stop meter telegrams (Fluvius continuous mode).
         if (std::strcmp(line + 4, "on") == 0) {
@@ -1325,7 +1343,8 @@ static void handle_line(char* line)
         return;
     }
     Serial.println(
-        "commands: set <KEY> <value> | get | save | status | field <id> on|off | req on|off | syslog");
+        "commands: set <KEY> <value> | get | save | status | field <id> on|off | "
+        "req on|off | hold on|off | syslog");
 }
 
 static void poll_serial()
