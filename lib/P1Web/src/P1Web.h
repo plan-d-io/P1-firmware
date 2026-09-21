@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include <P1Config.h>
+
 #include "assets_gen.h"
 
 namespace p1web {
@@ -15,6 +17,8 @@ constexpr std::size_t kSsidMax = 33;
 constexpr std::size_t kPassMax = 64;
 constexpr std::size_t kHtmlBuf = 3072;
 constexpr char kCacheControl[] = "public, max-age=300";
+constexpr std::size_t kConfigBodyMax = 2048;
+constexpr std::size_t kConfigJsonMax = 8192;
 
 enum class Mode : std::uint8_t { Ap, Station };
 
@@ -24,6 +28,8 @@ enum class Route : std::uint8_t {
     Style,
     Save,
     Restarting,
+    ConfigGet,
+    ConfigPost,
     NotFound,
 };
 
@@ -91,6 +97,7 @@ struct Actions {
     char wifi_ssid[kSsidMax]{};
     char wifi_pass[kPassMax]{};
     bool reboot = false;
+    bool republish_config = false;
 };
 
 void sort_scan_strongest_first(ScanCache& cache);
@@ -120,6 +127,7 @@ public:
     void set_mode(Mode mode);
     void set_scan(const ScanCache* scan);
     void set_status(const StatusView* status);
+    void set_store(p1cfg::Store* store);
     Actions* actions();
     bool running() const { return running_; }
 
@@ -127,6 +135,7 @@ public:
     Mode mode_for_handlers() const;
     const ScanCache* scan_ptr() const;
     const StatusView* status_ptr() const;
+    p1cfg::Store* store_ptr() const;
 
 private:
     bool running_ = false;
@@ -134,6 +143,7 @@ private:
     void* handle_ = nullptr;  // httpd_handle_t
     const ScanCache* scan_ = nullptr;
     const StatusView* status_ = nullptr;
+    p1cfg::Store* store_ = nullptr;
     Actions actions_{};
 };
 

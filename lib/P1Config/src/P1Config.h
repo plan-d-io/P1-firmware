@@ -22,7 +22,7 @@ constexpr CfgFlags CFG_SECRET = 2;
 constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
 
-constexpr std::uint32_t kSchemaVersion = 5;
+constexpr std::uint32_t kSchemaVersion = 6;
 
 constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;
@@ -33,6 +33,11 @@ constexpr std::size_t kHaMax = 32;
 constexpr std::size_t kRegionMax = 8;
 constexpr std::size_t kSsidMax = 33;  // IEEE 802.11 SSID is 32 octets + NUL
 constexpr std::size_t kLastResetMax = 64;
+constexpr std::size_t kIpMax = 16;  // "255.255.255.255" + NUL
+constexpr std::size_t kUuidMax = 20;  // "P1" + 16 hex + NUL
+constexpr std::size_t kRelChanMax = 16;
+constexpr std::size_t kEmailMax = 64;
+constexpr std::size_t kEidClaimMax = 32;
 
 // Largest string setting. JSON parse uses each entry's str_cap; this is the
 // bound a scratch buffer would need, and a tripwire if a longer setting is added.
@@ -44,6 +49,11 @@ static_assert(kHaMax <= kHostMax);
 static_assert(kRegionMax <= kHostMax);
 static_assert(kSsidMax <= kHostMax);
 static_assert(kLastResetMax <= kHostMax);
+static_assert(kIpMax <= kHostMax);
+static_assert(kUuidMax <= kHostMax);
+static_assert(kRelChanMax <= kHostMax);
+static_assert(kEmailMax <= kHostMax);
+static_assert(kEidClaimMax <= kHostMax);
 
 // Worst-case FLD_OVR: every catalogue slot as "id=0,". Catalogue static_assert
 // checks the real table fits. identification is 14 chars; 16 is headroom.
@@ -70,6 +80,23 @@ struct Settings {
     char wifi_pass[kPassMax]{};
     std::uint32_t reboots = 0;
     char last_reset[kLastResetMax]{};
+    bool fip_en = false;
+    char fipaddr[kIpMax]{};
+    char fsubn[kIpMax]{};
+    char fdefgtw[kIpMax]{};
+    char fdns1[kIpMax]{};
+    char fdns2[kIpMax]{};
+    bool eid_en = false;
+    char eidclaim[kEidClaimMax]{};
+    char eid_provkey[kPassMax]{};
+    char eid_provsec[kPassMax]{};
+    char uuid[kUuidMax]{};
+    char rel_chan[kRelChanMax]{};
+    bool upd_auto = true;
+    bool upd_autochk = true;
+    char email[kEmailMax]{};
+    bool push_full = false;
+    bool rint_spiffs = false;
     // Byte offset in /syslog.txt up to which lines have been MQTT-published.
     std::uint32_t log_mark = 0;
     std::uint32_t cfg_ver = 0;
@@ -172,7 +199,7 @@ private:
         char s[kOverrideBufCap]{};  // largest stored string is FLD_OVR
     };
 
-    static constexpr std::size_t kCap = 24;
+    static constexpr std::size_t kCap = 48;
     struct Pair {
         char key[16]{};
         Slot slot;
@@ -217,9 +244,20 @@ private:
 
 enum class JsonStatus : std::uint8_t { Ok, Parse, UnknownKey, WrongType, Invalid };
 
+const char* json_status_name(JsonStatus s);
+
+// True if s is a dotted-quad (0–255 each). Empty string is not valid.
+bool ip_ok(const char* s);
+bool rel_chan_ok(const char* s);
+
+// Write "P1" + 16 hex from eight random bytes. Returns false if cap too small.
+bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8);
+// If uuid is empty, fill it. Returns true when a new value was written.
+bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd8);
+
 class Store {
 public:
-    static constexpr std::size_t kSettingCount = 20;
+    static constexpr std::size_t kSettingCount = 37;
 
     explicit Store(StoreBackend& backend);
 

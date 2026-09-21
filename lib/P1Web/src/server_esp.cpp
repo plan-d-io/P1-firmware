@@ -80,6 +80,70 @@ esp_err_t dispatch(httpd_req_t* req)
         free(page);
         return err;
     }
+    case Route::ConfigGet: {
+        p1cfg::Store* store = g_server->store_ptr();
+        if (store == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no store");
+            return ESP_FAIL;
+        }
+        char* json = static_cast<char*>(malloc(kConfigJsonMax));
+        if (json == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        const std::size_t n = store->to_json(json, kConfigJsonMax);
+        if (n == 0) {
+            free(json);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json overflow");
+            return ESP_FAIL;
+        }
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        const esp_err_t err = httpd_resp_send(req, json, static_cast<ssize_t>(n));
+        free(json);
+        return err;
+    }
+    case Route::ConfigPost: {
+        p1cfg::Store* store = g_server->store_ptr();
+        if (store == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no store");
+            return ESP_FAIL;
+        }
+        if (req->content_len <= 0 ||
+            static_cast<std::size_t>(req->content_len) > kConfigBodyMax) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "TooLarge");
+            return ESP_FAIL;
+        }
+        char* body = static_cast<char*>(malloc(static_cast<std::size_t>(req->content_len) + 1));
+        if (body == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        int got = 0;
+        while (got < req->content_len) {
+            const int r = httpd_req_recv(req, body + got, req->content_len - got);
+            if (r <= 0) {
+                free(body);
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv");
+                return ESP_FAIL;
+            }
+            got += r;
+        }
+        body[got] = '\0';
+        // apply_json is in-memory only; save() touches NVS. Both are safe from the
+        // HTTP task. MQTT republish is deferred to the loop via Actions.
+        const p1cfg::JsonStatus st =
+            store->apply_json(std::string_view(body, static_cast<std::size_t>(got)));
+        free(body);
+        if (st != p1cfg::JsonStatus::Ok) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, p1cfg::json_status_name(st));
+            return ESP_FAIL;
+        }
+        store->save();
+        g_server->actions()->republish_config = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
     case Route::Save: {
         if (req->content_len <= 0 || req->content_len > 512) {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
@@ -162,6 +226,11 @@ const StatusView* Server::status_ptr() const
     return status_;
 }
 
+p1cfg::Store* Server::store_ptr() const
+{
+    return store_;
+}
+
 bool Server::begin(Mode mode)
 {
     if (running_) {
@@ -192,6 +261,8 @@ bool Server::begin(Mode mode)
     register_one(handle, "/generate_204", HTTP_GET);
     register_one(handle, "/hotspot-detect.html", HTTP_GET);
     register_one(handle, "/save", HTTP_POST);
+    register_one(handle, "/config", HTTP_GET);
+    register_one(handle, "/config", HTTP_POST);
     httpd_register_err_handler(handle, HTTPD_404_NOT_FOUND, on_404);
 
     running_ = true;
@@ -224,6 +295,11 @@ void Server::set_scan(const ScanCache* scan)
 void Server::set_status(const StatusView* status)
 {
     status_ = status;
+}
+
+void Server::set_store(p1cfg::Store* store)
+{
+    store_ = store;
 }
 
 Actions* Server::actions()

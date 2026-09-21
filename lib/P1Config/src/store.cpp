@@ -36,10 +36,107 @@ int field_index(std::string_view id)
     return -1;
 }
 
+}  // namespace
+
+bool ip_ok(const char* s)
+{
+    if (s == nullptr || s[0] == '\0') {
+        return false;
+    }
+    unsigned parts = 0;
+    const char* p = s;
+    while (*p != '\0') {
+        if (parts >= 4) {
+            return false;
+        }
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        unsigned v = 0;
+        unsigned digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10u + static_cast<unsigned>(*p - '0');
+            if (v > 255u || ++digits > 3u) {
+                return false;
+            }
+            ++p;
+        }
+        if (digits == 0) {
+            return false;
+        }
+        ++parts;
+        if (*p == '.') {
+            ++p;
+            if (*p == '\0') {
+                return false;
+            }
+        } else if (*p != '\0') {
+            return false;
+        }
+    }
+    return parts == 4;
+}
+
+bool rel_chan_ok(const char* s)
+{
+    return s != nullptr && (std::strcmp(s, "main") == 0 || std::strcmp(s, "alpha") == 0 ||
+                            std::strcmp(s, "develop") == 0 || std::strcmp(s, "V2") == 0);
+}
+
+bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8)
+{
+    if (out == nullptr || rnd8 == nullptr || cap < 19) {
+        return false;
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    out[0] = 'P';
+    out[1] = '1';
+    for (std::size_t i = 0; i < 8; ++i) {
+        out[2 + i * 2] = kHex[(rnd8[i] >> 4) & 0xf];
+        out[3 + i * 2] = kHex[rnd8[i] & 0xf];
+    }
+    out[18] = '\0';
+    return true;
+}
+
+bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd8)
+{
+    if (uuid == nullptr || uuid[0] != '\0') {
+        return false;
+    }
+    return format_uuid(uuid, cap, rnd8);
+}
+
+const char* json_status_name(JsonStatus s)
+{
+    switch (s) {
+    case JsonStatus::Ok:
+        return "Ok";
+    case JsonStatus::Parse:
+        return "Parse";
+    case JsonStatus::UnknownKey:
+        return "UnknownKey";
+    case JsonStatus::WrongType:
+        return "WrongType";
+    case JsonStatus::Invalid:
+        return "Invalid";
+    }
+    return "?";
+}
+
+namespace {
+
 bool region_ok(const char* s)
 {
     return std::strcmp(s, "auto") == 0 || std::strcmp(s, "be") == 0 ||
            std::strcmp(s, "nl") == 0;
+}
+
+bool is_ip_key(const char* key)
+{
+    return std::strcmp(key, "FIPADDR") == 0 || std::strcmp(key, "FSUBN") == 0 ||
+           std::strcmp(key, "FDEFGTW") == 0 || std::strcmp(key, "FDNS1") == 0 ||
+           std::strcmp(key, "FDNS2") == 0;
 }
 
 const char* type_name(CfgType t)
@@ -244,9 +341,12 @@ void Store::apply_defaults()
     copy_str(v_.mqtt_pfix, sizeof(v_.mqtt_pfix), "data/devices/utility_meter/");
     copy_str(v_.ha_device, sizeof(v_.ha_device), "Utility meter");
     copy_str(v_.region, sizeof(v_.region), "auto");
+    copy_str(v_.rel_chan, sizeof(v_.rel_chan), "main");
     v_.mqtt_port = 1883;
     v_.frmt_pyld = 3;
     v_.upl_throttle = 10;
+    v_.upd_auto = true;
+    v_.upd_autochk = true;
     std::memset(field_over_, 0, sizeof(field_over_));
 }
 
@@ -321,6 +421,25 @@ void Store::bind_table()
     add_u32("REBOOTS", "Boot count", CFG_IN_API, &v_.reboots, 0);
     add_str("LAST_RESET", "Last reset reason (firmware)", CFG_IN_API, v_.last_reset,
             sizeof(v_.last_reset), "");
+    add_bool("FIP_EN", "Use fixed IP", CFG_IN_API, &v_.fip_en, false);
+    add_str("FIPADDR", "IP address", CFG_IN_API, v_.fipaddr, sizeof(v_.fipaddr), "");
+    add_str("FSUBN", "Subnet mask", CFG_IN_API, v_.fsubn, sizeof(v_.fsubn), "");
+    add_str("FDEFGTW", "Default gateway", CFG_IN_API, v_.fdefgtw, sizeof(v_.fdefgtw), "");
+    add_str("FDNS1", "Primary DNS", CFG_IN_API, v_.fdns1, sizeof(v_.fdns1), "");
+    add_str("FDNS2", "Secondary DNS", CFG_IN_API, v_.fdns2, sizeof(v_.fdns2), "");
+    add_bool("EID_EN", "EnergieID enabled", CFG_IN_API, &v_.eid_en, false);
+    add_str("EIDCLAIM", "EnergieID claim code", CFG_IN_API, v_.eidclaim, sizeof(v_.eidclaim), "");
+    add_str("EID_PROVKEY", "EnergieID key", CFG_IN_API | CFG_SECRET, v_.eid_provkey,
+            sizeof(v_.eid_provkey), "");
+    add_str("EID_PROVSEC", "EnergieID secret", CFG_IN_API | CFG_SECRET, v_.eid_provsec,
+            sizeof(v_.eid_provsec), "");
+    add_str("UUID", "Device UUID", CFG_IN_API, v_.uuid, sizeof(v_.uuid), "");
+    add_str("REL_CHAN", "Release channel", CFG_IN_API, v_.rel_chan, sizeof(v_.rel_chan), "main");
+    add_bool("UPD_AUTO", "Automatic updates", CFG_IN_API, &v_.upd_auto, true);
+    add_bool("UPD_AUTOCHK", "Check for updates", CFG_IN_API, &v_.upd_autochk, true);
+    add_str("EMAIL", "User email", CFG_HIDDEN, v_.email, sizeof(v_.email), "");
+    add_bool("PUSH_FULL", "Publish full telegram (~1 KB)", CFG_IN_API, &v_.push_full, false);
+    add_bool("RINT_SPIFFS", "Reinitialise filesystem", CFG_IN_API, &v_.rint_spiffs, false);
     // Internal store-and-forward cursor — not a user setting.
     add_u32("LOG_MARK", "Syslog replay watermark", CFG_HIDDEN, &v_.log_mark, 0);
     add_u32("CFG_VER", "Config schema version", CFG_HIDDEN, &v_.cfg_ver, 0);
@@ -639,6 +758,19 @@ JsonStatus Store::apply_json(std::string_view json)
             }
             if (std::strcmp(e->key, "REGION") == 0 && !region_ok(e->var.s)) {
                 return fail(JsonStatus::Invalid);
+            }
+            if (std::strcmp(e->key, "REL_CHAN") == 0 && !rel_chan_ok(e->var.s)) {
+                return fail(JsonStatus::Invalid);
+            }
+            if (is_ip_key(e->key)) {
+                const bool allow_empty = std::strcmp(e->key, "FDNS2") == 0;
+                if (e->var.s[0] == '\0') {
+                    if (!allow_empty) {
+                        return fail(JsonStatus::Invalid);
+                    }
+                } else if (!ip_ok(e->var.s)) {
+                    return fail(JsonStatus::Invalid);
+                }
             }
             break;
         }

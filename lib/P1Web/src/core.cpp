@@ -39,6 +39,15 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/style.css") {
         return Route::Style;
     }
+    if (uri == "/config") {
+        if (method == Method::Get) {
+            return Route::ConfigGet;
+        }
+        if (method == Method::Post) {
+            return Route::ConfigPost;
+        }
+        return Route::NotFound;
+    }
     if (method == Method::Post && uri == "/save") {
         return Route::Save;
     }

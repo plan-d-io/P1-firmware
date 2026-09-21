@@ -9,6 +9,7 @@
 #include <P1Web.h>
 #include <WiFi.h>
 #include <esp_mac.h>
+#include <esp_random.h>
 #include <esp_system.h>
 
 #include <cstdint>
@@ -30,6 +31,7 @@ static constexpr int kDataRequest = 25;
 static constexpr char kFwVer[] = "3.00";
 
 static void request_reboot(const char* reason);
+static void publish_config_snapshot();
 
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
@@ -91,7 +93,7 @@ static std::uint64_t g_disc_mask = 0;
 static bool g_disc_have = false;
 static char g_fw_reset_reason[p1cfg::kLastResetMax]{};
 static const char* g_hw_reset_reason = "NO_MEAN";
-static char g_json[3072];
+static char g_json[8192];
 static char g_in_topic[p1mqtt::kTopicBuf];
 static char g_in_payload[p1mqtt::InboundAssembler::kMax + 1];
 static char g_cmd[192];
@@ -163,6 +165,31 @@ static void start_sta()
     if (g_wifi_started) {
         WiFi.disconnect(false, false);
     }
+
+    const auto& v = g_cfg.values();
+    if (v.fip_en) {
+        IPAddress ip;
+        IPAddress sn;
+        IPAddress gw;
+        IPAddress d1;
+        IPAddress d2;
+        const bool ok = ip.fromString(v.fipaddr) && sn.fromString(v.fsubn) &&
+                        gw.fromString(v.fdefgtw) && d1.fromString(v.fdns1) &&
+                        (v.fdns2[0] == '\0' || d2.fromString(v.fdns2));
+        if (!ok) {
+            g_log.log(p1log::Level::Warn, "Static IP incomplete or malformed; using DHCP");
+            WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+        } else if (v.fdns2[0] == '\0') {
+            WiFi.config(ip, gw, sn, d1);
+            g_log.log(p1log::Level::Info, "Static IP configured");
+        } else {
+            WiFi.config(ip, gw, sn, d1, d2);
+            g_log.log(p1log::Level::Info, "Static IP configured");
+        }
+    } else {
+        WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    }
+
     WiFi.begin(g_cfg.values().wifi_ssid, g_cfg.values().wifi_pass);
     std::snprintf(g_begun_ssid, sizeof(g_begun_ssid), "%s", g_cfg.values().wifi_ssid);
     std::snprintf(g_begun_pass, sizeof(g_begun_pass), "%s", g_cfg.values().wifi_pass);
@@ -318,6 +345,10 @@ static void handle_web_actions()
         g_cfg.save();
         g_log.log(p1log::Level::Info, "WiFi credentials saved from setup page");
     }
+    if (act->republish_config) {
+        act->republish_config = false;
+        publish_config_snapshot();
+    }
     if (act->reboot) {
         act->reboot = false;
         request_reboot("Reboot requested from web UI");
@@ -439,23 +470,6 @@ static void try_start_mqtt()
                       static_cast<unsigned>(g_cfg.values().mqtt_port),
                       g_cfg.values().mqtt_id);
     }
-}
-
-static const char* json_status_name(p1cfg::JsonStatus s)
-{
-    switch (s) {
-    case p1cfg::JsonStatus::Ok:
-        return "Ok";
-    case p1cfg::JsonStatus::Parse:
-        return "Parse";
-    case p1cfg::JsonStatus::UnknownKey:
-        return "UnknownKey";
-    case p1cfg::JsonStatus::WrongType:
-        return "WrongType";
-    case p1cfg::JsonStatus::Invalid:
-        return "Invalid";
-    }
-    return "?";
 }
 
 static bool fill_availability(char* out, std::size_t cap)
@@ -799,7 +813,7 @@ static void handle_inbound()
         const p1cfg::JsonStatus st = g_cfg.apply_json(g_in_payload);
         if (st != p1cfg::JsonStatus::Ok) {
             char msg[64];
-            std::snprintf(msg, sizeof(msg), "MQTT config rejected %s", json_status_name(st));
+            std::snprintf(msg, sizeof(msg), "MQTT config rejected %s", p1cfg::json_status_name(st));
             g_log.log(p1log::Level::Warn, msg);
             return;
         }
@@ -856,6 +870,18 @@ static void on_telegram(const p1dsmr::Data& data)
         g_mqtt.publish(topic, payload, false);
         ++n;
     });
+    if (g_cfg.values().push_full) {
+        char topic[p1mqtt::kTopicBuf];
+        const int tw =
+            std::snprintf(topic, sizeof(topic), "%stelegram", g_cfg.values().mqtt_pfix);
+        if (tw > 0 && static_cast<std::size_t>(tw) < sizeof(topic)) {
+            const std::string_view raw = g_reader.raw();
+            if (!raw.empty()) {
+                g_mqtt.publish(topic, raw, false);
+                ++n;
+            }
+        }
+    }
     g_last_pub_ms = millis();
     char msg[64];
     std::snprintf(msg, sizeof(msg), "P n=%u heap=%u fails=%u", n,
@@ -1224,6 +1250,33 @@ void setup()
     g_cfg.load();
     g_log.set_mark_persist(&g_persist_log_mark, nullptr);
     g_log.set_log_mark(g_cfg.values().log_mark);
+
+    if (g_cfg.values().rint_spiffs) {
+        g_cfg.values().rint_spiffs = false;
+        g_cfg.values().log_mark = 0;
+        g_cfg.save();
+        LittleFS.end();
+        LittleFS.format();
+        bool reformatted = false;
+        if (!g_fs.begin(&reformatted)) {
+            Serial.println("ERROR filesystem remount failed after RINT_SPIFFS");
+        } else {
+            g_log.set_log_mark(0);
+            g_log.log(p1log::Level::Warn, "Filesystem reinitialised");
+        }
+    }
+
+    {
+        std::uint8_t rnd[8];
+        esp_fill_random(rnd, sizeof(rnd));
+        if (p1cfg::ensure_uuid(g_cfg.values().uuid, sizeof(g_cfg.values().uuid), rnd)) {
+            g_cfg.save();
+            char msg[48];
+            std::snprintf(msg, sizeof(msg), "UUID generated %s", g_cfg.values().uuid);
+            g_log.log(p1log::Level::Info, msg);
+        }
+    }
+
     // Capture last deliberate reason for this boot, then clear NVS so a later
     // unexpected restart shows empty.
     std::snprintf(g_fw_reset_reason, sizeof(g_fw_reset_reason), "%s", g_cfg.values().last_reset);
@@ -1249,6 +1302,7 @@ void setup()
                   g_fw_reset_reason[0] != '\0' ? g_fw_reset_reason : "(none)");
     g_log.log(p1log::Level::Info, reasons);
 
+    g_web.set_store(&g_cfg);
     WiFi.onEvent(on_wifi_event);
     start_wifi();
 }

@@ -18,6 +18,10 @@ void test_route_ap_fallback()
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/style.css"));
     TEST_ASSERT_EQUAL(p1web::Route::Save,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/save"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigGet,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/config"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPost,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/config"));
 }
 
 void test_route_station()
@@ -30,6 +34,10 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/nope"));
     TEST_ASSERT_EQUAL(p1web::Route::Style,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/style.css"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigGet,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/config"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPost,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/config"));
 }
 
 void test_gzip_blobs()

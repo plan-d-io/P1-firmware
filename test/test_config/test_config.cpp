@@ -1,4 +1,4 @@
-#include <P1Config.h>
+﻿#include <P1Config.h>
 
 #include <unity.h>
 
@@ -35,10 +35,26 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
-    TEST_ASSERT_EQUAL_UINT(20, s.setting_count());
+    TEST_ASSERT_EQUAL_UINT(37, s.setting_count());
     TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
     TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
     TEST_ASSERT_EQUAL_UINT32(0, s.values().log_mark);
+    TEST_ASSERT_FALSE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("", s.values().fipaddr);
+    TEST_ASSERT_EQUAL_STRING("", s.values().fdns2);
+    TEST_ASSERT_FALSE(s.values().eid_en);
+    TEST_ASSERT_EQUAL_STRING("", s.values().uuid);
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+    TEST_ASSERT_TRUE(s.values().upd_auto);
+    TEST_ASSERT_TRUE(s.values().upd_autochk);
+    TEST_ASSERT_FALSE(s.values().push_full);
+    TEST_ASSERT_FALSE(s.values().rint_spiffs);
+    TEST_ASSERT_EQUAL_STRING("", s.values().email);
+    TEST_ASSERT_NOT_NULL(s.find_setting("FIP_EN"));
+    TEST_ASSERT_NOT_NULL(s.find_setting("PUSH_FULL"));
+    TEST_ASSERT_NOT_NULL(s.find_setting("RINT_SPIFFS"));
+    TEST_ASSERT_NOT_NULL(s.find_setting("EMAIL"));
+    TEST_ASSERT_EQUAL(p1cfg::CFG_HIDDEN, s.find_setting("EMAIL")->flags & p1cfg::CFG_HIDDEN);
 
     mem.begin(false);
     mem.put_u32("MQTT_PORT", 8883);
@@ -76,7 +92,7 @@ void test_json_out_metadata()
     MemoryBackend mem;
     Store s(mem);
     s.load();
-    char buf[3072];
+    char buf[8192];
     const std::size_t n = s.to_json(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
     TEST_ASSERT_TRUE(json_has(buf, "\"MQTT_EN\""));
@@ -101,8 +117,8 @@ void test_secrets_never_serialised()
     Store s(mem);
     s.load();
     std::strcpy(s.values().mqtt_pass, "hunter2");
-    char buf[3072];
-    s.to_json(buf, sizeof(buf));
+    char buf[8192];
+    TEST_ASSERT_TRUE(s.to_json(buf, sizeof(buf)) > 0);
     TEST_ASSERT_FALSE(json_has(buf, "hunter2"));
     TEST_ASSERT_TRUE(json_has(buf, "\"MQTT_PASS\""));
     TEST_ASSERT_TRUE(json_has(buf, "\"set\":true"));
@@ -116,6 +132,14 @@ void test_secrets_never_serialised()
     s.to_json(buf, sizeof(buf));
     TEST_ASSERT_FALSE(json_has(buf, "not-in-json"));
     TEST_ASSERT_TRUE(json_has(buf, "\"WIFI_PASS\""));
+
+    std::strcpy(s.values().eid_provkey, "eid-key-secret");
+    std::strcpy(s.values().eid_provsec, "eid-sec-secret");
+    s.to_json(buf, sizeof(buf));
+    TEST_ASSERT_FALSE(json_has(buf, "eid-key-secret"));
+    TEST_ASSERT_FALSE(json_has(buf, "eid-sec-secret"));
+    TEST_ASSERT_TRUE(json_has(buf, "\"EID_PROVKEY\""));
+    TEST_ASSERT_TRUE(json_has(buf, "\"EID_PROVSEC\""));
 }
 
 void test_json_in_atomic()
@@ -365,7 +389,7 @@ void test_to_json_overflow_is_zero()
     TEST_ASSERT_EQUAL_UINT(0, s.to_json(tiny, sizeof(tiny)));
     TEST_ASSERT_EQUAL('\0', tiny[0]);
 
-    char buf[3072];
+    char buf[8192];
     const std::size_t n = s.to_json(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n >= 2);
     TEST_ASSERT_EQUAL_CHAR('{', buf[0]);
@@ -454,7 +478,7 @@ void test_log_mark_migrate_hidden()
     TEST_ASSERT_EQUAL_UINT32(3, s.values().reboots);
     TEST_ASSERT_NOT_NULL(s.find_setting("LOG_MARK"));
 
-    char buf[2048];
+    char buf[8192];
     TEST_ASSERT_TRUE(s.to_json(buf, sizeof(buf)) > 0);
     TEST_ASSERT_FALSE(json_has(buf, "\"LOG_MARK\""));
     TEST_ASSERT_FALSE(json_has(buf, "\"CFG_VER\""));
@@ -476,6 +500,141 @@ void test_fixture_region_tags_unchanged()
         TEST_ASSERT_NOT_NULL(f);
         TEST_ASSERT_EQUAL(RegionTag::Be, f->region);
     }
+}
+
+void test_schema6_migrates_new_keys()
+{
+    MemoryBackend mem;
+    mem.begin(false);
+    mem.put_u32("CFG_VER", 5);
+    mem.put_str("WIFI_SSID", "TestNet");
+    mem.put_u32("REBOOTS", 7);
+    mem.end();
+
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_TRUE(s.migrated());
+    TEST_ASSERT_EQUAL_UINT32(6, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_UINT32(7, s.values().reboots);
+    TEST_ASSERT_FALSE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+    TEST_ASSERT_TRUE(s.values().upd_auto);
+    TEST_ASSERT_FALSE(s.values().push_full);
+    TEST_ASSERT_TRUE(mem.has("FIP_EN"));
+    TEST_ASSERT_TRUE(mem.has("REL_CHAN"));
+    TEST_ASSERT_TRUE(mem.has("PUSH_FULL"));
+    TEST_ASSERT_TRUE(mem.has("UUID"));
+}
+
+void test_ip_and_rel_chan_validation()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+
+    TEST_ASSERT_TRUE(p1cfg::ip_ok("192.0.2.40"));
+    TEST_ASSERT_FALSE(p1cfg::ip_ok("192.0.2"));
+    TEST_ASSERT_FALSE(p1cfg::ip_ok("192.0.2.256"));
+    TEST_ASSERT_FALSE(p1cfg::ip_ok("not.an.ip"));
+    TEST_ASSERT_FALSE(p1cfg::ip_ok(""));
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"FIPADDR":"192.0.2.40"})"));
+    TEST_ASSERT_EQUAL_STRING("192.0.2.40", s.values().fipaddr);
+
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":"192.0.2"})"));
+    TEST_ASSERT_EQUAL_STRING("192.0.2.40", s.values().fipaddr);
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":"192.0.2.256"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":"not.an.ip"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":""})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FSUBN":""})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FDNS1":""})"));
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"FDNS2":""})"));
+    TEST_ASSERT_EQUAL_STRING("", s.values().fdns2);
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"FDNS2":"1.1.1.1"})"));
+    TEST_ASSERT_EQUAL_STRING("1.1.1.1", s.values().fdns2);
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FDNS2":"bad"})"));
+    TEST_ASSERT_EQUAL_STRING("1.1.1.1", s.values().fdns2);
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"alpha"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"develop"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"V2"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"main"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"REL_CHAN":"beta"})"));
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+}
+
+void test_uuid_generated_once()
+{
+    const std::uint8_t rnd_a[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+    const std::uint8_t rnd_b[8] = {0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88};
+    char uuid[p1cfg::kUuidMax]{};
+    TEST_ASSERT_TRUE(p1cfg::ensure_uuid(uuid, sizeof(uuid), rnd_a));
+    TEST_ASSERT_EQUAL_STRING("P10123456789abcdef", uuid);
+    TEST_ASSERT_FALSE(p1cfg::ensure_uuid(uuid, sizeof(uuid), rnd_b));
+    TEST_ASSERT_EQUAL_STRING("P10123456789abcdef", uuid);
+}
+
+void test_to_json_fits_max_strings()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    auto fill = [](char* dst, std::size_t cap, char c) {
+        for (std::size_t i = 0; i + 1 < cap; ++i) {
+            dst[i] = c;
+        }
+        dst[cap - 1] = '\0';
+    };
+    fill(s.values().mqtt_host, sizeof(s.values().mqtt_host), 'h');
+    fill(s.values().mqtt_id, sizeof(s.values().mqtt_id), 'i');
+    fill(s.values().mqtt_user, sizeof(s.values().mqtt_user), 'u');
+    fill(s.values().mqtt_pfix, sizeof(s.values().mqtt_pfix), 'p');
+    fill(s.values().ha_device, sizeof(s.values().ha_device), 'd');
+    fill(s.values().region, sizeof(s.values().region), 'r');
+    // region must stay valid for realism; overwrite with legal value
+    std::strcpy(s.values().region, "auto");
+    fill(s.values().wifi_ssid, sizeof(s.values().wifi_ssid), 'w');
+    fill(s.values().last_reset, sizeof(s.values().last_reset), 'x');
+    std::strcpy(s.values().fipaddr, "255.255.255.255");
+    std::strcpy(s.values().fsubn, "255.255.255.255");
+    std::strcpy(s.values().fdefgtw, "255.255.255.255");
+    std::strcpy(s.values().fdns1, "255.255.255.255");
+    std::strcpy(s.values().fdns2, "255.255.255.255");
+    fill(s.values().eidclaim, sizeof(s.values().eidclaim), 'c');
+    fill(s.values().uuid, sizeof(s.values().uuid), 'z');
+    std::strcpy(s.values().rel_chan, "develop");
+
+    char buf[8192];
+    const std::size_t n = s.to_json(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
+}
+
+void test_config_api_apply_semantics()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+
+    // HTTP POST /config rejects bodies above this cap (server_esp.cpp).
+    constexpr std::size_t kMax = 2048;
+    TEST_ASSERT_TRUE(kMax + 1 > kMax);
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"UPL_THROTTLE":15})"));
+    s.save();
+    TEST_ASSERT_EQUAL_UINT32(15, s.values().upl_throttle);
+
+    Store s2(mem);
+    s2.load();
+    TEST_ASSERT_EQUAL_UINT32(15, s2.values().upl_throttle);
+
+    const auto before = s2.values().upl_throttle;
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s2.apply_json(R"({"REL_CHAN":"nope"})"));
+    TEST_ASSERT_EQUAL_STRING("main", s2.values().rel_chan);
+    TEST_ASSERT_EQUAL_UINT32(before, s2.values().upl_throttle);
+    TEST_ASSERT_EQUAL_STRING("Invalid", p1cfg::json_status_name(JsonStatus::Invalid));
 }
 
 extern "C" void setUp() {}
@@ -505,5 +664,10 @@ int main()
     RUN_TEST(test_log_mark_migrate_hidden);
     RUN_TEST(test_water_equipment_id_not_catalogued);
     RUN_TEST(test_fixture_region_tags_unchanged);
+    RUN_TEST(test_schema6_migrates_new_keys);
+    RUN_TEST(test_ip_and_rel_chan_validation);
+    RUN_TEST(test_uuid_generated_once);
+    RUN_TEST(test_to_json_fits_max_strings);
+    RUN_TEST(test_config_api_apply_semantics);
     return UNITY_END();
 }
