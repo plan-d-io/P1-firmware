@@ -30,6 +30,13 @@ esp_err_t send_html(httpd_req_t* req, const char* html, std::size_t len)
     return httpd_resp_send(req, html, static_cast<ssize_t>(len));
 }
 
+esp_err_t send_json(httpd_req_t* req, const char* json, std::size_t len)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, json, static_cast<ssize_t>(len));
+}
+
 esp_err_t dispatch(httpd_req_t* req)
 {
     if (g_server == nullptr) {
@@ -43,6 +50,8 @@ esp_err_t dispatch(httpd_req_t* req)
         return send_gzip(req, "text/css", assets::kStyleCssGz, assets::kStyleCssGzLen);
     case Route::Restarting:
         return send_gzip(req, "text/html", assets::kRestartingHtmlGz, assets::kRestartingHtmlGzLen);
+    case Route::ConfigPage:
+        return send_gzip(req, "text/html", assets::kConfigHtmlGz, assets::kConfigHtmlGzLen);
     case Route::Setup: {
         char* page = static_cast<char*>(malloc(kHtmlBuf));
         if (page == nullptr) {
@@ -80,6 +89,47 @@ esp_err_t dispatch(httpd_req_t* req)
         free(page);
         return err;
     }
+    case Route::ApiStatus: {
+        char* json = static_cast<char*>(malloc(kApiStatusMax));
+        if (json == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        StatusView blank{};
+        const StatusView* st = g_server->status_ptr();
+        const std::size_t n = render_api_status(st != nullptr ? *st : blank, json, kApiStatusMax);
+        if (n == 0) {
+            free(json);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status json");
+            return ESP_FAIL;
+        }
+        const esp_err_t err = send_json(req, json, n);
+        free(json);
+        return err;
+    }
+    case Route::ApiData: {
+        char* json = static_cast<char*>(malloc(kApiDataMax));
+        if (json == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        ReadingsView blank{};
+        const ReadingsView* rd = g_server->readings_ptr();
+        const std::size_t n = render_api_data(rd != nullptr ? *rd : blank, json, kApiDataMax);
+        if (n == 0) {
+            free(json);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "data json");
+            return ESP_FAIL;
+        }
+        const esp_err_t err = send_json(req, json, n);
+        free(json);
+        return err;
+    }
+    case Route::Reboot: {
+        g_server->actions()->reboot = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
     case Route::ConfigGet: {
         p1cfg::Store* store = g_server->store_ptr();
         if (store == nullptr) {
@@ -97,9 +147,7 @@ esp_err_t dispatch(httpd_req_t* req)
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json overflow");
             return ESP_FAIL;
         }
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-        const esp_err_t err = httpd_resp_send(req, json, static_cast<ssize_t>(n));
+        const esp_err_t err = send_json(req, json, n);
         free(json);
         return err;
     }
@@ -130,13 +178,16 @@ esp_err_t dispatch(httpd_req_t* req)
             got += r;
         }
         body[got] = '\0';
+        char bad_key[24]{};
         // apply_json is in-memory only; save() touches NVS. Both are safe from the
         // HTTP task. MQTT republish is deferred to the loop via Actions.
-        const p1cfg::JsonStatus st =
-            store->apply_json(std::string_view(body, static_cast<std::size_t>(got)));
+        const p1cfg::JsonStatus st = store->apply_json(
+            std::string_view(body, static_cast<std::size_t>(got)), bad_key, sizeof(bad_key));
         free(body);
         if (st != p1cfg::JsonStatus::Ok) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, p1cfg::json_status_name(st));
+            char err[kConfigErrMax];
+            format_config_error(st, bad_key, err, sizeof(err));
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
             return ESP_FAIL;
         }
         store->save();
@@ -226,6 +277,11 @@ const StatusView* Server::status_ptr() const
     return status_;
 }
 
+const ReadingsView* Server::readings_ptr() const
+{
+    return readings_;
+}
+
 p1cfg::Store* Server::store_ptr() const
 {
     return store_;
@@ -238,7 +294,7 @@ bool Server::begin(Mode mode)
         return true;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;
     httpd_handle_t handle = nullptr;
@@ -263,6 +319,9 @@ bool Server::begin(Mode mode)
     register_one(handle, "/save", HTTP_POST);
     register_one(handle, "/config", HTTP_GET);
     register_one(handle, "/config", HTTP_POST);
+    register_one(handle, "/api/status", HTTP_GET);
+    register_one(handle, "/api/data", HTTP_GET);
+    register_one(handle, "/reboot", HTTP_POST);
     httpd_register_err_handler(handle, HTTPD_404_NOT_FOUND, on_404);
 
     running_ = true;
@@ -295,6 +354,11 @@ void Server::set_scan(const ScanCache* scan)
 void Server::set_status(const StatusView* status)
 {
     status_ = status;
+}
+
+void Server::set_readings(const ReadingsView* readings)
+{
+    readings_ = readings;
 }
 
 void Server::set_store(p1cfg::Store* store)

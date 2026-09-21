@@ -48,6 +48,15 @@ Route resolve(Mode mode, Method method, std::string_view uri)
         }
         return Route::NotFound;
     }
+    if (uri == "/api/status" && method == Method::Get) {
+        return Route::ApiStatus;
+    }
+    if (uri == "/api/data" && method == Method::Get) {
+        return Route::ApiData;
+    }
+    if (uri == "/reboot" && method == Method::Post) {
+        return Route::Reboot;
+    }
     if (method == Method::Post && uri == "/save") {
         return Route::Save;
     }
@@ -67,7 +76,10 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     }
 
     // Station mode.
-    if (uri == "/" || uri == "/status" || uri == "/status.html" || uri == "/index.html") {
+    if (uri == "/" || uri == "/index.html") {
+        return Route::ConfigPage;
+    }
+    if (uri == "/status" || uri == "/status.html") {
         return Route::Status;
     }
     if (uri == "/setup" || uri == "/setup.html") {
@@ -298,6 +310,120 @@ std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap)
                     step("{{MQTT}}", v.mqtt) && step("{{TELEGRAMS}}", v.telegrams);
     std::free(scratch);
     return ok ? std::strlen(out) : 0;
+}
+
+static bool json_escape_append(char* out, std::size_t cap, std::size_t& n, std::string_view s);
+
+std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap < 32) {
+        return 0;
+    }
+    std::size_t n = 0;
+    auto put = [&](const char* s) -> bool {
+        for (const char* p = s; *p; ++p) {
+            if (n + 1 >= cap) {
+                return false;
+            }
+            out[n++] = *p;
+        }
+        return true;
+    };
+    auto put_str = [&](const char* key, const char* val) -> bool {
+        if (!put("\"") || !put(key) || !put("\":\"")) {
+            return false;
+        }
+        if (!json_escape_append(out, cap, n, val != nullptr ? val : "")) {
+            return false;
+        }
+        return put("\"");
+    };
+    auto put_bool = [&](const char* key, bool val) -> bool {
+        return put("\"") && put(key) && put("\":") && put(val ? "true" : "false");
+    };
+    auto put_u = [&](const char* key, unsigned val) -> bool {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%u", val);
+        return put("\"") && put(key) && put("\":") && put(buf);
+    };
+
+    if (!put("{") || !put_str("device_id", v.device_id) || !put(",") ||
+        !put_str("fw_ver", v.fw_ver) || !put(",") || !put_str("ip", v.ip) || !put(",") ||
+        !put_str("uptime", v.uptime) || !put(",") || !put_str("heap", v.heap) || !put(",") ||
+        !put_str("rssi", v.rssi) || !put(",") || !put_str("mqtt", v.mqtt) || !put(",") ||
+        !put_bool("wifi", v.wifi) || !put(",") || !put_bool("meter", v.meter) || !put(",") ||
+        !put_bool("ha_en", v.ha_en) || !put(",") || !put_u("telegrams_ok", v.telegrams_ok) ||
+        !put(",") || !put_u("telegrams_rejected", v.telegrams_rejected) || !put("}")) {
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+std::size_t render_api_data(const ReadingsView& r, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap < 2) {
+        return 0;
+    }
+    std::size_t n = 0;
+    auto putc = [&](char c) -> bool {
+        if (n + 1 >= cap) {
+            return false;
+        }
+        out[n++] = c;
+        return true;
+    };
+    auto put = [&](const char* s) -> bool {
+        for (const char* p = s; *p; ++p) {
+            if (!putc(*p)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!putc('[')) {
+        return 0;
+    }
+    bool first = true;
+    const p1cfg::Field* cat = p1cfg::catalogue();
+    const std::size_t nf = p1cfg::catalogue_size();
+    const std::size_t lim = r.count < nf ? r.count : nf;
+    for (std::size_t i = 0; i < lim; ++i) {
+        if (r.fields == nullptr || r.fields[i].value[0] == '\0') {
+            continue;
+        }
+        if (!first && !putc(',')) {
+            return 0;
+        }
+        first = false;
+        if (!put("{\"id\":\"") || !json_escape_append(out, cap, n, cat[i].id) ||
+            !put("\",\"label\":\"") || !json_escape_append(out, cap, n, cat[i].label) ||
+            !put("\",\"value\":\"") || !json_escape_append(out, cap, n, r.fields[i].value) ||
+            !put("\",\"unit\":\"") || !json_escape_append(out, cap, n, r.fields[i].unit) ||
+            !put("\"}")) {
+            return 0;
+        }
+    }
+    if (!putc(']')) {
+        return 0;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char* out,
+                                std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    const char* name = p1cfg::json_status_name(st);
+    if (bad_key == nullptr || bad_key[0] == '\0') {
+        const int n = std::snprintf(out, cap, "%s", name);
+        return n > 0 ? static_cast<std::size_t>(n) : 0;
+    }
+    const int n = std::snprintf(out, cap, "%s:%s", name, bad_key);
+    return n > 0 ? static_cast<std::size_t>(n) : 0;
 }
 
 static int hex_nibble(char c)

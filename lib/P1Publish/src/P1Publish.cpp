@@ -1,5 +1,6 @@
 #include "P1Publish.h"
 
+#include <cstdio>
 #include <cstring>
 
 namespace p1pub {
@@ -628,6 +629,35 @@ std::size_t Builder::emit_impl(const p1dsmr::Data& data, const p1cfg::Store& cfg
 bool reading_present(const p1dsmr::Data& data, std::string_view id)
 {
     return value_of(data, id).kind != Val::Kind::Absent;
+}
+
+bool reading_text(const p1dsmr::Data& data, std::string_view id, char* value,
+                  std::size_t value_cap, char* unit, std::size_t unit_cap)
+{
+    if (value == nullptr || value_cap == 0) {
+        return false;
+    }
+    value[0] = '\0';
+    if (unit != nullptr && unit_cap > 0) {
+        unit[0] = '\0';
+    }
+    const Val v = value_of(data, id);
+    if (v.kind == Val::Kind::Absent) {
+        return false;
+    }
+    std::size_t n = 0;
+    if (!append_value(value, value_cap, n, v, false)) {
+        value[0] = '\0';
+        return false;
+    }
+    value[n] = '\0';
+    if (unit != nullptr && unit_cap > 0) {
+        const char* u = publish_unit(v.unit);
+        if (u != nullptr) {
+            std::snprintf(unit, unit_cap, "%s", u);
+        }
+    }
+    return true;
 }
 
 std::uint64_t discovery_field_mask(const p1dsmr::Data& data, const p1cfg::Store& cfg)

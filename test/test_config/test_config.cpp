@@ -54,7 +54,7 @@ void test_defaults_and_stored()
     TEST_ASSERT_NOT_NULL(s.find_setting("PUSH_FULL"));
     TEST_ASSERT_NOT_NULL(s.find_setting("RINT_SPIFFS"));
     TEST_ASSERT_NOT_NULL(s.find_setting("EMAIL"));
-    TEST_ASSERT_EQUAL(p1cfg::CFG_HIDDEN, s.find_setting("EMAIL")->flags & p1cfg::CFG_HIDDEN);
+    TEST_ASSERT_EQUAL(p1cfg::CFG_IN_API, s.find_setting("EMAIL")->flags & p1cfg::CFG_IN_API);
 
     mem.begin(false);
     mem.put_u32("MQTT_PORT", 8883);
@@ -642,6 +642,7 @@ void test_to_json_fits_max_strings()
     fill(s.values().eidclaim, sizeof(s.values().eidclaim), 'c');
     fill(s.values().uuid, sizeof(s.values().uuid), 'z');
     std::strcpy(s.values().rel_chan, "develop");
+    fill(s.values().email, sizeof(s.values().email), 'e');
 
     char buf[p1cfg::kToJsonBufMin];
     const std::size_t n = s.to_json(buf, sizeof(buf));
@@ -673,6 +674,46 @@ void test_config_api_apply_semantics()
     TEST_ASSERT_EQUAL_STRING("main", s2.values().rel_chan);
     TEST_ASSERT_EQUAL_UINT32(before, s2.values().upl_throttle);
     TEST_ASSERT_EQUAL_STRING("Invalid", p1cfg::json_status_name(JsonStatus::Invalid));
+}
+
+void test_apply_json_reports_bad_key()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    char bad[24];
+
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"MQTT_PORT":0})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("MQTT_PORT", bad);
+    TEST_ASSERT_EQUAL_UINT32(1883, s.values().mqtt_port);
+
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FRMT_PYLD":9})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("FRMT_PYLD", bad);
+
+    TEST_ASSERT_EQUAL(JsonStatus::UnknownKey, s.apply_json(R"({"NOPE":1})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("NOPE", bad);
+
+    TEST_ASSERT_EQUAL(JsonStatus::WrongType,
+                      s.apply_json(R"({"MQTT_PORT":"x"})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("MQTT_PORT", bad);
+
+    TEST_ASSERT_EQUAL(
+        JsonStatus::Invalid,
+        s.apply_json(
+            R"({"FIP_EN":true,"FIPADDR":"10.99.0.50","FSUBN":"255.255.255.0","FDEFGTW":"192.0.2.1","FDNS1":"192.0.2.1"})",
+            bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("FIPADDR", bad);
+
+    TEST_ASSERT_EQUAL(
+        JsonStatus::Invalid,
+        s.apply_json(
+            R"({"FIP_EN":true,"FIPADDR":"192.0.2.40","FSUBN":"not.a.mask","FDEFGTW":"192.0.2.1","FDNS1":"1.1.1.1"})",
+            bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("FSUBN", bad);
+
+    bad[0] = 'x';
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"MQTT_PORT":1883})", bad, sizeof(bad)));
+    TEST_ASSERT_EQUAL_STRING("", bad);
 }
 
 extern "C" void setUp() {}
@@ -708,5 +749,6 @@ int main()
     RUN_TEST(test_uuid_generated_once);
     RUN_TEST(test_to_json_fits_max_strings);
     RUN_TEST(test_config_api_apply_semantics);
+    RUN_TEST(test_apply_json_reports_bad_key);
     return UNITY_END();
 }

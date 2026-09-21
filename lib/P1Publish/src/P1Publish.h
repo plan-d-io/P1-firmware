@@ -55,6 +55,9 @@ const char* ha_state_class(const p1cfg::Field& field);
 const char* ha_unit(const p1cfg::Field& field);
 
 bool reading_present(const p1dsmr::Data& data, std::string_view id);
+// Short display text for one catalogue id (no JSON quoting). False if absent.
+bool reading_text(const p1dsmr::Data& data, std::string_view id, char* value,
+                  std::size_t value_cap, char* unit, std::size_t unit_cap);
 std::uint64_t discovery_field_mask(const p1dsmr::Data& data, const p1cfg::Store& cfg);
 std::uint64_t enabled_field_mask(const p1cfg::Store& cfg);
 

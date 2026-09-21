@@ -299,7 +299,11 @@ public:
     const char* published_mqtt_pfix() const { return ha_pub_pfix_; }
     void set_published_ha_identity(const char* slug, const char* pfix);
 
-    JsonStatus apply_json(std::string_view json);
+    // On failure, if bad_key is non-null and bad_key_cap > 0, writes the
+    // offending setting key (NUL-terminated) when one is known. Cleared to
+    // empty on success. Existing one-argument call sites keep working.
+    JsonStatus apply_json(std::string_view json, char* bad_key = nullptr,
+                          std::size_t bad_key_cap = 0);
     // 0 means the buffer was too small (or cap == 0). Success is never 0:
     // the object is at least "{}".
     std::size_t to_json(char* out, std::size_t cap) const;

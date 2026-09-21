@@ -1,4 +1,5 @@
 #include <P1Web.h>
+#include <P1Config.h>
 
 #include <unity.h>
 
@@ -26,10 +27,20 @@ void test_route_ap_fallback()
 
 void test_route_station()
 {
-    TEST_ASSERT_EQUAL(p1web::Route::Status,
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/index.html"));
     TEST_ASSERT_EQUAL(p1web::Route::Status,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/status"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiStatus,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/status"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiData,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/data"));
+    TEST_ASSERT_EQUAL(p1web::Route::Reboot,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reboot"));
+    TEST_ASSERT_EQUAL(p1web::Route::NotFound,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/reboot"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/nope"));
     TEST_ASSERT_EQUAL(p1web::Route::Style,
@@ -50,6 +61,11 @@ void test_gzip_blobs()
     TEST_ASSERT_TRUE(p1web::assets::kRestartingHtmlGzLen > 2);
     TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kRestartingHtmlGz[0]);
     TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kRestartingHtmlGz[1]);
+
+    TEST_ASSERT_TRUE(p1web::assets::kConfigHtmlGzLen > 2);
+    TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kConfigHtmlGz[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kConfigHtmlGz[1]);
+    TEST_ASSERT_TRUE(p1web::assets::kConfigHtmlRawLen > p1web::assets::kConfigHtmlGzLen);
 }
 
 void test_status_render()
@@ -70,6 +86,70 @@ void test_status_render()
     TEST_ASSERT_NOT_NULL(std::strstr(page, "192.0.2.10"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "Connected"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "ok=10 rejected=1"));
+}
+
+void test_api_status_json()
+{
+    p1web::StatusView v{};
+    v.device_id = "P1AABBCC";
+    v.fw_ver = "3.00";
+    v.ip = "192.0.2.10";
+    v.uptime = "12 s";
+    v.heap = "169000";
+    v.rssi = "-66";
+    v.mqtt = "Connected";
+    v.wifi = true;
+    v.meter = true;
+    v.ha_en = true;
+    v.telegrams_ok = 10;
+    v.telegrams_rejected = 1;
+    char buf[p1web::kApiStatusMax];
+    const std::size_t n = p1web::render_api_status(v, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"device_id\":\"P1AABBCC\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt\":\"Connected\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
+    TEST_ASSERT_NULL(std::strstr(buf, "password"));
+    TEST_ASSERT_NULL(std::strstr(buf, "secret"));
+}
+
+void test_api_data_json_max()
+{
+    p1web::FieldReading fields[p1cfg::kMaxFields]{};
+    const std::size_t nf = p1cfg::catalogue_size();
+    TEST_ASSERT_TRUE(nf <= p1cfg::kMaxFields);
+    for (std::size_t i = 0; i < nf; ++i) {
+        // Max-length display strings.
+        for (std::size_t j = 0; j + 1 < p1web::kReadingValueMax; ++j) {
+            fields[i].value[j] = '9';
+        }
+        fields[i].value[p1web::kReadingValueMax - 1] = '\0';
+        std::snprintf(fields[i].unit, sizeof(fields[i].unit), "kWh");
+    }
+    p1web::ReadingsView r{fields, nf};
+    char buf[p1web::kApiDataMax];
+    const std::size_t n = p1web::render_api_data(r, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
+    TEST_ASSERT_EQUAL('[', buf[0]);
+    TEST_ASSERT_EQUAL(']', buf[n - 1]);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"id\":"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"label\":"));
+    TEST_ASSERT_NULL(std::strstr(buf, "WIFI_PASS"));
+    TEST_ASSERT_NULL(std::strstr(buf, "MQTT_PASS"));
+}
+
+void test_format_config_error()
+{
+    char err[p1web::kConfigErrMax];
+    TEST_ASSERT_TRUE(p1web::format_config_error(p1cfg::JsonStatus::Invalid, "MQTT_PORT", err,
+                                                sizeof(err)) > 0);
+    TEST_ASSERT_EQUAL_STRING("Invalid:MQTT_PORT", err);
+    TEST_ASSERT_TRUE(
+        p1web::format_config_error(p1cfg::JsonStatus::Parse, "", err, sizeof(err)) > 0);
+    TEST_ASSERT_EQUAL_STRING("Parse", err);
 }
 
 void test_provision_machine()
@@ -160,6 +240,9 @@ int main()
     RUN_TEST(test_route_station);
     RUN_TEST(test_gzip_blobs);
     RUN_TEST(test_status_render);
+    RUN_TEST(test_api_status_json);
+    RUN_TEST(test_api_data_json_max);
+    RUN_TEST(test_format_config_error);
     RUN_TEST(test_provision_machine);
     RUN_TEST(test_save_form_and_json);
     RUN_TEST(test_scan_sort);

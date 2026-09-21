@@ -19,17 +19,26 @@ constexpr std::size_t kHtmlBuf = 3072;
 constexpr char kCacheControl[] = "public, max-age=300";
 constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
+constexpr std::size_t kApiStatusMax = 768;
+constexpr std::size_t kApiDataMax = 6144;
+constexpr std::size_t kReadingValueMax = 16;
+constexpr std::size_t kReadingUnitMax = 8;
+constexpr std::size_t kConfigErrMax = 48;
 
 enum class Mode : std::uint8_t { Ap, Station };
 
 enum class Route : std::uint8_t {
     Setup,
     Status,
+    ConfigPage,
     Style,
     Save,
     Restarting,
     ConfigGet,
     ConfigPost,
+    ApiStatus,
+    ApiData,
+    Reboot,
     NotFound,
 };
 
@@ -89,6 +98,21 @@ struct StatusView {
     const char* rssi = "";
     const char* mqtt = "";
     const char* telegrams = "";
+    bool wifi = false;
+    bool meter = false;
+    bool ha_en = false;
+    unsigned telegrams_ok = 0;
+    unsigned telegrams_rejected = 0;
+};
+
+struct FieldReading {
+    char value[kReadingValueMax]{};
+    char unit[kReadingUnitMax]{};
+};
+
+struct ReadingsView {
+    const FieldReading* fields = nullptr;  // catalogue_size() entries
+    std::size_t count = 0;
 };
 
 // Pending side effects for the loop task. Handlers only set these.
@@ -105,6 +129,12 @@ void sort_scan_strongest_first(ScanCache& cache);
 std::size_t render_network_radios(const ScanCache& cache, char* out, std::size_t cap);
 std::size_t render_setup_page(const ScanCache& cache, char* out, std::size_t cap);
 std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap);
+std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap);
+std::size_t render_api_data(const ReadingsView& r, char* out, std::size_t cap);
+
+// "Invalid:MQTT_PORT" style body for POST /config failures.
+std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char* out,
+                                std::size_t cap);
 
 // Replace first occurrence of needle with value into out. Returns bytes written
 // (excluding NUL), or 0 on overflow.
@@ -127,6 +157,7 @@ public:
     void set_mode(Mode mode);
     void set_scan(const ScanCache* scan);
     void set_status(const StatusView* status);
+    void set_readings(const ReadingsView* readings);
     void set_store(p1cfg::Store* store);
     Actions* actions();
     bool running() const { return running_; }
@@ -135,6 +166,7 @@ public:
     Mode mode_for_handlers() const;
     const ScanCache* scan_ptr() const;
     const StatusView* status_ptr() const;
+    const ReadingsView* readings_ptr() const;
     p1cfg::Store* store_ptr() const;
 
 private:
@@ -143,6 +175,7 @@ private:
     void* handle_ = nullptr;  // httpd_handle_t
     const ScanCache* scan_ = nullptr;
     const StatusView* status_ = nullptr;
+    const ReadingsView* readings_ = nullptr;
     p1cfg::Store* store_ = nullptr;
     Actions actions_{};
 };

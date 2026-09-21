@@ -478,7 +478,7 @@ void Store::bind_table()
     add_str("REL_CHAN", "Release channel", CFG_IN_API, v_.rel_chan, sizeof(v_.rel_chan), "main");
     add_bool("UPD_AUTO", "Automatic updates", CFG_IN_API, &v_.upd_auto, true);
     add_bool("UPD_AUTOCHK", "Check for updates", CFG_IN_API, &v_.upd_autochk, true);
-    add_str("EMAIL", "User email", CFG_HIDDEN, v_.email, sizeof(v_.email), "");
+    add_str("EMAIL", "User email", CFG_IN_API, v_.email, sizeof(v_.email), "");
     add_bool("PUSH_FULL", "Publish full telegram (~1 KB)", CFG_IN_API, &v_.push_full, false);
     add_bool("RINT_SPIFFS", "Reinitialise filesystem", CFG_IN_API, &v_.rint_spiffs, false);
     // Internal store-and-forward cursor — not a user setting.
@@ -724,10 +724,23 @@ void Store::set_field_on(std::string_view id, bool on)
     field_over_[idx] = (on == def) ? 0 : (on ? 1 : 2);
 }
 
-JsonStatus Store::apply_json(std::string_view json)
+JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t bad_key_cap)
 {
+    if (bad_key != nullptr && bad_key_cap > 0) {
+        bad_key[0] = '\0';
+    }
+    auto set_bad = [&](const char* key) {
+        if (bad_key == nullptr || bad_key_cap == 0 || key == nullptr) {
+            return;
+        }
+        std::snprintf(bad_key, bad_key_cap, "%s", key);
+    };
+
     const Settings saved = v_;
-    auto fail = [this, &saved](JsonStatus st) {
+    auto fail = [&](JsonStatus st, const char* key = nullptr) {
+        if (key != nullptr) {
+            set_bad(key);
+        }
         v_ = saved;
         bind_table();
         return st;
@@ -756,13 +769,13 @@ JsonStatus Store::apply_json(std::string_view json)
         }
         const CfgEntry* e = find_setting(key);
         if (e == nullptr || (e->flags & CFG_IN_API) == 0) {
-            return fail(JsonStatus::UnknownKey);
+            return fail(JsonStatus::UnknownKey, key);
         }
         switch (e->type) {
         case CfgType::Bool: {
             bool v = false;
             if (!parse_bool(c, v)) {
-                return fail(JsonStatus::WrongType);
+                return fail(JsonStatus::WrongType, key);
             }
             *e->var.b = v;
             break;
@@ -770,10 +783,10 @@ JsonStatus Store::apply_json(std::string_view json)
         case CfgType::I32: {
             std::int32_t v = 0;
             if (!parse_i32(c, v)) {
-                return fail(JsonStatus::WrongType);
+                return fail(JsonStatus::WrongType, key);
             }
             if (std::strcmp(e->key, "FRMT_PYLD") == 0 && (v < 0 || v > 3)) {
-                return fail(JsonStatus::Invalid);
+                return fail(JsonStatus::Invalid, key);
             }
             *e->var.i = v;
             break;
@@ -781,10 +794,10 @@ JsonStatus Store::apply_json(std::string_view json)
         case CfgType::U32: {
             std::uint32_t v = 0;
             if (!parse_u32(c, v)) {
-                return fail(JsonStatus::WrongType);
+                return fail(JsonStatus::WrongType, key);
             }
             if (std::strcmp(e->key, "MQTT_PORT") == 0 && (v < 1u || v > 65535u)) {
-                return fail(JsonStatus::Invalid);
+                return fail(JsonStatus::Invalid, key);
             }
             *e->var.u = v;
             break;
@@ -792,16 +805,16 @@ JsonStatus Store::apply_json(std::string_view json)
         case CfgType::Str: {
             overflow = false;
             if (!parse_string(c, e->var.s, e->str_cap, overflow)) {
-                return fail(JsonStatus::WrongType);
+                return fail(JsonStatus::WrongType, key);
             }
             if (overflow) {
-                return fail(JsonStatus::Invalid);
+                return fail(JsonStatus::Invalid, key);
             }
             if (std::strcmp(e->key, "REGION") == 0 && !region_ok(e->var.s)) {
-                return fail(JsonStatus::Invalid);
+                return fail(JsonStatus::Invalid, key);
             }
             if (std::strcmp(e->key, "REL_CHAN") == 0 && !rel_chan_ok(e->var.s)) {
-                return fail(JsonStatus::Invalid);
+                return fail(JsonStatus::Invalid, key);
             }
             // IP field format is checked only when FIP_EN is true (post-pass).
             break;
@@ -817,14 +830,24 @@ JsonStatus Store::apply_json(std::string_view json)
         return fail(JsonStatus::Parse);
     }
     if (v_.fip_en) {
-        if (!ip_ok(v_.fipaddr) || !ip_ok(v_.fsubn) || !ip_ok(v_.fdefgtw) || !ip_ok(v_.fdns1)) {
-            return fail(JsonStatus::Invalid);
+        if (!ip_ok(v_.fipaddr)) {
+            return fail(JsonStatus::Invalid, "FIPADDR");
+        }
+        if (!ip_ok(v_.fsubn)) {
+            return fail(JsonStatus::Invalid, "FSUBN");
+        }
+        if (!ip_ok(v_.fdefgtw)) {
+            return fail(JsonStatus::Invalid, "FDEFGTW");
+        }
+        if (!ip_ok(v_.fdns1)) {
+            return fail(JsonStatus::Invalid, "FDNS1");
         }
         if (v_.fdns2[0] != '\0' && !ip_ok(v_.fdns2)) {
-            return fail(JsonStatus::Invalid);
+            return fail(JsonStatus::Invalid, "FDNS2");
         }
         if (!static_ip_consistent(v_.fipaddr, v_.fsubn, v_.fdefgtw)) {
-            return fail(JsonStatus::Invalid);
+            // Prefer the address when the subnet pair is inconsistent.
+            return fail(JsonStatus::Invalid, "FIPADDR");
         }
     }
     return JsonStatus::Ok;

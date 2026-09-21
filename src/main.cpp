@@ -80,6 +80,8 @@ static char g_status_heap[16]{};
 static char g_status_rssi[12]{};
 static char g_status_tele[48]{};
 static p1web::StatusView g_status_view{};
+static p1web::FieldReading g_last_readings[p1cfg::kMaxFields]{};
+static p1web::ReadingsView g_readings_view{g_last_readings, 0};
 
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
@@ -386,6 +388,9 @@ static void ensure_web_station()
         g_web.set_mode(p1web::Mode::Station);
     }
     g_web.set_status(&g_status_view);
+    g_readings_view.fields = g_last_readings;
+    g_readings_view.count = p1cfg::catalogue_size();
+    g_web.set_readings(&g_readings_view);
 }
 
 static void refresh_status_view()
@@ -407,6 +412,11 @@ static void refresh_status_view()
     g_status_view.rssi = g_status_rssi;
     g_status_view.mqtt = mqtt_state_name(g_mqtt.state());
     g_status_view.telegrams = g_status_tele;
+    g_status_view.wifi = (WiFi.status() == WL_CONNECTED);
+    g_status_view.meter = (g_ok > 0);
+    g_status_view.ha_en = g_cfg.values().ha_en;
+    g_status_view.telegrams_ok = g_ok;
+    g_status_view.telegrams_rejected = g_rejected;
 }
 
 static void poll_wifi_scan()
@@ -992,6 +1002,22 @@ static void on_telegram(const p1dsmr::Data& data)
         g_mqtt.publish(topic, payload, false);
         ++n;
     });
+    // Snapshot display values for the config page (/api/data). Fixed buffers only.
+    {
+        const p1cfg::Field* cat = p1cfg::catalogue();
+        const std::size_t nf = p1cfg::catalogue_size();
+        for (std::size_t i = 0; i < nf && i < p1cfg::kMaxFields; ++i) {
+            if (!g_cfg.field_on(cat[i].id)) {
+                continue;
+            }
+            if (p1pub::reading_text(data, cat[i].id, g_last_readings[i].value,
+                                    sizeof(g_last_readings[i].value), g_last_readings[i].unit,
+                                    sizeof(g_last_readings[i].unit))) {
+                // keep
+            }
+        }
+        g_readings_view.count = nf;
+    }
     if (g_cfg.values().push_full) {
         char topic[p1mqtt::kTopicBuf];
         const int tw =

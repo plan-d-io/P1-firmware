@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital meter dongle</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+  <noscript>Enable JavaScript to configure this dongle. A read-only status page is at <a href="/status">/status</a>.</noscript>
+  <h2>Digital meter dongle</h2>
+  <h2 id="hostnameHeader"></h2>
+  <p class="msg" id="infoMessage"></p>
+
+  <div class="svg-container" aria-label="Status">
+    <div class="ind unknown" id="ind-meter" title="Meter"></div>
+    <div class="ind unknown" id="ind-wifi" title="WiFi"></div>
+    <div class="ind unknown" id="ind-broker" title="MQTT broker"></div>
+    <div class="ind unknown" id="ind-ha" title="Home Assistant"></div>
+  </div>
+
+  <button type="button" class="collapsible active" id="realTimeDataCollapsible">Real-time data</button>
+  <div class="content" id="rtContent" style="display:block">
+    <div class="grid-container" id="readingsGrid"></div>
+  </div>
+
+  <form id="configForm">
+    <button type="button" class="collapsible active">Basic settings</button>
+    <div class="content" style="display:block" data-section="basic"></div>
+
+    <button type="button" class="collapsible">MQTT</button>
+    <div class="content" data-section="mqtt"></div>
+
+    <button type="button" class="collapsible">Home Assistant</button>
+    <div class="content" data-section="ha"></div>
+
+    <button type="button" class="collapsible">Advanced network</button>
+    <div class="content" data-section="net"></div>
+
+    <button type="button" class="collapsible">Telegram settings</button>
+    <div class="content" data-section="tg"></div>
+
+    <button type="button" class="collapsible">Dongle settings</button>
+    <div class="content" data-section="dongle"></div>
+
+    <button type="submit" class="submit">Submit</button>
+  </form>
+  <button type="button" class="reboot" id="rebootBtn">Reboot</button>
+  <footer><a href="https://www.plan-d.io" target="_blank" rel="noopener">Digital meter dongle by plan-d.io</a></footer>
+</div>
+<script>
+(function () {
+  var LAYOUT = {
+    basic: [
+      ["WIFI_SSID", "WiFi Network", "text"],
+      ["WIFI_PASS", "WiFi Password", "password"],
+      ["EMAIL", "User Email", "email"],
+      ["REGION", "Meter region", "select", [
+        ["auto", "Auto"], ["be", "Belgium"], ["nl", "Netherlands"]
+      ]]
+    ],
+    mqtt: [
+      ["MQTT_EN", "Use MQTT client", "checkbox"],
+      ["MQTT_HOST", "Broker hostname or IP address", "text"],
+      ["MQTT_PORT", "Broker port", "number"],
+      ["MQTT_TLS", "Use TLS (SSL)", "checkbox"],
+      ["MQTT_ID", "Client ID", "text"],
+      ["MQTT_AUTH", "Use MQTT auth", "checkbox"],
+      ["MQTT_USER", "Client username", "text"],
+      ["MQTT_PASS", "Client password", "password"],
+      ["MQTT_PFIX", "MQTT topic prefix", "text"]
+    ],
+    ha: [
+      ["HA_EN", "Use Home Assistant", "checkbox"],
+      ["HA_DEVICE", "Home Assistant device name", "text"]
+    ],
+    net: [
+      ["FIP_EN", "Use fixed IP address", "checkbox"],
+      ["FIPADDR", "IP Address", "text"],
+      ["FDEFGTW", "Default Gateway", "text"],
+      ["FSUBN", "Subnet Mask", "text"],
+      ["FDNS1", "Primary DNS Server", "text"],
+      ["FDNS2", "Secondary DNS Server", "text"]
+    ],
+    tg: [
+      ["FRMT_PYLD", "Payload Format", "select", [
+        ["0", "Value only"], ["1", "JSON basic"], ["2", "JSON + name"], ["3", "JSON full"]
+      ]],
+      ["UPL_THROTTLE", "Update interval (s)", "number"],
+      ["PUSH_FULL", "Push complete telegram over MQTT", "checkbox"]
+    ],
+    dongle: [
+      ["RINT_SPIFFS", "Reinitialise filesystem", "checkbox"]
+    ]
+  };
+
+  var initial = {};
+  var secretsSet = {};
+
+  function el(tag, attrs, kids) {
+    var n = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === "text") n.textContent = attrs[k];
+      else if (k === "html") n.innerHTML = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    });
+    (kids || []).forEach(function (c) { if (c) n.appendChild(c); });
+    return n;
+  }
+
+  function buildField(spec) {
+    var key = spec[0], label = spec[1], kind = spec[2], opts = spec[3];
+    var wrap = el("div", {"data-key": key});
+    wrap.appendChild(el("label", {for: key, text: label}));
+    var input;
+    if (kind === "checkbox") {
+      input = el("input", {type: "checkbox", id: key, name: key});
+    } else if (kind === "select") {
+      input = el("select", {id: key, name: key});
+      (opts || []).forEach(function (o) {
+        input.appendChild(el("option", {value: o[0], text: o[1]}));
+      });
+    } else if (kind === "password") {
+      input = el("input", {type: "password", id: key, name: key, autocomplete: "off"});
+      input.dataset.secret = "1";
+      input.dataset.changed = "0";
+      input.addEventListener("input", function () { input.dataset.changed = "1"; });
+      wrap.appendChild(input);
+      wrap.appendChild(el("span", {class: "show-password", text: "Show password"}));
+      wrap.appendChild(el("p", {class: "secret-hint", id: key + "_hint"}));
+      wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
+      return wrap;
+    } else {
+      input = el("input", {type: kind, id: key, name: key});
+    }
+    wrap.appendChild(input);
+    wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
+    return wrap;
+  }
+
+  function renderForm() {
+    Object.keys(LAYOUT).forEach(function (sec) {
+      var host = document.querySelector('[data-section="' + sec + '"]');
+      if (!host) return;
+      host.innerHTML = "";
+      LAYOUT[sec].forEach(function (spec) { host.appendChild(buildField(spec)); });
+    });
+    document.querySelectorAll(".show-password").forEach(function (sp) {
+      sp.addEventListener("click", function () {
+        var inp = sp.previousElementSibling;
+        if (!inp) return;
+        inp.type = inp.type === "password" ? "text" : "password";
+        sp.textContent = inp.type === "password" ? "Show password" : "Hide password";
+      });
+    });
+  }
+
+  function applyValues(cfg) {
+    initial = {};
+    secretsSet = {};
+    Object.keys(LAYOUT).forEach(function (sec) {
+      LAYOUT[sec].forEach(function (spec) {
+        var key = spec[0], kind = spec[2];
+        var entry = cfg[key];
+        var input = document.getElementById(key);
+        if (!input) return;
+        if (entry && typeof entry === "object" && "set" in entry) {
+          secretsSet[key] = !!entry.set;
+          initial[key] = null;
+          input.value = "";
+          input.dataset.changed = "0";
+          var hint = document.getElementById(key + "_hint");
+          if (hint) hint.textContent = entry.set ? "Password is set. Leave blank to keep it." : "No password stored.";
+          return;
+        }
+        var val = entry && typeof entry === "object" ? entry.value : entry;
+        if (kind === "checkbox") {
+          input.checked = !!val;
+          initial[key] = !!val;
+        } else if (kind === "select") {
+          input.value = String(val);
+          initial[key] = String(val);
+        } else {
+          input.value = val == null ? "" : String(val);
+          initial[key] = input.value;
+        }
+      });
+    });
+  }
+
+  function clearErrors() {
+    document.querySelectorAll(".field-error").forEach(function (e) { e.textContent = ""; });
+    document.getElementById("infoMessage").textContent = "";
+  }
+
+  function markError(key, msg) {
+    var box = document.getElementById(key + "_err");
+    if (box) box.textContent = msg;
+    document.getElementById("infoMessage").textContent = key + ": " + msg;
+    var input = document.getElementById(key);
+    if (input) input.focus();
+  }
+
+  function collectChanges() {
+    var body = {};
+    var any = false;
+    Object.keys(LAYOUT).forEach(function (sec) {
+      LAYOUT[sec].forEach(function (spec) {
+        var key = spec[0], kind = spec[2];
+        var input = document.getElementById(key);
+        if (!input) return;
+        if (kind === "password") {
+          if (input.dataset.changed === "1" && input.value !== "") {
+            body[key] = input.value;
+            any = true;
+          }
+          return;
+        }
+        if (kind === "checkbox") {
+          var b = !!input.checked;
+          if (b !== initial[key]) { body[key] = b; any = true; }
+          return;
+        }
+        if (kind === "number" || (kind === "select" && key === "FRMT_PYLD")) {
+          var n = Number(input.value);
+          if (n !== Number(initial[key])) { body[key] = n; any = true; }
+          return;
+        }
+        var s = input.value;
+        if (s !== initial[key]) { body[key] = s; any = true; }
+      });
+    });
+    return any ? body : null;
+  }
+
+  function setInd(id, on) {
+    var n = document.getElementById(id);
+    if (!n) return;
+    n.className = "ind " + (on ? "on" : "off");
+  }
+
+  function refreshStatus() {
+    fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
+      document.getElementById("hostnameHeader").textContent = s.device_id || "";
+      setInd("ind-meter", !!s.meter);
+      setInd("ind-wifi", !!s.wifi);
+      var mqttOk = String(s.mqtt || "").toLowerCase() === "connected";
+      setInd("ind-broker", mqttOk);
+      setInd("ind-ha", !!s.ha_en && mqttOk);
+    }).catch(function () {});
+  }
+
+  function refreshReadings() {
+    fetch("/api/data").then(function (r) { return r.json(); }).then(function (data) {
+      var grid = document.getElementById("readingsGrid");
+      grid.innerHTML = "";
+      (data || []).slice(0, 6).forEach(function (item) {
+        var cell = el("div", {class: "grid-item"}, [
+          el("div", {class: "friendly-name", html: "<strong>" + (item.label || item.id) + "</strong>"}),
+          el("div", {text: (item.value || "") + (item.unit ? " " + item.unit : "")})
+        ]);
+        grid.appendChild(cell);
+      });
+    }).catch(function () {});
+  }
+
+  document.querySelectorAll(".collapsible").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      btn.classList.toggle("active");
+      var content = btn.nextElementSibling;
+      if (!content) return;
+      content.style.display = content.style.display === "block" ? "none" : "block";
+    });
+  });
+
+  document.getElementById("configForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    clearErrors();
+    var body = collectChanges();
+    if (!body) {
+      document.getElementById("infoMessage").textContent = "No changes.";
+      document.getElementById("infoMessage").style.color = "#5aaf6f";
+      return;
+    }
+    fetch("/config", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.text().then(function (t) { return {ok: r.ok, status: r.status, text: t}; });
+    }).then(function (res) {
+      if (res.ok) {
+        document.getElementById("infoMessage").style.color = "#5aaf6f";
+        document.getElementById("infoMessage").textContent = "Saved.";
+        return fetch("/config").then(function (r) { return r.json(); }).then(applyValues);
+      }
+      document.getElementById("infoMessage").style.color = "#ff8a8a";
+      var m = /^(Parse|UnknownKey|WrongType|Invalid):([A-Za-z0-9_]+)$/.exec(res.text.trim());
+      if (m) {
+        markError(m[2], m[1] === "Invalid" ? "Invalid value" : m[1]);
+      } else {
+        document.getElementById("infoMessage").textContent = res.text || ("Error " + res.status);
+      }
+    }).catch(function (e) {
+      document.getElementById("infoMessage").textContent = String(e);
+    });
+  });
+
+  document.getElementById("rebootBtn").addEventListener("click", function () {
+    fetch("/reboot", {method: "POST"}).then(function () {
+      window.location.href = "/restarting.html";
+    }).catch(function () {
+      window.location.href = "/restarting.html";
+    });
+  });
+
+  renderForm();
+  fetch("/config").then(function (r) { return r.json(); }).then(applyValues).catch(function () {});
+  refreshStatus();
+  refreshReadings();
+  setInterval(refreshStatus, 5000);
+  setInterval(refreshReadings, 3000);
+})();
+</script>
+</body>
+</html>
