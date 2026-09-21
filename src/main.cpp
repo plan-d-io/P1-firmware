@@ -38,6 +38,7 @@ static constexpr char kFwVer[] = "3.00";
 
 static void request_reboot(const char* reason);
 static void publish_config_snapshot();
+static void restart_mqtt();
 
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
@@ -81,6 +82,7 @@ static char g_status_uptime[24]{};
 static char g_status_heap[16]{};
 static char g_status_rssi[12]{};
 static char g_status_tele[48]{};
+static char g_mqtt_err[48]{};
 static p1web::StatusView g_status_view{};
 static p1web::FieldReading g_last_readings[p1cfg::kMaxFields]{};
 static p1web::ReadingsView g_readings_view{g_last_readings, 0};
@@ -415,6 +417,7 @@ static void refresh_status_view()
     g_status_view.heap = g_status_heap;
     g_status_view.rssi = g_status_rssi;
     g_status_view.mqtt = mqtt_state_name(g_mqtt.state());
+    g_status_view.mqtt_err = g_mqtt_err;
     g_status_view.telegrams = g_status_tele;
     g_status_view.wifi = (WiFi.status() == WL_CONNECTED);
     g_status_view.meter = (g_ok > 0) && (millis() - g_last_telegram_ms < 15000u);
@@ -485,6 +488,10 @@ static void handle_web_actions()
     if (act->republish_config) {
         act->republish_config = false;
         publish_config_snapshot();
+    }
+    if (act->restart_mqtt) {
+        act->restart_mqtt = false;
+        restart_mqtt();
     }
     if (act->reset_wifi) {
         act->reset_wifi = false;
@@ -619,12 +626,6 @@ static void try_start_mqtt()
         return;
     }
 
-    if (g_cfg.values().mqtt_tls) {
-        g_mqtt.begin(g_cfg);
-        g_mqtt_started = true;
-        return;
-    }
-
     const char* host = g_cfg.values().mqtt_host;
     if (host[0] == '\0') {
         if (!g_host_empty_logged) {
@@ -652,12 +653,19 @@ static void try_start_mqtt()
         override_host = g_resolved_host;
     }
 
+    const unsigned heap_before = ESP.getFreeHeap();
+    if (g_cfg.values().mqtt_tls) {
+        char msg[64];
+        std::snprintf(msg, sizeof(msg), "MQTT TLS connect heap=%u", heap_before);
+        g_log.log(p1log::Level::Info, msg);
+    }
+
     if (g_mqtt.begin(g_cfg, override_host)) {
         g_mqtt_started = true;
-        Serial.printf("MQTT connecting uri host=%s port=%u id=%s\n",
+        Serial.printf("MQTT connecting uri host=%s port=%u tls=%d id=%s heap=%u\n",
                       override_host != nullptr ? override_host : host,
                       static_cast<unsigned>(g_cfg.values().mqtt_port),
-                      g_cfg.values().mqtt_id);
+                      g_cfg.values().mqtt_tls ? 1 : 0, g_cfg.values().mqtt_id, heap_before);
     }
 }
 
@@ -883,7 +891,6 @@ static void run_ha_migration()
 }
 
 static void sync_ha_identity(bool republish);
-static void restart_mqtt();
 
 static void ha_on_field_set(std::uint64_t next)
 {
@@ -984,13 +991,20 @@ static void restart_mqtt()
 
 static void on_just_connected()
 {
+    g_mqtt_err[0] = '\0';
     g_log.set_mqtt_ready(true);
     // Replay runs one line per loop via replay_undelivered() — not in a burst here.
     subscribe_inbound();
     publish_online();
     publish_reboot_state("off");
     publish_config_snapshot();
-    g_log.log(p1log::Level::Info, "MQTT connected");
+    {
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "MQTT connected heap=%u min=%u",
+                      static_cast<unsigned>(ESP.getFreeHeap()),
+                      static_cast<unsigned>(ESP.getMinFreeHeap()));
+        g_log.log(p1log::Level::Info, msg);
+    }
     if (g_cfg.values().ha_en && g_disc_have) {
         if (!g_cfg.ha_migrated()) {
             run_ha_migration();
@@ -1615,6 +1629,48 @@ void loop()
     if (g_mqtt.take_just_connected()) {
         on_just_connected();
     }
+
+    int cert_flags = 0;
+    int tls_esp_err = 0;
+    int tls_stack_err = 0;
+    const p1mqtt::Mqtt::Fail fail = g_mqtt.take_fail(&cert_flags, &tls_esp_err, &tls_stack_err);
+    if (fail != p1mqtt::Mqtt::Fail::None) {
+        switch (fail) {
+        case p1mqtt::Mqtt::Fail::TlsCertRejected:
+            std::snprintf(g_mqtt_err, sizeof(g_mqtt_err), "certificate rejected");
+            {
+                char msg[96];
+                std::snprintf(msg, sizeof(msg),
+                              "MQTT TLS certificate rejected flags=0x%x esp=0x%x stack=%d",
+                              static_cast<unsigned>(cert_flags),
+                              static_cast<unsigned>(tls_esp_err), tls_stack_err);
+                g_log.log(p1log::Level::Warn, msg);
+            }
+            break;
+        case p1mqtt::Mqtt::Fail::TlsOther:
+            std::snprintf(g_mqtt_err, sizeof(g_mqtt_err), "TLS error");
+            {
+                char msg[96];
+                std::snprintf(msg, sizeof(msg),
+                              "MQTT TLS error esp=0x%x stack=%d flags=0x%x",
+                              static_cast<unsigned>(tls_esp_err), tls_stack_err,
+                              static_cast<unsigned>(cert_flags));
+                g_log.log(p1log::Level::Warn, msg);
+            }
+            break;
+        case p1mqtt::Mqtt::Fail::Transport:
+            std::snprintf(g_mqtt_err, sizeof(g_mqtt_err), "transport error");
+            g_log.log(p1log::Level::Warn, "MQTT transport error");
+            break;
+        case p1mqtt::Mqtt::Fail::Auth:
+            std::snprintf(g_mqtt_err, sizeof(g_mqtt_err), "authentication failed");
+            g_log.log(p1log::Level::Warn, "MQTT authentication failed");
+            break;
+        default:
+            break;
+        }
+    }
+
     handle_inbound();
     reconcile_ha_discovery();
 

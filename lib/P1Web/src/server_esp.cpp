@@ -297,6 +297,7 @@ esp_err_t dispatch(httpd_req_t* req)
         }
         store->save();
         g_server->actions()->republish_config = true;
+        g_server->actions()->restart_mqtt = true;
         httpd_resp_set_type(req, "text/plain");
         return httpd_resp_send(req, "Ok", 2);
     }

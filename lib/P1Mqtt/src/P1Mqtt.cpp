@@ -5,6 +5,8 @@
 
 #if defined(ARDUINO)
 #include <Arduino.h>
+#include <esp_crt_bundle.h>
+#include <esp_tls_errors.h>
 #include <mqtt_client.h>
 #endif
 
@@ -287,7 +289,7 @@ bool migrate_mqtt_id(char* mqtt_id, std::size_t cap, const std::uint8_t mac[6])
     return true;
 }
 
-std::size_t broker_uri(const char* host, std::uint32_t port, char* out, std::size_t cap)
+std::size_t broker_uri(const char* host, std::uint32_t port, char* out, std::size_t cap, bool tls)
 {
     write_nul(out, cap);
     if (out == nullptr || cap == 0) {
@@ -296,7 +298,8 @@ std::size_t broker_uri(const char* host, std::uint32_t port, char* out, std::siz
     if (host == nullptr || host[0] == '\0' || port < 1u || port > 65535u) {
         return 0;
     }
-    const int n = std::snprintf(out, cap, "mqtt://%s:%lu", host, static_cast<unsigned long>(port));
+    const int n = std::snprintf(out, cap, tls ? "mqtts://%s:%lu" : "mqtt://%s:%lu", host,
+                                static_cast<unsigned long>(port));
     if (n < 0 || static_cast<std::size_t>(n) >= cap) {
         out[0] = '\0';
         return 0;
@@ -605,6 +608,8 @@ void Mqtt::on_event(void* arg, void* /*base*/, std::int32_t id, void* data)
         self->state_.store(State::Connected, std::memory_order_relaxed);
         self->connects_.fetch_add(1, std::memory_order_relaxed);
         self->just_connected_.store(true, std::memory_order_relaxed);
+        self->fail_.store(Fail::None, std::memory_order_relaxed);
+        self->cert_flags_.store(0, std::memory_order_relaxed);
         break;
     case MQTT_EVENT_DISCONNECTED:
         self->state_.store(State::Connecting, std::memory_order_relaxed);
@@ -620,25 +625,76 @@ void Mqtt::on_event(void* arg, void* /*base*/, std::int32_t id, void* data)
                                 event->current_data_offset);
         }
         break;
+    case MQTT_EVENT_ERROR:
+        if (event != nullptr && event->error_handle != nullptr) {
+            Fail f = Fail::Transport;
+            int flags = 0;
+            int esp_err = 0;
+            int stack_err = 0;
+            const auto* err = event->error_handle;
+            if (err->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+                f = Fail::Auth;
+            } else if (err->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+                flags = err->esp_tls_cert_verify_flags;
+                esp_err = static_cast<int>(err->esp_tls_last_esp_err);
+                stack_err = err->esp_tls_stack_err;
+                // Bundle rejection: verify flags, mbedTLS verify-failed, or the
+                // handshake-failed wrapper esp-tls uses when the peer cert is bad
+                // (flags are not always copied onto the MQTT error handle).
+                constexpr int kMbedVerifyFailed = -0x2700;  // MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
+                constexpr int kEspHandshakeFailed =
+                    static_cast<int>(ESP_ERR_MBEDTLS_SSL_HANDSHAKE_FAILED);
+                if (flags != 0 || stack_err == kMbedVerifyFailed ||
+                    esp_err == kEspHandshakeFailed) {
+                    f = Fail::TlsCertRejected;
+                } else if (esp_err != 0 || stack_err != 0) {
+                    f = Fail::TlsOther;
+                } else {
+                    f = Fail::Transport;
+                }
+            }
+            // Keep a more specific failure until the loop takes it — a follow-up
+            // transport close must not erase certificate rejection.
+            const Fail prev = self->fail_.load(std::memory_order_relaxed);
+            const bool keep = (prev == Fail::TlsCertRejected && f != Fail::TlsCertRejected) ||
+                              (prev == Fail::Auth && f != Fail::Auth && f != Fail::TlsCertRejected);
+            if (!keep) {
+                self->cert_flags_.store(flags, std::memory_order_relaxed);
+                self->tls_esp_err_.store(esp_err, std::memory_order_relaxed);
+                self->tls_stack_err_.store(stack_err, std::memory_order_relaxed);
+                self->fail_.store(f, std::memory_order_relaxed);
+            }
+        }
+        break;
     default:
         break;
     }
+}
+
+Mqtt::Fail Mqtt::take_fail(int* cert_flags, int* tls_esp_err, int* tls_stack_err)
+{
+    const Fail f = fail_.exchange(Fail::None, std::memory_order_relaxed);
+    if (cert_flags != nullptr) {
+        *cert_flags = cert_flags_.load(std::memory_order_relaxed);
+    }
+    if (tls_esp_err != nullptr) {
+        *tls_esp_err = tls_esp_err_.load(std::memory_order_relaxed);
+    }
+    if (tls_stack_err != nullptr) {
+        *tls_stack_err = tls_stack_err_.load(std::memory_order_relaxed);
+    }
+    return f;
 }
 
 bool Mqtt::begin(const p1cfg::Store& cfg, const char* host_override)
 {
     stop();
 
-    if (cfg.values().mqtt_tls) {
-        state_.store(State::Unsupported, std::memory_order_relaxed);
-        Serial.println("MQTT_TLS is set; TLS is not supported yet, not connecting");
-        return false;
-    }
-
+    const bool tls = cfg.values().mqtt_tls;
     const char* host = (host_override != nullptr && host_override[0] != '\0')
                            ? host_override
                            : cfg.values().mqtt_host;
-    if (broker_uri(host, cfg.values().mqtt_port, uri_, sizeof(uri_)) == 0) {
+    if (broker_uri(host, cfg.values().mqtt_port, uri_, sizeof(uri_), tls) == 0) {
         Serial.println("MQTT broker URI could not be built; not connecting");
         return false;
     }
@@ -653,8 +709,16 @@ bool Mqtt::begin(const p1cfg::Store& cfg, const char* host_override)
         will_topic_[wn - 1] = '\0';
     }
 
+    fail_.store(Fail::None, std::memory_order_relaxed);
+    cert_flags_.store(0, std::memory_order_relaxed);
+    tls_esp_err_.store(0, std::memory_order_relaxed);
+    tls_stack_err_.store(0, std::memory_order_relaxed);
+
     esp_mqtt_client_config_t mqtt_cfg{};
     mqtt_cfg.broker.address.uri = uri_;
+    if (tls) {
+        mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     mqtt_cfg.credentials.client_id = client_id_;
     if (cfg.values().mqtt_auth) {
         mqtt_cfg.credentials.username = user_;
@@ -692,6 +756,10 @@ bool Mqtt::begin(const p1cfg::Store& cfg, const char* host_override)
 void Mqtt::stop()
 {
     just_connected_.store(false, std::memory_order_relaxed);
+    fail_.store(Fail::None, std::memory_order_relaxed);
+    cert_flags_.store(0, std::memory_order_relaxed);
+    tls_esp_err_.store(0, std::memory_order_relaxed);
+    tls_stack_err_.store(0, std::memory_order_relaxed);
     inbound_.reset();
     if (client_ != nullptr) {
         auto* client = static_cast<esp_mqtt_client_handle_t>(client_);

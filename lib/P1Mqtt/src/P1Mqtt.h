@@ -11,7 +11,7 @@ namespace p1mqtt {
 
 // "P1" + 6 hex digits + NUL. Always eight visible characters.
 constexpr std::size_t kDeviceIdCap = 9;
-// mqtt:// + host (kHostMax-1) + : + port + NUL. 7+63+1+5+1 = 77.
+// mqtts:// + host (kHostMax-1) + : + port + NUL. 8+63+1+5+1 = 78.
 constexpr std::size_t kUriMax = 80;
 constexpr std::size_t kTopicBuf = 128;
 constexpr std::uint32_t kDiagIntervalMs = 60000;
@@ -34,8 +34,9 @@ void legacy_device_id(const std::uint8_t mac[6], char* out, std::size_t cap);
 // empty → device_id; exact legacy_device_id → device_id; anything else left.
 bool migrate_mqtt_id(char* mqtt_id, std::size_t cap, const std::uint8_t mac[6]);
 
-// mqtt://<host>:<port>. 0 if host is empty, port is out of range, or cap is tight.
-std::size_t broker_uri(const char* host, std::uint32_t port, char* out, std::size_t cap);
+// mqtt:// or mqtts://<host>:<port>. 0 if host is empty, port is out of range, or cap is tight.
+std::size_t broker_uri(const char* host, std::uint32_t port, char* out, std::size_t cap,
+                       bool tls = false);
 
 // UPL_THROTTLE == 0 → every telegram. Else due when (now - last) >= throttle seconds.
 bool throttle_due(std::uint32_t throttle_s, std::uint32_t now_ms, std::uint32_t last_ms);
@@ -95,6 +96,8 @@ private:
 class Mqtt {
 public:
     enum class State : std::uint8_t { Idle, Connecting, Connected, Unsupported };
+    // Last failure seen on MQTT_EVENT_ERROR. Handler stores; loop takes.
+    enum class Fail : std::uint8_t { None, TlsCertRejected, TlsOther, Transport, Auth };
 
     Mqtt() = default;
     ~Mqtt();
@@ -125,6 +128,10 @@ public:
     {
         return inbound_.take(topic, tcap, payload, pcap);
     }
+    // Returns the pending fail (or None) and clears it. Optional outs receive
+    // mbedTLS verify flags and the esp-tls / stack error codes from the event.
+    Fail take_fail(int* cert_flags = nullptr, int* tls_esp_err = nullptr,
+                   int* tls_stack_err = nullptr);
 
 private:
     static void on_event(void* arg, void* base, std::int32_t id, void* data);
@@ -134,6 +141,10 @@ private:
     void* client_ = nullptr;  // esp_mqtt_client_handle_t
     std::atomic<State> state_{State::Idle};
     std::atomic<bool> just_connected_{false};
+    std::atomic<Fail> fail_{Fail::None};
+    std::atomic<int> cert_flags_{0};
+    std::atomic<int> tls_esp_err_{0};
+    std::atomic<int> tls_stack_err_{0};
     std::atomic<unsigned> connects_{0};
     std::atomic<unsigned> disconnects_{0};
     std::atomic<unsigned> publish_fails_{0};

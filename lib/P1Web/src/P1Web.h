@@ -116,6 +116,7 @@ struct StatusView {
     const char* heap = "";
     const char* rssi = "";
     const char* mqtt = "";
+    const char* mqtt_err = "";
     const char* telegrams = "";
     bool wifi = false;
     bool meter = false;
@@ -144,6 +145,7 @@ struct Actions {
     bool reset_wifi = false;
     bool reset_factory = false;
     bool republish_config = false;
+    bool restart_mqtt = false;
 };
 
 void sort_scan_strongest_first(ScanCache& cache);

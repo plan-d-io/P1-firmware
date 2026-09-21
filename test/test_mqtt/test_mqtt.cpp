@@ -105,6 +105,9 @@ void test_broker_uri()
     TEST_ASSERT_TRUE(p1mqtt::broker_uri("broker.example", 8883, uri, sizeof(uri)) > 0);
     TEST_ASSERT_EQUAL_STRING("mqtt://broker.example:8883", uri);
 
+    TEST_ASSERT_TRUE(p1mqtt::broker_uri("test.mosquitto.org", 8886, uri, sizeof(uri), true) > 0);
+    TEST_ASSERT_EQUAL_STRING("mqtts://test.mosquitto.org:8886", uri);
+
     TEST_ASSERT_EQUAL_UINT(0, p1mqtt::broker_uri("", 1883, uri, sizeof(uri)));
     TEST_ASSERT_EQUAL_STRING("", uri);
     TEST_ASSERT_EQUAL_UINT(0, p1mqtt::broker_uri("host", 0, uri, sizeof(uri)));

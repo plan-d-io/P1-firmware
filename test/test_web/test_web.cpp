@@ -141,6 +141,7 @@ void test_api_status_json()
     TEST_ASSERT_TRUE(n < sizeof(buf));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"device_id\":\"P1AABBCC\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt\":\"Connected\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_err\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));

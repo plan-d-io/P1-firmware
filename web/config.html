@@ -345,11 +345,11 @@
     return any ? body : null;
   }
 
-  function setIcon(id, name) {
+  function setIcon(id, name, labelOverride) {
     var n = document.getElementById(id);
     if (!n) return;
     n.innerHTML = ICONS[name] || "";
-    var lab = ICON_LABELS[name] || "";
+    var lab = labelOverride || ICON_LABELS[name] || "";
     n.setAttribute("title", lab);
     n.setAttribute("aria-label", lab);
   }
@@ -365,6 +365,15 @@
     return "wifi-strength-outline";
   }
 
+  function brokerPendingLabel(err) {
+    var e = String(err || "").toLowerCase();
+    if (e.indexOf("certificate") >= 0) return "Certificate rejected";
+    if (e.indexOf("tls") >= 0) return "TLS error";
+    if (e.indexOf("auth") >= 0) return "Authentication failed";
+    if (e.indexOf("transport") >= 0) return "Transport error";
+    return ICON_LABELS["lan-pending"];
+  }
+
   function refreshStatus() {
     fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
       document.getElementById("hostnameHeader").textContent = s.device_id || "";
@@ -373,7 +382,7 @@
       var mqttOk = String(s.mqtt || "").toLowerCase() === "connected";
       if (!s.mqtt_en) setIcon("ind-broker", "lan-disconnect");
       else if (mqttOk) setIcon("ind-broker", "lan-connect");
-      else setIcon("ind-broker", "lan-pending");
+      else setIcon("ind-broker", "lan-pending", brokerPendingLabel(s.mqtt_err));
       if (!s.ha_en) setIcon("ind-ha", "cloud-cog-outline");
       else if (mqttOk) setIcon("ind-ha", "cloud-outline");
       else setIcon("ind-ha", "cloud-off-outline");
@@ -505,6 +514,32 @@
   });
 
   renderForm();
+
+  (function wireTlsPortToggle() {
+    var tls = document.getElementById("MQTT_TLS");
+    var port = document.getElementById("MQTT_PORT");
+    if (!tls || !port) return;
+    var autoFlipped = false;
+    port.addEventListener("input", function () { autoFlipped = false; });
+    tls.addEventListener("change", function () {
+      var cur = Number(port.value);
+      var loaded = Number(initial.MQTT_PORT);
+      if (tls.checked) {
+        if (cur === loaded && loaded === 1883) {
+          port.value = "8883";
+          autoFlipped = true;
+        }
+      } else {
+        if (autoFlipped && cur === 8883) {
+          port.value = "1883";
+          autoFlipped = false;
+        } else if (cur === loaded && loaded === 8883) {
+          port.value = "1883";
+        }
+      }
+    });
+  })();
+
   fetch("/config").then(function (r) { return r.json(); }).then(applyValues).catch(function () {});
   loadFields().catch(function () {});
   refreshStatus();
