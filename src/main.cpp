@@ -8,9 +8,13 @@
 #include <P1Syslog.h>
 #include <P1Web.h>
 #include <WiFi.h>
+#include <cerrno>
 #include <esp_mac.h>
 #include <esp_random.h>
 #include <esp_system.h>
+#include <fcntl.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -63,6 +67,13 @@ static bool g_scan_started = false;
 static std::uint32_t g_last_scan_ms = 0;
 static char g_begun_ssid[p1web::kSsidMax]{};
 static char g_begun_pass[p1web::kPassMax]{};
+static bool g_force_dhcp_this_boot = false;
+static bool g_using_static_sta = false;
+static constexpr std::uint32_t kGwReachTimeoutMs = 15000;
+enum class GwCheck : std::uint8_t { Idle, Pending, Done };
+static GwCheck g_gw_check = GwCheck::Idle;
+static int g_gw_sock = -1;
+static std::uint32_t g_gw_check_started_ms = 0;
 static char g_status_ip[16]{};
 static char g_status_uptime[24]{};
 static char g_status_heap[16]{};
@@ -93,7 +104,8 @@ static std::uint64_t g_disc_mask = 0;
 static bool g_disc_have = false;
 static char g_fw_reset_reason[p1cfg::kLastResetMax]{};
 static const char* g_hw_reset_reason = "NO_MEAN";
-static char g_json[8192];
+static char g_json[p1cfg::kToJsonBufMin];
+static_assert(sizeof(g_json) >= p1cfg::kToJsonBufMin);
 static char g_in_topic[p1mqtt::kTopicBuf];
 static char g_in_payload[p1mqtt::InboundAssembler::kMax + 1];
 static char g_cmd[192];
@@ -147,15 +159,117 @@ static const char* wifi_state_name()
     return "idle";
 }
 
+static void start_sta();
+
+static void close_gw_sock()
+{
+    if (g_gw_sock >= 0) {
+        lwip_close(g_gw_sock);
+        g_gw_sock = -1;
+    }
+}
+
+static void start_gateway_reach_check()
+{
+    close_gw_sock();
+    g_gw_check = GwCheck::Idle;
+    if (!g_using_static_sta || g_force_dhcp_this_boot) {
+        return;
+    }
+    IPAddress gw;
+    if (!gw.fromString(g_cfg.values().fdefgtw)) {
+        return;
+    }
+    const int s = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s < 0) {
+        return;
+    }
+    const int flags = lwip_fcntl(s, F_GETFL, 0);
+    if (flags < 0 || lwip_fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0) {
+        lwip_close(s);
+        return;
+    }
+    sockaddr_in dest{};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(53);  // DNS — open or refused both prove L3 reachability
+    dest.sin_addr.s_addr = static_cast<std::uint32_t>(gw);
+    const int r = lwip_connect(s, reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
+    if (r == 0) {
+        lwip_close(s);
+        g_gw_check = GwCheck::Done;
+        return;
+    }
+    if (errno != EINPROGRESS && errno != EALREADY) {
+        lwip_close(s);
+        g_gw_sock = -1;
+        g_gw_check = GwCheck::Pending;
+        g_gw_check_started_ms = millis() - kGwReachTimeoutMs;
+        return;
+    }
+    g_gw_sock = s;
+    g_gw_check = GwCheck::Pending;
+    g_gw_check_started_ms = millis();
+}
+
+static void fallback_static_to_dhcp()
+{
+    g_log.log(p1log::Level::Error, "Static IP failed; using DHCP this boot");
+    g_force_dhcp_this_boot = true;
+    g_using_static_sta = false;
+    g_wifi_started = false;
+    g_begun_ssid[0] = '\0';
+    g_begun_pass[0] = '\0';
+    g_got_ip = false;
+    g_ntp_started = false;
+    close_gw_sock();
+    g_gw_check = GwCheck::Done;
+    start_sta();
+}
+
+static void service_gateway_reach_check()
+{
+    if (g_gw_check != GwCheck::Pending) {
+        return;
+    }
+    if (g_gw_sock >= 0) {
+        fd_set wset;
+        fd_set eset;
+        FD_ZERO(&wset);
+        FD_ZERO(&eset);
+        FD_SET(g_gw_sock, &wset);
+        FD_SET(g_gw_sock, &eset);
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+        const int sel = lwip_select(g_gw_sock + 1, nullptr, &wset, &eset, &tv);
+        if (sel > 0) {
+            int soerr = 0;
+            socklen_t len = sizeof(soerr);
+            lwip_getsockopt(g_gw_sock, SOL_SOCKET, SO_ERROR, &soerr, &len);
+            close_gw_sock();
+            if (soerr == 0 || soerr == ECONNREFUSED || soerr == ECONNRESET) {
+                g_gw_check = GwCheck::Done;
+                return;
+            }
+            g_gw_check_started_ms = millis() - kGwReachTimeoutMs;
+        }
+    }
+    if (millis() - g_gw_check_started_ms < kGwReachTimeoutMs) {
+        return;
+    }
+    close_gw_sock();
+    fallback_static_to_dhcp();
+}
+
 static void start_sta()
 {
     if (g_cfg.values().wifi_ssid[0] == '\0') {
         return;
     }
-    const bool same = g_wifi_started &&
-                      std::strcmp(g_begun_ssid, g_cfg.values().wifi_ssid) == 0 &&
-                      std::strcmp(g_begun_pass, g_cfg.values().wifi_pass) == 0;
-    if (same && !g_ap_up) {
+    const bool want_static = g_cfg.values().fip_en && !g_force_dhcp_this_boot;
+    if (g_wifi_started && g_using_static_sta == want_static &&
+        std::strcmp(g_begun_ssid, g_cfg.values().wifi_ssid) == 0 &&
+        std::strcmp(g_begun_pass, g_cfg.values().wifi_pass) == 0 && !g_ap_up) {
         return;
     }
     if (g_device_id[0] != '\0') {
@@ -167,7 +281,8 @@ static void start_sta()
     }
 
     const auto& v = g_cfg.values();
-    if (v.fip_en) {
+    g_using_static_sta = false;
+    if (want_static) {
         IPAddress ip;
         IPAddress sn;
         IPAddress gw;
@@ -178,22 +293,29 @@ static void start_sta()
                         (v.fdns2[0] == '\0' || d2.fromString(v.fdns2));
         if (!ok) {
             g_log.log(p1log::Level::Warn, "Static IP incomplete or malformed; using DHCP");
-            WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+            // Must be 0.0.0.0 — INADDR_NONE is 255.255.255.255 and selects static mode.
+            WiFi.config(IPAddress((std::uint32_t)0), IPAddress((std::uint32_t)0),
+                        IPAddress((std::uint32_t)0));
         } else if (v.fdns2[0] == '\0') {
             WiFi.config(ip, gw, sn, d1);
+            g_using_static_sta = true;
             g_log.log(p1log::Level::Info, "Static IP configured");
         } else {
             WiFi.config(ip, gw, sn, d1, d2);
+            g_using_static_sta = true;
             g_log.log(p1log::Level::Info, "Static IP configured");
         }
     } else {
-        WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+        WiFi.config(IPAddress((std::uint32_t)0), IPAddress((std::uint32_t)0),
+                    IPAddress((std::uint32_t)0));
     }
 
     WiFi.begin(g_cfg.values().wifi_ssid, g_cfg.values().wifi_pass);
     std::snprintf(g_begun_ssid, sizeof(g_begun_ssid), "%s", g_cfg.values().wifi_ssid);
     std::snprintf(g_begun_pass, sizeof(g_begun_pass), "%s", g_cfg.values().wifi_pass);
     g_wifi_started = true;
+    close_gw_sock();
+    g_gw_check = GwCheck::Idle;
     char msg[96];
     std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", g_cfg.values().wifi_ssid,
                   g_device_id);
@@ -1311,10 +1433,14 @@ void loop()
 {
     poll_serial();
     service_provisioning();
+    service_gateway_reach_check();
 
     if (WiFi.status() == WL_CONNECTED) {
         if (!g_got_ip) {
             g_got_ip = true;
+        }
+        if (g_using_static_sta && g_gw_check == GwCheck::Idle) {
+            start_gateway_reach_check();
         }
         if (!g_ntp_started) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");

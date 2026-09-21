@@ -250,10 +250,22 @@ const char* json_status_name(JsonStatus s);
 bool ip_ok(const char* s);
 bool rel_chan_ok(const char* s);
 
+// Parse dotted-quad into host-order uint32. Returns false if not ip_ok.
+bool parse_ipv4(const char* s, std::uint32_t& host_order);
+
+// Contiguous mask (ones then zeros), e.g. /24 /16 /25. Zero mask is false.
+bool mask_contiguous(std::uint32_t mask_host);
+
+// When FIP_EN is on: same subnet, contiguous mask, IP/GW not network or broadcast.
+bool static_ip_consistent(const char* ip, const char* mask, const char* gateway);
+
 // Write "P1" + 16 hex from eight random bytes. Returns false if cap too small.
 bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8);
 // If uuid is empty, fill it. Returns true when a new value was written.
 bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd8);
+
+// Comfortable bound for Store::to_json with every API string at capacity.
+constexpr std::size_t kToJsonBufMin = 4096;
 
 class Store {
 public:

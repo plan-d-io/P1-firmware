@@ -92,7 +92,7 @@ void test_json_out_metadata()
     MemoryBackend mem;
     Store s(mem);
     s.load();
-    char buf[8192];
+    char buf[p1cfg::kToJsonBufMin];
     const std::size_t n = s.to_json(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
     TEST_ASSERT_TRUE(json_has(buf, "\"MQTT_EN\""));
@@ -117,7 +117,7 @@ void test_secrets_never_serialised()
     Store s(mem);
     s.load();
     std::strcpy(s.values().mqtt_pass, "hunter2");
-    char buf[8192];
+    char buf[p1cfg::kToJsonBufMin];
     TEST_ASSERT_TRUE(s.to_json(buf, sizeof(buf)) > 0);
     TEST_ASSERT_FALSE(json_has(buf, "hunter2"));
     TEST_ASSERT_TRUE(json_has(buf, "\"MQTT_PASS\""));
@@ -389,7 +389,7 @@ void test_to_json_overflow_is_zero()
     TEST_ASSERT_EQUAL_UINT(0, s.to_json(tiny, sizeof(tiny)));
     TEST_ASSERT_EQUAL('\0', tiny[0]);
 
-    char buf[8192];
+    char buf[p1cfg::kToJsonBufMin];
     const std::size_t n = s.to_json(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n >= 2);
     TEST_ASSERT_EQUAL_CHAR('{', buf[0]);
@@ -478,7 +478,7 @@ void test_log_mark_migrate_hidden()
     TEST_ASSERT_EQUAL_UINT32(3, s.values().reboots);
     TEST_ASSERT_NOT_NULL(s.find_setting("LOG_MARK"));
 
-    char buf[8192];
+    char buf[p1cfg::kToJsonBufMin];
     TEST_ASSERT_TRUE(s.to_json(buf, sizeof(buf)) > 0);
     TEST_ASSERT_FALSE(json_has(buf, "\"LOG_MARK\""));
     TEST_ASSERT_FALSE(json_has(buf, "\"CFG_VER\""));
@@ -539,23 +539,11 @@ void test_ip_and_rel_chan_validation()
     TEST_ASSERT_FALSE(p1cfg::ip_ok("not.an.ip"));
     TEST_ASSERT_FALSE(p1cfg::ip_ok(""));
 
-    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"FIPADDR":"192.0.2.40"})"));
-    TEST_ASSERT_EQUAL_STRING("192.0.2.40", s.values().fipaddr);
-
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":"192.0.2"})"));
-    TEST_ASSERT_EQUAL_STRING("192.0.2.40", s.values().fipaddr);
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":"192.0.2.256"})"));
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":"not.an.ip"})"));
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FIPADDR":""})"));
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FSUBN":""})"));
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FDNS1":""})"));
-
-    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"FDNS2":""})"));
-    TEST_ASSERT_EQUAL_STRING("", s.values().fdns2);
-    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"FDNS2":"1.1.1.1"})"));
-    TEST_ASSERT_EQUAL_STRING("1.1.1.1", s.values().fdns2);
-    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"FDNS2":"bad"})"));
-    TEST_ASSERT_EQUAL_STRING("1.1.1.1", s.values().fdns2);
+    // FIP_EN false ignores address fields, however malformed.
+    TEST_ASSERT_EQUAL(JsonStatus::Ok,
+                      s.apply_json(R"({"FIP_EN":false,"FIPADDR":"not.an.ip","FSUBN":"x"})"));
+    TEST_ASSERT_FALSE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("not.an.ip", s.values().fipaddr);
 
     TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"alpha"})"));
     TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"develop"})"));
@@ -563,6 +551,55 @@ void test_ip_and_rel_chan_validation()
     TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"main"})"));
     TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"REL_CHAN":"beta"})"));
     TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+}
+
+void test_static_ip_subnet_rules()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+
+    TEST_ASSERT_TRUE(p1cfg::mask_contiguous(0xFFFFFF00u));
+    TEST_ASSERT_TRUE(p1cfg::mask_contiguous(0xFFFF0000u));
+    TEST_ASSERT_TRUE(p1cfg::mask_contiguous(0xFFFFFF80u));
+    TEST_ASSERT_FALSE(p1cfg::mask_contiguous(0xFF00FF00u));
+    TEST_ASSERT_FALSE(p1cfg::mask_contiguous(0u));
+
+    TEST_ASSERT_TRUE(
+        p1cfg::static_ip_consistent("192.0.2.40", "255.255.255.0", "192.0.2.1"));
+    TEST_ASSERT_FALSE(
+        p1cfg::static_ip_consistent("10.99.0.50", "255.255.255.0", "192.0.2.1"));
+    TEST_ASSERT_FALSE(
+        p1cfg::static_ip_consistent("192.0.2.0", "255.255.255.0", "192.0.2.1"));
+    TEST_ASSERT_FALSE(
+        p1cfg::static_ip_consistent("192.0.2.255", "255.255.255.0", "192.0.2.1"));
+
+    const char* good =
+        R"({"FIP_EN":true,"FIPADDR":"192.0.2.40","FSUBN":"255.255.255.0","FDEFGTW":"192.0.2.1","FDNS1":"192.0.2.1","FDNS2":""})";
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(good));
+
+    const char* wrong_subnet =
+        R"({"FIP_EN":true,"FIPADDR":"10.99.0.50","FSUBN":"255.255.255.0","FDEFGTW":"192.0.2.1","FDNS1":"192.0.2.1"})";
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(wrong_subnet));
+    TEST_ASSERT_EQUAL_STRING("192.0.2.40", s.values().fipaddr);
+
+    TEST_ASSERT_EQUAL(
+        JsonStatus::Invalid,
+        s.apply_json(
+            R"({"FIP_EN":true,"FIPADDR":"192.0.2.40","FSUBN":"255.0.255.0","FDEFGTW":"192.0.2.1","FDNS1":"1.1.1.1"})"));
+    TEST_ASSERT_EQUAL(
+        JsonStatus::Invalid,
+        s.apply_json(
+            R"({"FIP_EN":true,"FIPADDR":"192.0.2.0","FSUBN":"255.255.255.0","FDEFGTW":"192.0.2.1","FDNS1":"1.1.1.1"})"));
+    TEST_ASSERT_EQUAL(
+        JsonStatus::Invalid,
+        s.apply_json(
+            R"({"FIP_EN":true,"FIPADDR":"192.0.2.255","FSUBN":"255.255.255.0","FDEFGTW":"192.0.2.1","FDNS1":"1.1.1.1"})"));
+
+    TEST_ASSERT_EQUAL(
+        JsonStatus::Ok,
+        s.apply_json(
+            R"({"FIP_EN":true,"FIPADDR":"192.0.2.40","FSUBN":"255.255.255.128","FDEFGTW":"192.0.2.1","FDNS1":"192.0.2.1"})"));
 }
 
 void test_uuid_generated_once()
@@ -606,10 +643,11 @@ void test_to_json_fits_max_strings()
     fill(s.values().uuid, sizeof(s.values().uuid), 'z');
     std::strcpy(s.values().rel_chan, "develop");
 
-    char buf[8192];
+    char buf[p1cfg::kToJsonBufMin];
     const std::size_t n = s.to_json(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
     TEST_ASSERT_TRUE(n < sizeof(buf));
+    TEST_ASSERT_TRUE(n <= p1cfg::kToJsonBufMin);
 }
 
 void test_config_api_apply_semantics()
@@ -666,6 +704,7 @@ int main()
     RUN_TEST(test_fixture_region_tags_unchanged);
     RUN_TEST(test_schema6_migrates_new_keys);
     RUN_TEST(test_ip_and_rel_chan_validation);
+    RUN_TEST(test_static_ip_subnet_rules);
     RUN_TEST(test_uuid_generated_once);
     RUN_TEST(test_to_json_fits_max_strings);
     RUN_TEST(test_config_api_apply_semantics);

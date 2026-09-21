@@ -38,13 +38,14 @@ int field_index(std::string_view id)
 
 }  // namespace
 
-bool ip_ok(const char* s)
+bool parse_ipv4(const char* s, std::uint32_t& host_order)
 {
     if (s == nullptr || s[0] == '\0') {
         return false;
     }
     unsigned parts = 0;
     const char* p = s;
+    std::uint32_t acc = 0;
     while (*p != '\0') {
         if (parts >= 4) {
             return false;
@@ -64,6 +65,7 @@ bool ip_ok(const char* s)
         if (digits == 0) {
             return false;
         }
+        acc = (acc << 8) | static_cast<std::uint32_t>(v);
         ++parts;
         if (*p == '.') {
             ++p;
@@ -74,7 +76,53 @@ bool ip_ok(const char* s)
             return false;
         }
     }
-    return parts == 4;
+    if (parts != 4) {
+        return false;
+    }
+    host_order = acc;
+    return true;
+}
+
+bool ip_ok(const char* s)
+{
+    std::uint32_t unused = 0;
+    return parse_ipv4(s, unused);
+}
+
+bool mask_contiguous(std::uint32_t mask_host)
+{
+    if (mask_host == 0) {
+        return false;
+    }
+    const std::uint32_t inv = ~mask_host;
+    return (inv & (inv + 1u)) == 0;
+}
+
+bool static_ip_consistent(const char* ip_s, const char* mask_s, const char* gw_s)
+{
+    std::uint32_t ip = 0;
+    std::uint32_t mask = 0;
+    std::uint32_t gw = 0;
+    if (!parse_ipv4(ip_s, ip) || !parse_ipv4(mask_s, mask) || !parse_ipv4(gw_s, gw)) {
+        return false;
+    }
+    if (!mask_contiguous(mask)) {
+        return false;
+    }
+    if ((ip & mask) != (gw & mask)) {
+        return false;
+    }
+    const std::uint32_t host = ~mask;
+    if (host == 0) {
+        return false;  // /32 — no distinct network/broadcast; reject for STA use
+    }
+    if ((ip & host) == 0 || (ip & host) == host) {
+        return false;  // network or broadcast
+    }
+    if ((gw & host) == 0 || (gw & host) == host) {
+        return false;
+    }
+    return true;
 }
 
 bool rel_chan_ok(const char* s)
@@ -130,13 +178,6 @@ bool region_ok(const char* s)
 {
     return std::strcmp(s, "auto") == 0 || std::strcmp(s, "be") == 0 ||
            std::strcmp(s, "nl") == 0;
-}
-
-bool is_ip_key(const char* key)
-{
-    return std::strcmp(key, "FIPADDR") == 0 || std::strcmp(key, "FSUBN") == 0 ||
-           std::strcmp(key, "FDEFGTW") == 0 || std::strcmp(key, "FDNS1") == 0 ||
-           std::strcmp(key, "FDNS2") == 0;
 }
 
 const char* type_name(CfgType t)
@@ -762,16 +803,7 @@ JsonStatus Store::apply_json(std::string_view json)
             if (std::strcmp(e->key, "REL_CHAN") == 0 && !rel_chan_ok(e->var.s)) {
                 return fail(JsonStatus::Invalid);
             }
-            if (is_ip_key(e->key)) {
-                const bool allow_empty = std::strcmp(e->key, "FDNS2") == 0;
-                if (e->var.s[0] == '\0') {
-                    if (!allow_empty) {
-                        return fail(JsonStatus::Invalid);
-                    }
-                } else if (!ip_ok(e->var.s)) {
-                    return fail(JsonStatus::Invalid);
-                }
-            }
+            // IP field format is checked only when FIP_EN is true (post-pass).
             break;
         }
         }
@@ -783,6 +815,17 @@ JsonStatus Store::apply_json(std::string_view json)
     c.skip();
     if (c.p != c.end) {
         return fail(JsonStatus::Parse);
+    }
+    if (v_.fip_en) {
+        if (!ip_ok(v_.fipaddr) || !ip_ok(v_.fsubn) || !ip_ok(v_.fdefgtw) || !ip_ok(v_.fdns1)) {
+            return fail(JsonStatus::Invalid);
+        }
+        if (v_.fdns2[0] != '\0' && !ip_ok(v_.fdns2)) {
+            return fail(JsonStatus::Invalid);
+        }
+        if (!static_ip_consistent(v_.fipaddr, v_.fsubn, v_.fdefgtw)) {
+            return fail(JsonStatus::Invalid);
+        }
     }
     return JsonStatus::Ok;
 }
