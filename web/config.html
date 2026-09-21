@@ -128,7 +128,8 @@
         ["0", "Value only"], ["1", "JSON basic"], ["2", "JSON + name"], ["3", "JSON full"]
       ]],
       ["UPL_THROTTLE", "Update interval (s)", "number"],
-      ["PUSH_FULL", "Push complete telegram over MQTT", "checkbox"]
+      ["PUSH_FULL", "Push complete telegram over MQTT", "checkbox", null,
+        "Publishes the whole telegram, about 1 KB. Your broker must accept payloads that size."]
     ],
     dongle: [
       ["RINT_SPIFFS", "Reinitialise filesystem", "checkbox"]
@@ -151,7 +152,7 @@
   }
 
   function buildField(spec) {
-    var key = spec[0], label = spec[1], kind = spec[2], opts = spec[3];
+    var key = spec[0], label = spec[1], kind = spec[2], opts = spec[3], hint = spec[4];
     var wrap = el("div", {"data-key": key});
     wrap.appendChild(el("label", {for: key, text: label}));
     var input;
@@ -186,12 +187,14 @@
       row.appendChild(input);
       row.appendChild(btn);
       wrap.appendChild(row);
+      if (hint) wrap.appendChild(el("p", {class: "field-hint", text: hint}));
       wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
       return wrap;
     } else {
       input = el("input", {type: kind, id: key, name: key});
     }
     wrap.appendChild(input);
+    if (hint) wrap.appendChild(el("p", {class: "field-hint", text: hint}));
     wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
     return wrap;
   }

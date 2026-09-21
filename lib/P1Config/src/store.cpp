@@ -604,13 +604,9 @@ void Store::factory_reset()
     apply_defaults();
     save();
     ha_mig_ = false;
-    ha_pub_have_ = false;
-    ha_pub_slug_[0] = '\0';
-    ha_pub_pfix_[0] = '\0';
+    clear_published_ha_identity();
     backend_.begin(false);
     backend_.remove("HA_MIG");
-    backend_.remove("HA_SLUG");
-    backend_.remove("HA_PFIX");
     backend_.end();
 }
 
@@ -719,6 +715,17 @@ void Store::set_published_ha_identity(const char* slug, const char* pfix)
     backend_.begin(false);
     backend_.put_str("HA_SLUG", ha_pub_slug_);
     backend_.put_str("HA_PFIX", ha_pub_pfix_);
+    backend_.end();
+}
+
+void Store::clear_published_ha_identity()
+{
+    ha_pub_have_ = false;
+    ha_pub_slug_[0] = '\0';
+    ha_pub_pfix_[0] = '\0';
+    backend_.begin(false);
+    backend_.remove("HA_SLUG");
+    backend_.remove("HA_PFIX");
     backend_.end();
 }
 

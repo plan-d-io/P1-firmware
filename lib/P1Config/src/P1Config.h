@@ -306,6 +306,7 @@ public:
     const char* published_ha_slug() const { return ha_pub_slug_; }
     const char* published_mqtt_pfix() const { return ha_pub_pfix_; }
     void set_published_ha_identity(const char* slug, const char* pfix);
+    void clear_published_ha_identity();
 
     // On failure, if bad_key is non-null and bad_key_cap > 0, writes the
     // offending setting key (NUL-terminated) when one is known. Cleared to

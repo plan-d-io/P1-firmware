@@ -556,4 +556,20 @@ std::size_t identity_clear_topics(std::string_view last_slug, std::string_view l
     return n;
 }
 
+std::size_t withdraw_ha_discovery(std::string_view ha_slug, std::string_view device_id,
+                                  void (*fn)(std::string_view, void*), void* ctx)
+{
+    std::size_t n = 0;
+    char topic[kTopicMax];
+    if (!ha_slug.empty() && device_discovery_topic(ha_slug, topic, sizeof(topic)) > 0) {
+        emit_topic(fn, ctx, topic);
+        ++n;
+    }
+    if (!device_id.empty() && device_discovery_topic(device_id, topic, sizeof(topic)) > 0) {
+        emit_topic(fn, ctx, topic);
+        ++n;
+    }
+    return n;
+}
+
 }  // namespace p1pub

@@ -47,8 +47,16 @@ std::size_t availability_from_prefix(std::string_view pfix, char* out, std::size
 // Topics to empty-retain when the published identity changes, in order:
 // old device discovery, then old availability if the prefix changed.
 // last empty → 0 (first publish). last == current → 0.
+// Empty *current* clears the last meter discovery and availability, but not the
+// dongle device topic — use withdraw_ha_discovery() to pull HA offline entirely.
 std::size_t identity_clear_topics(std::string_view last_slug, std::string_view last_pfix,
                                   std::string_view cur_slug, std::string_view cur_pfix,
+                                  void (*fn)(std::string_view, void*), void* ctx);
+
+// Empty-retain both device discovery configs published while HA was on:
+// homeassistant/device/<ha_slug>/config then homeassistant/device/<device_id>/config.
+// Does not touch availability (still used while MQTT_EN is on).
+std::size_t withdraw_ha_discovery(std::string_view ha_slug, std::string_view device_id,
                                   void (*fn)(std::string_view, void*), void* ctx);
 
 const char* ha_state_class(const p1cfg::Field& field);

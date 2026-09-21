@@ -657,6 +657,84 @@ void test_identity_clear_unchanged_is_noop()
     TEST_ASSERT_EQUAL_UINT(0, topics.size());
 }
 
+void test_withdraw_ha_discovery_topics()
+{
+    // Hand-written from the device discovery format:
+    //   homeassistant/device/<id>/config
+    // Meter uses HA_DEVICE slug; dongle uses the station device id.
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    const std::size_t n =
+        p1pub::withdraw_ha_discovery("example_meter", "P10AB2C3", collect, &topics);
+    TEST_ASSERT_EQUAL_UINT(2, n);
+    TEST_ASSERT_EQUAL_UINT(2, topics.size());
+    TEST_ASSERT_EQUAL_STRING("homeassistant/device/example_meter/config", topics[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("homeassistant/device/P10AB2C3/config", topics[1].c_str());
+
+    // Empty current identity via identity_clear_topics is not enough for a full
+    // withdraw: it clears meter discovery + availability, not the dongle topic.
+    topics.clear();
+    const std::size_t via_clear = p1pub::identity_clear_topics(
+        "example_meter", "data/devices/example_meter/", "", "", collect, &topics);
+    TEST_ASSERT_EQUAL_UINT(2, via_clear);
+    TEST_ASSERT_EQUAL_STRING("homeassistant/device/example_meter/config", topics[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("data/devices/example_meter", topics[1].c_str());
+}
+
+void test_clear_published_ha_identity_leaves_mig()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store s(mem);
+    s.load();
+    s.set_ha_migrated();
+    s.set_published_ha_identity("example_meter", "data/devices/example_meter/");
+    TEST_ASSERT_TRUE(mem.has("HA_MIG"));
+    TEST_ASSERT_TRUE(mem.has("HA_SLUG"));
+    TEST_ASSERT_TRUE(mem.has("HA_PFIX"));
+
+    s.clear_published_ha_identity();
+    TEST_ASSERT_FALSE(s.has_published_ha_identity());
+    TEST_ASSERT_FALSE(mem.has("HA_SLUG"));
+    TEST_ASSERT_FALSE(mem.has("HA_PFIX"));
+    TEST_ASSERT_TRUE(mem.has("HA_MIG"));
+    TEST_ASSERT_TRUE(s.ha_migrated());
+}
+
+void test_reenable_after_clear_is_first_publish()
+{
+    // After clear, has_published is false → sync_ha_identity's first-publish path
+    // (identity_clear with empty last is a noop; discovery is published fresh).
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store s(mem);
+    s.load();
+    s.values().ha_en = true;
+    std::strcpy(s.values().ha_device, "Example meter");
+    std::strcpy(s.values().mqtt_pfix, "data/devices/example_meter/");
+    s.set_published_ha_identity("example_meter", "data/devices/example_meter/");
+    s.clear_published_ha_identity();
+    TEST_ASSERT_FALSE(s.has_published_ha_identity());
+
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    TEST_ASSERT_EQUAL_UINT(0, p1pub::identity_clear_topics(
+                                 "", "", "example_meter", "data/devices/example_meter/", collect,
+                                 &topics));
+    TEST_ASSERT_EQUAL_UINT(0, topics.size());
+
+    char buf[p1pub::kDiscoveryCap];
+    char topic[p1pub::kTopicMax];
+    TEST_ASSERT_TRUE(p1pub::device_discovery_topic("example_meter", topic, sizeof(topic)) > 0);
+    const std::uint64_t mask = p1pub::enabled_field_mask(s);
+    const std::size_t n =
+        p1pub::meter_discovery(s, "3.00", "http://192.0.2.30", mask, 0, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"components\""));
+}
+
 void test_published_identity_survives_reload()
 {
     p1cfg::MemoryBackend mem;
@@ -773,6 +851,9 @@ int main()
     RUN_TEST(test_identity_clear_ha_device);
     RUN_TEST(test_identity_clear_mqtt_prefix);
     RUN_TEST(test_identity_clear_unchanged_is_noop);
+    RUN_TEST(test_withdraw_ha_discovery_topics);
+    RUN_TEST(test_clear_published_ha_identity_leaves_mig);
+    RUN_TEST(test_reenable_after_clear_is_first_publish);
     RUN_TEST(test_published_identity_survives_reload);
     RUN_TEST(test_abbreviated_payload_keeps_unique_ids);
     RUN_TEST(test_ha_device_discovery_schema_shape);

@@ -920,6 +920,35 @@ static void ha_clear_topic(std::string_view topic, void* /*ctx*/)
     g_log.log(p1log::Level::Info, msg);
 }
 
+// Standing reconcile: ha_en off with a published identity still on record →
+// withdraw retained discovery. Idempotent; covers web, MQTT config, and reboot.
+static void reconcile_ha_discovery()
+{
+    if (g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
+        return;
+    }
+    if (!g_cfg.values().ha_en) {
+        if (!g_cfg.has_published_ha_identity()) {
+            return;
+        }
+        char slug[p1cfg::kHaMax];
+        std::snprintf(slug, sizeof(slug), "%s", g_cfg.published_ha_slug());
+        p1pub::withdraw_ha_discovery(slug, g_device_id, &ha_clear_topic, nullptr);
+        g_cfg.clear_published_ha_identity();
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "HA discovery withdrawn for %s", slug);
+        g_log.log(p1log::Level::Info, msg);
+        return;
+    }
+    // Re-enable with g_disc_have still set: same as a first publish.
+    if (!g_cfg.has_published_ha_identity() && g_disc_have) {
+        if (!g_cfg.ha_migrated()) {
+            run_ha_migration();
+        }
+        sync_ha_identity(true);
+    }
+}
+
 static void sync_ha_identity(bool republish)
 {
     if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
@@ -1587,6 +1616,7 @@ void loop()
         on_just_connected();
     }
     handle_inbound();
+    reconcile_ha_discovery();
 
     if (mqtt_up) {
         g_log.replay_undelivered();
