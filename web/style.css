@@ -69,13 +69,26 @@ h3 {
     margin-bottom: 2px;
 }
 
-.show-password {
+.pw-row { position: relative; margin: 10px 0; }
+.pw-row input { margin: 0; padding-right: 48px; }
+
+.pw-toggle {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 0;
+    background: none;
     cursor: pointer;
-    color: #1fa3ec;
-    text-decoration: underline;
-    display: inline-block;
-    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
+
+.pw-toggle svg { width: 24px; height: 24px; fill: #333; }
 
 .content {
     padding: 0 18px 12px;
