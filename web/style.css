@@ -90,6 +90,8 @@ h3 {
 
 .pw-toggle svg { width: 24px; height: 24px; fill: #333; }
 
+input::placeholder { color: #8a8a8a; opacity: 1; }
+
 .content {
     padding: 0 18px 12px;
     display: none;
@@ -237,13 +239,6 @@ footer {
     min-height: 1.2em;
     color: #ff8a8a;
     margin: 0.5rem 0;
-}
-
-.secret-hint {
-    color: #b0b0b0;
-    font-size: 0.85rem;
-    text-align: left;
-    margin: -4px 0 8px;
 }
 
 /* SoftAP setup + no-JS status fallback, same palette */

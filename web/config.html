@@ -180,7 +180,6 @@
       row.appendChild(input);
       row.appendChild(btn);
       wrap.appendChild(row);
-      wrap.appendChild(el("p", {class: "secret-hint", id: key + "_hint"}));
       wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
       return wrap;
     } else {
@@ -214,8 +213,7 @@
           initial[key] = null;
           input.value = "";
           input.dataset.changed = "0";
-          var hint = document.getElementById(key + "_hint");
-          if (hint) hint.textContent = entry.set ? "Password is set. Leave blank to keep it." : "No password stored.";
+          input.placeholder = entry.set ? "Leave blank to keep current" : "No password stored";
           return;
         }
         var val = entry && typeof entry === "object" ? entry.value : entry;
