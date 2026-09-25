@@ -235,6 +235,16 @@ esp_err_t dispatch(httpd_req_t* req)
         httpd_resp_set_type(req, "text/plain");
         return httpd_resp_send(req, "Ok", 2);
     }
+    case Route::OtaCheck: {
+        g_server->actions()->ota_check = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
+    case Route::OtaInstall: {
+        g_server->actions()->ota_install = true;
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Ok", 2);
+    }
     case Route::ConfigGet: {
         p1cfg::Store* store = g_server->store_ptr();
         if (store == nullptr) {
@@ -443,6 +453,8 @@ bool Server::begin(Mode mode)
     register_one(handle, "/reboot", HTTP_POST);
     register_one(handle, "/reset/wifi", HTTP_POST);
     register_one(handle, "/reset/factory", HTTP_POST);
+    register_one(handle, "/update/check", HTTP_POST);
+    register_one(handle, "/update/install", HTTP_POST);
     httpd_register_err_handler(handle, HTTPD_404_NOT_FOUND, on_404);
 
     running_ = true;

@@ -41,6 +41,9 @@
     <button type="button" class="collapsible">Telegram settings</button>
     <div class="content" data-section="tg"></div>
 
+    <button type="button" class="collapsible">Updates</button>
+    <div class="content" data-section="upd"></div>
+
     <button type="button" class="collapsible">Dongle settings</button>
     <div class="content" data-section="dongle"></div>
 
@@ -131,6 +134,13 @@
       ["PUSH_FULL", "Push complete telegram over MQTT", "checkbox", null,
         "Publishes the whole telegram, about 1 KB. Your broker must accept payloads that size."]
     ],
+    upd: [
+      ["REL_CHAN", "Release channel", "select", [
+        ["main", "main"], ["alpha", "alpha"], ["develop", "develop"], ["V2", "V2"]
+      ]],
+      ["UPD_AUTO", "Automatic updates", "checkbox"],
+      ["UPD_AUTOCHK", "Check for updates", "checkbox"]
+    ],
     dongle: [
       ["RINT_SPIFFS", "Reinitialise filesystem", "checkbox"]
     ]
@@ -212,6 +222,15 @@
           "The list of all meter readings supported by the dongle. If a meter reading is not present in the meter telegram, it will not be pushed."}));
         box.appendChild(el("div", {id: "fieldChecks"}));
         host.appendChild(box);
+      }
+      if (sec === "upd") {
+        host.appendChild(el("p", {class: "field-hint", id: "updStatusLine", text: ""}));
+        var actions = el("div", {class: "upd-actions"});
+        actions.appendChild(el("button", {type: "button", class: "submit", id: "updCheckBtn", text: "Check now"}));
+        var inst = el("button", {type: "button", class: "reboot", id: "updInstallBtn", text: "Install"});
+        inst.style.display = "none";
+        actions.appendChild(inst);
+        host.appendChild(actions);
       }
     });
   }
@@ -386,6 +405,7 @@
       if (!s.ha_en) setIcon("ind-ha", "cloud-cog-outline");
       else if (mqttOk) setIcon("ind-ha", "cloud-outline");
       else setIcon("ind-ha", "cloud-off-outline");
+      refreshUpdStatus(s);
     }).catch(function () {});
   }
 
@@ -513,7 +533,56 @@
     }
   });
 
+  function formatUpdVer(n) {
+    if (!n) return "";
+    var major = Math.floor(n / 100);
+    var frac = n % 100;
+    return major + "." + (frac < 10 ? "0" : "") + frac;
+  }
+
+  function refreshUpdStatus(s) {
+    var line = document.getElementById("updStatusLine");
+    var inst = document.getElementById("updInstallBtn");
+    if (!line) return;
+    var run = s.fw_ver || "";
+    var text = "Running firmware " + run;
+    if (s.upd_checked && s.upd_available && s.upd_found) {
+      text += " — update " + formatUpdVer(s.upd_found) + " available";
+    } else if (s.upd_checked) {
+      text += " — up to date";
+    }
+    line.textContent = text;
+    var autoOn = !!(document.getElementById("UPD_AUTO") && document.getElementById("UPD_AUTO").checked);
+    if (inst) {
+      inst.style.display = (s.upd_available && !autoOn) ? "" : "none";
+    }
+  }
+
   renderForm();
+
+  document.getElementById("updCheckBtn").addEventListener("click", function () {
+    document.getElementById("infoMessage").textContent = "Checking…";
+    fetch("/update/check", {method: "POST"}).then(function (r) {
+      return r.text().then(function (t) { return {ok: r.ok, text: t}; });
+    }).then(function (res) {
+      if (!res.ok) {
+        document.getElementById("infoMessage").textContent = res.text || "Check failed";
+        return;
+      }
+      document.getElementById("infoMessage").textContent = "Check started.";
+      setTimeout(refreshStatus, 2000);
+      setTimeout(refreshStatus, 8000);
+    }).catch(function (e) {
+      document.getElementById("infoMessage").textContent = String(e);
+    });
+  });
+  document.getElementById("updInstallBtn").addEventListener("click", function () {
+    if (!window.confirm(
+          "Install the available firmware update? The dongle will be unreachable for a few minutes while it downloads and reboots.")) {
+      return;
+    }
+    window.location.href = "/rebooting?update=install";
+  });
 
   (function wireTlsPortToggle() {
     var tls = document.getElementById("MQTT_TLS");

@@ -14,19 +14,26 @@
 </div>
 <script>
 (function () {
-  var q = new URLSearchParams(location.search).get("reset");
+  var q = new URLSearchParams(location.search);
+  var reset = q.get("reset");
+  var update = q.get("update");
   var heading = document.getElementById("heading");
   var lede = document.getElementById("lede");
   var endpoint = null;
-  if (q === null || q === "") {
+  if (update === "install") {
+    heading.textContent = "Installing update";
+    lede.textContent =
+      "The dongle is downloading firmware and will reboot when finished. You can close this window.";
+    endpoint = "/update/install";
+  } else if (reset === null || reset === "") {
     heading.textContent = "Restarting";
     endpoint = "/reboot";
-  } else if (q === "wifi") {
+  } else if (reset === "wifi") {
     heading.textContent = "WiFi settings cleared";
     lede.textContent =
       "The dongle is restarting and will reopen its setup network, p1dongle. You can close this window.";
     endpoint = "/reset/wifi";
-  } else if (q === "factory") {
+  } else if (reset === "factory") {
     heading.textContent = "Factory reset";
     lede.textContent =
       "The dongle is restarting and will reopen its setup network, p1dongle. You can close this window.";

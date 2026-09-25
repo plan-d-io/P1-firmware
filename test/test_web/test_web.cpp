@@ -59,6 +59,10 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reset/wifi"));
     TEST_ASSERT_EQUAL(p1web::Route::ResetFactory,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reset/factory"));
+    TEST_ASSERT_EQUAL(p1web::Route::OtaCheck,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/update/check"));
+    TEST_ASSERT_EQUAL(p1web::Route::OtaInstall,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/update/install"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/reset/factory"));
     TEST_ASSERT_EQUAL(p1web::Route::Rebooting,
@@ -142,6 +146,9 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"device_id\":\"P1AABBCC\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt\":\"Connected\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_err\":\"\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_checked\":false"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_available\":false"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_found\":0"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));

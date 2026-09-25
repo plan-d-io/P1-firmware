@@ -1,0 +1,100 @@
+#include <P1Ota.h>
+#include <fw_version.h>
+
+#include <unity.h>
+
+#include <cstring>
+
+void test_fw_ver_matches_num()
+{
+    unsigned parsed = 0;
+    TEST_ASSERT_TRUE(p1ota::parse_display_version(p1fw::kFwVer, parsed));
+    TEST_ASSERT_EQUAL_UINT(300u, parsed);
+    TEST_ASSERT_EQUAL_UINT(300u, p1fw::kFwVerNum);
+    TEST_ASSERT_EQUAL_UINT(parsed, p1fw::kFwVerNum);
+}
+
+void test_parse_version_file()
+{
+    unsigned v = 0;
+    TEST_ASSERT_TRUE(p1ota::parse_version("301", v));
+    TEST_ASSERT_EQUAL_UINT(301u, v);
+
+    TEST_ASSERT_TRUE(p1ota::parse_version("301\n", v));
+    TEST_ASSERT_EQUAL_UINT(301u, v);
+
+    TEST_ASSERT_TRUE(p1ota::parse_version(" 301 ", v));
+    TEST_ASSERT_EQUAL_UINT(301u, v);
+
+    TEST_ASSERT_TRUE(p1ota::parse_version("223", v));
+    TEST_ASSERT_EQUAL_UINT(223u, v);
+
+    TEST_ASSERT_FALSE(p1ota::parse_version("", v));
+    TEST_ASSERT_FALSE(p1ota::parse_version("3.01", v));
+    TEST_ASSERT_FALSE(p1ota::parse_version("abc", v));
+    TEST_ASSERT_FALSE(p1ota::parse_version("-1", v));
+    TEST_ASSERT_FALSE(p1ota::parse_version("0", v));
+    TEST_ASSERT_FALSE(p1ota::parse_version("3.00", v));
+}
+
+void test_channel_urls()
+{
+    char url[p1ota::kUrlMax];
+
+    TEST_ASSERT_TRUE(p1ota::version_url("main", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/main/version", url);
+    TEST_ASSERT_TRUE(p1ota::firmware_url("main", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/main/p1-dongle.bin", url);
+
+    TEST_ASSERT_TRUE(p1ota::version_url("alpha", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/alpha/version", url);
+    TEST_ASSERT_TRUE(p1ota::firmware_url("alpha", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/alpha/p1-dongle.bin", url);
+
+    TEST_ASSERT_TRUE(p1ota::version_url("develop", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/develop/version", url);
+    TEST_ASSERT_TRUE(p1ota::firmware_url("develop", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/develop/p1-dongle.bin", url);
+
+    TEST_ASSERT_TRUE(p1ota::version_url("V2", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/V2-0/version", url);
+    TEST_ASSERT_TRUE(p1ota::firmware_url("V2", url, sizeof(url)) > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/V2-0/p1-dongle.bin", url);
+
+    TEST_ASSERT_EQUAL_UINT(0, p1ota::version_url("beta", url, sizeof(url)));
+    TEST_ASSERT_EQUAL_UINT(0, p1ota::firmware_url("nope", url, sizeof(url)));
+    TEST_ASSERT_NULL(p1ota::channel_path("beta"));
+    TEST_ASSERT_EQUAL_STRING("V2-0", p1ota::channel_path("V2"));
+}
+
+void test_format_version()
+{
+    char buf[16];
+    TEST_ASSERT_EQUAL_UINT(4, p1ota::format_version(300, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("3.00", buf);
+    TEST_ASSERT_EQUAL_UINT(4, p1ota::format_version(301, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("3.01", buf);
+    TEST_ASSERT_EQUAL_UINT(4, p1ota::format_version(223, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("2.23", buf);
+}
+
+extern "C" void setUp() {}
+extern "C" void tearDown() {}
+
+int main(int argc, char** argv)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_fw_ver_matches_num);
+    RUN_TEST(test_parse_version_file);
+    RUN_TEST(test_channel_urls);
+    RUN_TEST(test_format_version);
+    return UNITY_END();
+}

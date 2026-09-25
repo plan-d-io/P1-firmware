@@ -1,20 +1,26 @@
 #include <Arduino.h>
 #include <ESPmDNS.h>
+#include <HTTPClient.h>
 #include <LittleFS.h>
+#include <NetworkClientSecure.h>
 #include <P1Config.h>
 #include <P1DSMR.h>
 #include <P1Mqtt.h>
+#include <P1Ota.h>
 #include <P1Publish.h>
 #include <P1Syslog.h>
 #include <P1Web.h>
+#include <Update.h>
 #include <WiFi.h>
 #include <cerrno>
+#include <esp_crt_bundle.h>
 #include <esp_mac.h>
 #include <esp_random.h>
 #include <esp_system.h>
 #include <fcntl.h>
-#include <lwip/sockets.h>
+#include <fw_version.h>
 #include <lwip/netdb.h>
+#include <lwip/sockets.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -33,12 +39,14 @@ static constexpr int kP1Rx = 21;
 static constexpr int kP1Tx = 22;
 static constexpr int kDataRequest = 25;
 static constexpr int kBtn = 39;
-// Rebuild generation. Fielded firmware was 2.23; keep this above that line.
-static constexpr char kFwVer[] = "3.00";
+// Display / integer version: include/fw_version.h — bump both together.
 
 static void request_reboot(const char* reason);
 static void publish_config_snapshot();
 static void restart_mqtt();
+static bool ota_check_now();
+static void ota_install_now();
+static void ota_on_schedule();
 
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
@@ -83,6 +91,13 @@ static char g_status_heap[16]{};
 static char g_status_rssi[12]{};
 static char g_status_tele[48]{};
 static char g_mqtt_err[48]{};
+static bool g_upd_checked = false;
+static bool g_upd_available = false;
+static unsigned g_upd_found = 0;
+static std::uint32_t g_last_ota_check_ms = 0;
+static bool g_ota_boot_check_done = false;
+static constexpr std::uint32_t kOtaFirstDelayMs = 3UL * 60UL * 1000UL;
+static constexpr std::uint32_t kOtaIntervalMs = 24UL * 60UL * 60UL * 1000UL;
 static p1web::StatusView g_status_view{};
 static p1web::FieldReading g_last_readings[p1cfg::kMaxFields]{};
 static p1web::ReadingsView g_readings_view{g_last_readings, 0};
@@ -411,7 +426,7 @@ static void refresh_status_view()
     std::snprintf(g_status_rssi, sizeof(g_status_rssi), "%ld", static_cast<long>(WiFi.RSSI()));
     std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u", g_ok, g_rejected);
     g_status_view.device_id = g_device_id;
-    g_status_view.fw_ver = kFwVer;
+    g_status_view.fw_ver = p1fw::kFwVer;
     g_status_view.ip = g_status_ip;
     g_status_view.uptime = g_status_uptime;
     g_status_view.heap = g_status_heap;
@@ -425,6 +440,9 @@ static void refresh_status_view()
     g_status_view.mqtt_en = g_cfg.values().mqtt_en;
     g_status_view.telegrams_ok = g_ok;
     g_status_view.telegrams_rejected = g_rejected;
+    g_status_view.upd_checked = g_upd_checked;
+    g_status_view.upd_available = g_upd_available;
+    g_status_view.upd_found = g_upd_found;
 }
 
 static void poll_wifi_scan()
@@ -510,6 +528,19 @@ static void handle_web_actions()
     if (act->reboot) {
         act->reboot = false;
         request_reboot("Reboot requested from web UI");
+    }
+    if (act->ota_check) {
+        act->ota_check = false;
+        const bool newer = ota_check_now();
+        g_last_ota_check_ms = millis();
+        g_ota_boot_check_done = true;
+        if (newer && g_cfg.values().upd_auto) {
+            ota_install_now();
+        }
+    }
+    if (act->ota_install) {
+        act->ota_install = false;
+        ota_install_now();
     }
 }
 
@@ -726,7 +757,7 @@ static void publish_config_snapshot()
         return;
     }
     const std::size_t n =
-        p1mqtt::config_snapshot(g_cfg, g_device_id, kFwVer, g_json, sizeof(g_json));
+        p1mqtt::config_snapshot(g_cfg, g_device_id, p1fw::kFwVer, g_json, sizeof(g_json));
     if (n == 0) {
         return;
     }
@@ -767,7 +798,7 @@ static void publish_diagnostics()
     std::snprintf(quoted, sizeof(quoted), "\"%u.%u.%u.%u\"", ip[0], ip[1], ip[2], ip[3]);
     publish_one_diag("ip", "IP", quoted);
 
-    std::snprintf(quoted, sizeof(quoted), "\"%s\"", kFwVer);
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"", p1fw::kFwVer);
     publish_one_diag("firmware", "Firmware", quoted);
 
     std::snprintf(num, sizeof(num), "%ld", static_cast<long>(WiFi.RSSI()));
@@ -842,7 +873,7 @@ static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_ma
     if (p1pub::slug(g_cfg.values().ha_device, slug_id, sizeof(slug_id)) > 0 &&
         p1pub::device_discovery_topic(slug_id, topic, sizeof(topic)) > 0) {
         const std::size_t n =
-            p1pub::meter_discovery(g_cfg, kFwVer, config_url, include_mask, stub_mask, buf,
+            p1pub::meter_discovery(g_cfg, p1fw::kFwVer, config_url, include_mask, stub_mask, buf,
                                    p1pub::kDiscoveryCap);
         ok = publish_discovery_buf(topic, buf, n) && ok;
     } else {
@@ -851,7 +882,7 @@ static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_ma
 
     if (g_device_id[0] != '\0' &&
         p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
-        const std::size_t n = p1pub::dongle_discovery(g_cfg, g_device_id, kFwVer, config_url, buf,
+        const std::size_t n = p1pub::dongle_discovery(g_cfg, g_device_id, p1fw::kFwVer, config_url, buf,
                                                      p1pub::kDiscoveryCap);
         ok = publish_discovery_buf(topic, buf, n) && ok;
     } else {
@@ -987,6 +1018,222 @@ static void restart_mqtt()
     g_mqtt.stop();
     g_mqtt_started = false;
     try_start_mqtt();
+}
+
+// NetworkClientSecure only exposes the framework bundle via setCACertBundle with
+// a custom buffer. Subclass so we can attach the compiled-in bundle the same way
+// MQTT TLS does (esp_crt_bundle_attach).
+class BundleClient : public NetworkClientSecure {
+public:
+    void use_framework_bundle()
+    {
+        attach_ssl_certificate_bundle(sslclient.get(), true);
+        _use_ca_bundle = true;
+        _use_insecure = false;
+    }
+};
+
+static void mqtt_pause_for_https()
+{
+    char avail[p1pub::kTopicMax];
+    if (fill_availability(avail, sizeof(avail)) &&
+        g_mqtt.state() == p1mqtt::Mqtt::State::Connected) {
+        g_mqtt.publish(avail, "offline", true);
+    }
+    g_mqtt.stop();
+    g_mqtt_started = false;
+    g_log.set_mqtt_ready(false);
+}
+
+static void mqtt_resume_after_https()
+{
+    try_start_mqtt();
+}
+
+// Fetch version file. Returns true if a newer version is available.
+static bool ota_check_now()
+{
+    if (!g_got_ip || WiFi.status() != WL_CONNECTED) {
+        g_log.log(p1log::Level::Warn, "OTA check skipped: no WiFi");
+        return false;
+    }
+
+    char url[p1ota::kUrlMax];
+    if (p1ota::version_url(g_cfg.values().rel_chan, url, sizeof(url)) == 0) {
+        g_log.log(p1log::Level::Warn, "OTA check: bad release channel");
+        return false;
+    }
+
+    mqtt_pause_for_https();
+
+    bool newer = false;
+    g_upd_available = false;
+    g_upd_found = 0;
+
+    BundleClient client;
+    client.setTimeout(15000);
+    client.use_framework_bundle();
+
+    HTTPClient https;
+    https.setTimeout(15000);
+    char msg[160];
+    std::snprintf(msg, sizeof(msg), "OTA checking %s", url);
+    g_log.log(p1log::Level::Info, msg);
+
+    if (!https.begin(client, url)) {
+        g_log.log(p1log::Level::Warn, "OTA check: HTTPS begin failed");
+        mqtt_resume_after_https();
+        return false;
+    }
+
+    const int code = https.GET();
+    if (code != HTTP_CODE_OK && code != HTTP_CODE_MOVED_PERMANENTLY) {
+        std::snprintf(msg, sizeof(msg), "OTA check: HTTP %d", code);
+        g_log.log(p1log::Level::Warn, msg);
+        https.end();
+        mqtt_resume_after_https();
+        return false;
+    }
+
+    const String body = https.getString();
+    https.end();
+
+    unsigned found = 0;
+    if (!p1ota::parse_version(std::string_view(body.c_str(), body.length()), found)) {
+        g_log.log(p1log::Level::Warn, "OTA check: version file not a positive integer");
+        g_upd_checked = true;
+        mqtt_resume_after_https();
+        return false;
+    }
+
+    g_upd_checked = true;
+    g_upd_found = found;
+    char found_disp[16];
+    p1ota::format_version(found, found_disp, sizeof(found_disp));
+    std::snprintf(msg, sizeof(msg), "OTA running %s (%u), online %s (%u)", p1fw::kFwVer,
+                  p1fw::kFwVerNum, found_disp, found);
+    g_log.log(p1log::Level::Info, msg);
+
+    if (found > p1fw::kFwVerNum) {
+        g_upd_available = true;
+        newer = true;
+        g_log.log(p1log::Level::Info, "OTA update available");
+    } else {
+        g_log.log(p1log::Level::Info, "OTA no update available");
+    }
+
+    mqtt_resume_after_https();
+    return newer;
+}
+
+// Download and install. Reboots on success; restores MQTT on failure.
+static void ota_install_now()
+{
+    if (!g_got_ip || WiFi.status() != WL_CONNECTED) {
+        g_log.log(p1log::Level::Warn, "OTA install skipped: no WiFi");
+        return;
+    }
+
+    char url[p1ota::kUrlMax];
+    if (p1ota::firmware_url(g_cfg.values().rel_chan, url, sizeof(url)) == 0) {
+        g_log.log(p1log::Level::Warn, "OTA install: bad release channel");
+        return;
+    }
+
+    mqtt_pause_for_https();
+
+    const unsigned heap_at_dl = ESP.getFreeHeap();
+    char msg[160];
+    std::snprintf(msg, sizeof(msg), "OTA download begin heap=%u url=%s", heap_at_dl, url);
+    g_log.log(p1log::Level::Info, msg);
+
+    BundleClient client;
+    client.setTimeout(30000);
+    client.use_framework_bundle();
+
+    HTTPClient https;
+    https.setTimeout(60000);
+    if (!https.begin(client, url)) {
+        g_log.log(p1log::Level::Error, "OTA install: HTTPS begin failed");
+        mqtt_resume_after_https();
+        return;
+    }
+
+    const int code = https.GET();
+    if (code != HTTP_CODE_OK && code != HTTP_CODE_MOVED_PERMANENTLY) {
+        std::snprintf(msg, sizeof(msg), "OTA install: HTTP %d", code);
+        g_log.log(p1log::Level::Error, msg);
+        https.end();
+        mqtt_resume_after_https();
+        return;
+    }
+
+    const int content_len = https.getSize();
+    if (content_len <= 0) {
+        g_log.log(p1log::Level::Error, "OTA install: missing Content-Length");
+        https.end();
+        mqtt_resume_after_https();
+        return;
+    }
+
+    if (!Update.begin(static_cast<size_t>(content_len))) {
+        std::snprintf(msg, sizeof(msg), "OTA install: Update.begin failed err=%u len=%d",
+                      static_cast<unsigned>(Update.getError()), content_len);
+        g_log.log(p1log::Level::Error, msg);
+        https.end();
+        mqtt_resume_after_https();
+        return;
+    }
+
+    NetworkClient& stream = https.getStream();
+    const size_t written = Update.writeStream(stream);
+    if (written != static_cast<size_t>(content_len)) {
+        std::snprintf(msg, sizeof(msg), "OTA install: wrote %u of %d",
+                      static_cast<unsigned>(written), content_len);
+        g_log.log(p1log::Level::Error, msg);
+        Update.abort();
+        https.end();
+        mqtt_resume_after_https();
+        return;
+    }
+
+    if (!Update.end() || !Update.isFinished()) {
+        std::snprintf(msg, sizeof(msg), "OTA install: Update.end failed err=%u",
+                      static_cast<unsigned>(Update.getError()));
+        g_log.log(p1log::Level::Error, msg);
+        https.end();
+        mqtt_resume_after_https();
+        return;
+    }
+
+    https.end();
+    g_log.log(p1log::Level::Info, "OTA install complete, rebooting");
+    // Do not restore MQTT — we are about to reboot.
+    request_reboot("Firmware update installed");
+}
+
+static void ota_on_schedule()
+{
+    if (!g_cfg.values().upd_autochk || !g_got_ip || WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+    const std::uint32_t now = millis();
+    if (!g_ota_boot_check_done) {
+        if (now < kOtaFirstDelayMs) {
+            return;
+        }
+        g_ota_boot_check_done = true;
+        g_last_ota_check_ms = now;
+    } else if ((now - g_last_ota_check_ms) < kOtaIntervalMs) {
+        return;
+    } else {
+        g_last_ota_check_ms = now;
+    }
+
+    const bool newer = ota_check_now();
+    if (newer && g_cfg.values().upd_auto) {
+        ota_install_now();
+    }
 }
 
 static void on_just_connected()
@@ -1576,7 +1823,7 @@ void setup()
     }
 
     char boot[96];
-    std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u", kFwVer,
+    std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u", p1fw::kFwVer,
                   g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
                   static_cast<unsigned>(rx));
     g_log.log(p1log::Level::Info, boot);
@@ -1673,6 +1920,8 @@ void loop()
 
     handle_inbound();
     reconcile_ha_discovery();
+
+    ota_on_schedule();
 
     if (mqtt_up) {
         g_log.replay_undelivered();

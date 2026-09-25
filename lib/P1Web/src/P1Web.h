@@ -58,6 +58,8 @@ enum class Route : std::uint8_t {
     Reboot,
     ResetWifi,
     ResetFactory,
+    OtaCheck,
+    OtaInstall,
     NotFound,
 };
 
@@ -124,6 +126,9 @@ struct StatusView {
     bool mqtt_en = false;
     unsigned telegrams_ok = 0;
     unsigned telegrams_rejected = 0;
+    bool upd_checked = false;
+    bool upd_available = false;
+    unsigned upd_found = 0;
 };
 
 struct FieldReading {
@@ -146,6 +151,8 @@ struct Actions {
     bool reset_factory = false;
     bool republish_config = false;
     bool restart_mqtt = false;
+    bool ota_check = false;
+    bool ota_install = false;
 };
 
 void sort_scan_strongest_first(ScanCache& cache);

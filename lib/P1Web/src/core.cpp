@@ -78,6 +78,12 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/reset/factory" && method == Method::Post) {
         return Route::ResetFactory;
     }
+    if (uri == "/update/check" && method == Method::Post) {
+        return Route::OtaCheck;
+    }
+    if (uri == "/update/install" && method == Method::Post) {
+        return Route::OtaInstall;
+    }
     if (uri == "/rebooting.html" || uri == "/rebooting") {
         return Route::Rebooting;
     }
@@ -379,7 +385,10 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put(",") || !put_bool("meter", v.meter) || !put(",") || !put_bool("ha_en", v.ha_en) ||
         !put(",") || !put_bool("mqtt_en", v.mqtt_en) || !put(",") ||
         !put_u("telegrams_ok", v.telegrams_ok) || !put(",") ||
-        !put_u("telegrams_rejected", v.telegrams_rejected) || !put("}")) {
+        !put_u("telegrams_rejected", v.telegrams_rejected) || !put(",") ||
+        !put_bool("upd_checked", v.upd_checked) || !put(",") ||
+        !put_bool("upd_available", v.upd_available) || !put(",") ||
+        !put_u("upd_found", v.upd_found) || !put("}")) {
         return 0;
     }
     out[n] = '\0';

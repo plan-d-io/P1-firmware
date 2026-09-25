@@ -1,0 +1,33 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+
+namespace p1ota {
+
+// Max URL length for the version / firmware endpoints.
+constexpr std::size_t kUrlMax = 160;
+
+// Channel setting → GitHub path segment. V2 maps to "V2-0" (legacy).
+// Returns nullptr if channel is not one of main / alpha / develop / V2.
+const char* channel_path(std::string_view channel);
+
+// Build the version-file or firmware-binary URL for a channel.
+// Returns written length, or 0 on failure.
+std::size_t version_url(std::string_view channel, char* out, std::size_t cap);
+std::size_t firmware_url(std::string_view channel, char* out, std::size_t cap);
+
+// Parse a version file body. Tolerates leading/trailing whitespace.
+// Returns true and writes a positive integer on success.
+// Empty, non-integer, zero, and negative are all failure (not version zero).
+bool parse_version(std::string_view body, unsigned& out);
+
+// Display string "N.NN" from an integer like 301 → "3.01". Truncates if cap is tight.
+std::size_t format_version(unsigned num, char* out, std::size_t cap);
+
+// Parse "N.NN" (or "N.N") display string into the integer convention (×100).
+// Used by the host test that locks kFwVer to kFwVerNum.
+bool parse_display_version(std::string_view s, unsigned& out);
+
+}  // namespace p1ota
