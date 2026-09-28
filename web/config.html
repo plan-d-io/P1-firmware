@@ -231,6 +231,7 @@
         inst.style.display = "none";
         actions.appendChild(inst);
         host.appendChild(actions);
+        host.appendChild(el("p", {class: "field-hint", id: "updDirtyHint", text: "Save your changes before checking.", style: "display:none"}));
       }
     });
   }
@@ -269,7 +270,10 @@
   }
 
   function loadFields() {
-    return fetch("/api/fields").then(function (r) { return r.json(); }).then(renderFieldChecks);
+    return fetch("/api/fields").then(function (r) { return r.json(); }).then(function (list) {
+      renderFieldChecks(list);
+      syncUpdActionAvailability();
+    });
   }
 
   function collectFieldChanges() {
@@ -316,6 +320,7 @@
         }
       });
     });
+    syncUpdActionAvailability();
   }
 
   function clearErrors() {
@@ -362,6 +367,20 @@
       });
     });
     return any ? body : null;
+  }
+
+  function formDirty() {
+    return collectChanges() !== null || collectFieldChanges() !== null;
+  }
+
+  function syncUpdActionAvailability() {
+    var dirty = formDirty();
+    var check = document.getElementById("updCheckBtn");
+    var inst = document.getElementById("updInstallBtn");
+    var hint = document.getElementById("updDirtyHint");
+    if (check) check.disabled = dirty;
+    if (inst) inst.disabled = dirty;
+    if (hint) hint.style.display = dirty ? "" : "none";
   }
 
   function setIcon(id, name, labelOverride) {
@@ -487,6 +506,7 @@
     function finishOk() {
       document.getElementById("infoMessage").style.color = "#5aaf6f";
       document.getElementById("infoMessage").textContent = "Saved.";
+      syncUpdActionAvailability();
     }
     if (cfgBody) {
       fetch("/config", {
@@ -550,21 +570,26 @@
     if (!line) return;
     var run = s.fw_ver || "";
     var text = "Running firmware " + run;
-    if (s.upd_checked && s.upd_available && s.upd_found) {
-      text += " — update " + formatUpdVer(s.upd_found) + " available";
-    } else if (s.upd_checked) {
-      text += " — up to date";
+    var chan = s.upd_channel || "";
+    if (s.upd_checked && chan) {
+      if (s.upd_available && s.upd_found) {
+        text += " — update " + formatUpdVer(s.upd_found) + " available on " + chan;
+      } else {
+        text += " — up to date on " + chan;
+      }
     }
     line.textContent = text;
     var autoOn = !!(document.getElementById("UPD_AUTO") && document.getElementById("UPD_AUTO").checked);
     if (inst) {
       inst.style.display = (s.upd_available && !autoOn) ? "" : "none";
     }
+    syncUpdActionAvailability();
   }
 
   renderForm();
 
   document.getElementById("updCheckBtn").addEventListener("click", function () {
+    if (formDirty()) return;
     document.getElementById("infoMessage").textContent = "Checking…";
     fetch("/update/check", {method: "POST"}).then(function (r) {
       return r.text().then(function (t) { return {ok: r.ok, text: t}; });
@@ -581,12 +606,16 @@
     });
   });
   document.getElementById("updInstallBtn").addEventListener("click", function () {
+    if (formDirty()) return;
     if (!window.confirm(
           "Install the available firmware update? The dongle will be unreachable for a few minutes while it downloads and reboots.")) {
       return;
     }
     window.location.href = "/rebooting?update=install";
   });
+
+  document.getElementById("configForm").addEventListener("input", syncUpdActionAvailability);
+  document.getElementById("configForm").addEventListener("change", syncUpdActionAvailability);
 
   (function wireTlsPortToggle() {
     var tls = document.getElementById("MQTT_TLS");
@@ -610,6 +639,7 @@
           port.value = "1883";
         }
       }
+      syncUpdActionAvailability();
     });
   })();
 

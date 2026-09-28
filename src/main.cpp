@@ -94,6 +94,15 @@ static char g_mqtt_err[48]{};
 static bool g_upd_checked = false;
 static bool g_upd_available = false;
 static unsigned g_upd_found = 0;
+static char g_upd_channel[p1cfg::kRelChanMax]{};
+
+static void clear_ota_check_result()
+{
+    g_upd_checked = false;
+    g_upd_available = false;
+    g_upd_found = 0;
+    g_upd_channel[0] = '\0';
+}
 static std::uint32_t g_last_ota_check_ms = 0;
 static bool g_ota_boot_check_done = false;
 static constexpr std::uint32_t kOtaFirstDelayMs = 3UL * 60UL * 1000UL;
@@ -443,6 +452,7 @@ static void refresh_status_view()
     g_status_view.upd_checked = g_upd_checked;
     g_status_view.upd_available = g_upd_available;
     g_status_view.upd_found = g_upd_found;
+    g_status_view.upd_channel = g_upd_channel;
 }
 
 static void poll_wifi_scan()
@@ -1069,6 +1079,7 @@ static bool ota_check_now()
     bool newer = false;
     g_upd_available = false;
     g_upd_found = 0;
+    g_upd_channel[0] = '\0';
 
     BundleClient client;
     client.setTimeout(15000);
@@ -1102,12 +1113,14 @@ static bool ota_check_now()
     if (!p1ota::parse_version(std::string_view(body.c_str(), body.length()), found)) {
         g_log.log(p1log::Level::Warn, "OTA check: version file not a positive integer");
         g_upd_checked = true;
+        std::snprintf(g_upd_channel, sizeof(g_upd_channel), "%s", g_cfg.values().rel_chan);
         mqtt_resume_after_https();
         return false;
     }
 
     g_upd_checked = true;
     g_upd_found = found;
+    std::snprintf(g_upd_channel, sizeof(g_upd_channel), "%s", g_cfg.values().rel_chan);
     char found_disp[16];
     p1ota::format_version(found, found_disp, sizeof(found_disp));
     std::snprintf(msg, sizeof(msg), "OTA running %s (%u), online %s (%u)", p1fw::kFwVer,
@@ -1441,6 +1454,13 @@ static void cmd_set(char* rest)
         return;
     }
 
+    char prev_rel_chan[p1cfg::kRelChanMax]{};
+    const bool tracking_rel =
+        e->type == p1cfg::CfgType::Str && std::strcmp(e->key, "REL_CHAN") == 0;
+    if (tracking_rel) {
+        std::snprintf(prev_rel_chan, sizeof(prev_rel_chan), "%s", e->var.s);
+    }
+
     switch (e->type) {
     case p1cfg::CfgType::Bool: {
         bool v = false;
@@ -1501,6 +1521,10 @@ static void cmd_set(char* rest)
         Serial.printf("%s set\n", e->key);
     } else {
         Serial.printf("%s updated\n", e->key);
+    }
+
+    if (tracking_rel && std::strcmp(prev_rel_chan, e->var.s) != 0) {
+        clear_ota_check_result();
     }
 
     if (std::strcmp(e->key, "MQTT_PFIX") == 0) {
@@ -1840,6 +1864,10 @@ void setup()
 
 void loop()
 {
+    if (g_cfg.consume_rel_chan_changed()) {
+        clear_ota_check_result();
+    }
+
     poll_serial();
     poll_button();
     service_provisioning();

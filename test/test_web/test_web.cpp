@@ -149,6 +149,7 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_checked\":false"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_available\":false"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_found\":0"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_channel\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));

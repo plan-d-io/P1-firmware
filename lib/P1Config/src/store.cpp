@@ -880,7 +880,17 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
             return fail(JsonStatus::Invalid, "FIPADDR");
         }
     }
+    if (std::strcmp(saved.rel_chan, v_.rel_chan) != 0) {
+        rel_chan_changed_ = true;
+    }
     return JsonStatus::Ok;
+}
+
+bool Store::consume_rel_chan_changed()
+{
+    const bool changed = rel_chan_changed_;
+    rel_chan_changed_ = false;
+    return changed;
 }
 
 JsonStatus Store::apply_fields_json(std::string_view json, char* bad_key, std::size_t bad_key_cap)

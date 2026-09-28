@@ -388,7 +388,8 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put_u("telegrams_rejected", v.telegrams_rejected) || !put(",") ||
         !put_bool("upd_checked", v.upd_checked) || !put(",") ||
         !put_bool("upd_available", v.upd_available) || !put(",") ||
-        !put_u("upd_found", v.upd_found) || !put("}")) {
+        !put_u("upd_found", v.upd_found) || !put(",") ||
+        !put_str("upd_channel", v.upd_channel) || !put("}")) {
         return 0;
     }
     out[n] = '\0';

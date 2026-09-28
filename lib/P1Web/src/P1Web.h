@@ -129,6 +129,7 @@ struct StatusView {
     bool upd_checked = false;
     bool upd_available = false;
     unsigned upd_found = 0;
+    const char* upd_channel = "";
 };
 
 struct FieldReading {

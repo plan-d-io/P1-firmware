@@ -321,6 +321,9 @@ public:
     // the object is at least "{}".
     std::size_t to_json(char* out, std::size_t cap) const;
 
+    // True when a successful apply_json changed REL_CHAN. Cleared on read.
+    bool consume_rel_chan_changed();
+
 private:
     void bind_table();
     void load_one(const CfgEntry& e);
@@ -338,6 +341,7 @@ private:
     bool ha_pub_have_ = false;
     char ha_pub_slug_[kHaMax]{};
     char ha_pub_pfix_[kPrefixMax]{};
+    bool rel_chan_changed_ = false;
 };
 
 }  // namespace p1cfg
