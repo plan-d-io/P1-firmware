@@ -55,7 +55,7 @@
     <button type="button" class="reboot reset-wifi" id="resetWifiBtn">Reset WiFi</button>
     <button type="button" class="reboot" id="factoryResetBtn">Factory reset</button>
   </div>
-  <footer><a href="https://www.plan-d.io" target="_blank" rel="noopener">Digital meter dongle by plan-d.io</a></footer>
+  <footer><a id="footerLink" href="https://www.plan-d.io" target="_blank" rel="noopener">Digital meter dongle by plan-d.io</a></footer>
 </div>
 <script>
 (function () {
@@ -405,6 +405,10 @@
       if (!s.ha_en) setIcon("ind-ha", "cloud-cog-outline");
       else if (mqttOk) setIcon("ind-ha", "cloud-outline");
       else setIcon("ind-ha", "cloud-off-outline");
+      var footer = document.getElementById("footerLink");
+      if (footer && s.fw_ver) {
+        footer.textContent = "Digital meter dongle V" + s.fw_ver + " by plan-d.io";
+      }
       refreshUpdStatus(s);
     }).catch(function () {});
   }

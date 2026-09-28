@@ -849,7 +849,7 @@ static bool publish_discovery_buf(std::string_view topic, const char* buf, std::
     char msg[96];
     std::snprintf(msg, sizeof(msg), "HA discovery %.*s n=%u", static_cast<int>(topic.size()),
                   topic.data(), static_cast<unsigned>(n));
-    g_log.log(p1log::Level::Info, msg);
+    g_log.log(p1log::Level::Debug, msg);
     return true;
 }
 

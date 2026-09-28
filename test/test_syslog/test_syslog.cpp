@@ -125,6 +125,7 @@ void test_repeats_collapse()
     for (const auto& s : g_serial) {
         if (s.find("Previous message repeated 2 times") != std::string::npos) {
             saw_repeat = true;
+            TEST_ASSERT_TRUE(s.find("WARN ") != std::string::npos);
         }
         if (s.find("WARN other") != std::string::npos) {
             saw_other = true;
@@ -132,6 +133,57 @@ void test_repeats_collapse()
     }
     TEST_ASSERT_TRUE(saw_repeat);
     TEST_ASSERT_TRUE(saw_other);
+}
+
+void test_repeat_once_wording()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    g_fake_unix = 1789914725ull;
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(true);
+
+    log.log(p1log::Level::Info, "same");
+    log.log(p1log::Level::Info, "same");
+    log.log(p1log::Level::Info, "other");
+
+    bool saw_once = false;
+    for (const auto& s : g_serial) {
+        if (s.find("Previous message repeated once") != std::string::npos) {
+            saw_once = true;
+            TEST_ASSERT_TRUE(s.find("INFO ") != std::string::npos);
+            TEST_ASSERT_TRUE(s.find("WARN ") == std::string::npos);
+        }
+    }
+    TEST_ASSERT_TRUE(saw_once);
+}
+
+void test_repeat_info_summary_level()
+{
+    reset_sinks();
+    p1log::MemoryFileStore fs;
+    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
+    p1log::set_clock(&fake_unix, &fake_uptime);
+    g_fake_unix = 1789914725ull;
+    log.set_device_id("P1AABBCC");
+    log.set_mqtt_ready(true);
+
+    log.log(p1log::Level::Info, "same");
+    log.log(p1log::Level::Info, "same");
+    log.log(p1log::Level::Info, "same");
+    log.log(p1log::Level::Info, "other");
+
+    bool saw_repeat = false;
+    for (const auto& s : g_serial) {
+        if (s.find("Previous message repeated 2 times") != std::string::npos) {
+            saw_repeat = true;
+            TEST_ASSERT_TRUE(s.find("INFO ") != std::string::npos);
+            TEST_ASSERT_TRUE(s.find("WARN ") == std::string::npos);
+        }
+    }
+    TEST_ASSERT_TRUE(saw_repeat);
 }
 
 void test_differing_level_not_repeat()
@@ -440,6 +492,8 @@ int main()
     RUN_TEST(test_line_format_each_level);
     RUN_TEST(test_pre_clock_uptime_stamp);
     RUN_TEST(test_repeats_collapse);
+    RUN_TEST(test_repeat_once_wording);
+    RUN_TEST(test_repeat_info_summary_level);
     RUN_TEST(test_differing_level_not_repeat);
     RUN_TEST(test_rotation_resets_watermark);
     RUN_TEST(test_watermark_advances_and_persists);

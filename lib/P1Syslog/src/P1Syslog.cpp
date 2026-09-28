@@ -256,12 +256,17 @@ void Logger::flush_repeat()
         return;
     }
     char msg[48];
-    std::snprintf(msg, sizeof(msg), "Previous message repeated %lu times",
-                  static_cast<unsigned long>(repeat_));
+    if (repeat_ == 1) {
+        std::snprintf(msg, sizeof(msg), "Previous message repeated once");
+    } else {
+        std::snprintf(msg, sizeof(msg), "Previous message repeated %lu times",
+                      static_cast<unsigned long>(repeat_));
+    }
+    const Level summary_level = last_level_;
     repeat_ = 0;
     // Do not fold the summary into another repeat of itself.
     have_last_ = false;
-    emit_line(Level::Warn, msg, false);
+    emit_line(summary_level, msg, false);
 }
 
 void Logger::log(Level level, std::string_view msg)
