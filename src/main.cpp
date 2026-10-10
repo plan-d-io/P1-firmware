@@ -102,9 +102,8 @@ static p1web::ScanCache g_scan{};
 static bool g_ap_up = false;
 static bool g_sta_joining = false;
 static bool g_scan_started = false;
+static bool g_want_sta_scan = false;
 static std::uint32_t g_last_scan_ms = 0;
-static char g_begun_ssid[p1web::kSsidMax]{};
-static char g_begun_pass[p1web::kPassMax]{};
 static bool g_force_dhcp_this_boot = false;
 static bool g_using_static_sta = false;
 static constexpr std::uint32_t kGwReachTimeoutMs = 15000;
@@ -226,9 +225,19 @@ static const char* mqtt_state_name(p1mqtt::Mqtt::State s)
     return "?";
 }
 
+static const p1cfg::NetworkSettings& net_in_use()
+{
+    return g_cfg.boot_network();
+}
+
+static bool on_station_network()
+{
+    return WiFi.status() == WL_CONNECTED;
+}
+
 static const char* wifi_state_name()
 {
-    if (g_cfg.values().wifi_ssid[0] == '\0') {
+    if (net_in_use().wifi_ssid[0] == '\0') {
         return "idle";
     }
     if (WiFi.status() == WL_CONNECTED) {
@@ -258,7 +267,7 @@ static void start_gateway_reach_check()
         return;
     }
     IPAddress gw;
-    if (!gw.fromString(g_cfg.values().fdefgtw)) {
+    if (!gw.fromString(net_in_use().fdefgtw)) {
         return;
     }
     const int s = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -298,8 +307,6 @@ static void fallback_static_to_dhcp()
     g_force_dhcp_this_boot = true;
     g_using_static_sta = false;
     g_wifi_started = false;
-    g_begun_ssid[0] = '\0';
-    g_begun_pass[0] = '\0';
     g_got_ip = false;
     g_ntp_started = false;
     close_gw_sock();
@@ -344,28 +351,25 @@ static void service_gateway_reach_check()
 
 static void start_sta()
 {
-    if (g_cfg.values().wifi_ssid[0] == '\0') {
+    const auto& net = net_in_use();
+    if (net.wifi_ssid[0] == '\0') {
         return;
     }
-    const bool want_static = g_cfg.values().fip_en && !g_force_dhcp_this_boot;
-    if (g_wifi_started && g_using_static_sta == want_static &&
-        std::strcmp(g_begun_ssid, g_cfg.values().wifi_ssid) == 0 &&
-        std::strcmp(g_begun_pass, g_cfg.values().wifi_pass) == 0) {
+    const bool want_static = net.fip_en && !g_force_dhcp_this_boot;
+    if (g_wifi_started && g_using_static_sta == want_static) {
         return;
     }
     if (g_scan_started) {
         WiFi.scanDelete();
         g_scan_started = false;
+        g_scan.scanning = false;
     }
-    if (g_device_id[0] != '\0') {
-        WiFi.setHostname(g_device_id);
-    }
+    WiFi.setHostname(p1web::kApSsid);
     WiFi.setAutoReconnect(true);
     if (g_wifi_started) {
         WiFi.disconnect(false, false);
     }
 
-    const auto& v = g_cfg.values();
     g_using_static_sta = false;
     if (want_static) {
         IPAddress ip;
@@ -373,15 +377,15 @@ static void start_sta()
         IPAddress gw;
         IPAddress d1;
         IPAddress d2;
-        const bool ok = ip.fromString(v.fipaddr) && sn.fromString(v.fsubn) &&
-                        gw.fromString(v.fdefgtw) && d1.fromString(v.fdns1) &&
-                        (v.fdns2[0] == '\0' || d2.fromString(v.fdns2));
+        const bool ok = ip.fromString(net.fipaddr) && sn.fromString(net.fsubn) &&
+                        gw.fromString(net.fdefgtw) && d1.fromString(net.fdns1) &&
+                        (net.fdns2[0] == '\0' || d2.fromString(net.fdns2));
         if (!ok) {
             g_log.log(p1log::Level::Warn, "Static IP incomplete or malformed; using DHCP");
             // Must be 0.0.0.0 — INADDR_NONE is 255.255.255.255 and selects static mode.
             WiFi.config(IPAddress((std::uint32_t)0), IPAddress((std::uint32_t)0),
                         IPAddress((std::uint32_t)0));
-        } else if (v.fdns2[0] == '\0') {
+        } else if (net.fdns2[0] == '\0') {
             WiFi.config(ip, gw, sn, d1);
             g_using_static_sta = true;
             g_log.log(p1log::Level::Info, "Static IP configured");
@@ -395,15 +399,12 @@ static void start_sta()
                     IPAddress((std::uint32_t)0));
     }
 
-    WiFi.begin(g_cfg.values().wifi_ssid, g_cfg.values().wifi_pass);
-    std::snprintf(g_begun_ssid, sizeof(g_begun_ssid), "%s", g_cfg.values().wifi_ssid);
-    std::snprintf(g_begun_pass, sizeof(g_begun_pass), "%s", g_cfg.values().wifi_pass);
+    WiFi.begin(net.wifi_ssid, net.wifi_pass);
     g_wifi_started = true;
     close_gw_sock();
     g_gw_check = GwCheck::Idle;
     char msg[96];
-    std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", g_cfg.values().wifi_ssid,
-                  g_device_id);
+    std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", net.wifi_ssid, p1web::kApSsid);
     g_log.log(p1log::Level::Info, msg);
 }
 
@@ -440,8 +441,13 @@ static void start_ap()
         g_web.set_mode(p1web::Mode::Ap);
     }
     g_web.set_scan(&g_scan);
+    g_web.set_status(&g_status_view);
+    g_readings_view.fields = g_last_readings;
+    g_readings_view.count = p1cfg::catalogue_size();
+    g_web.set_readings(&g_readings_view);
     g_last_scan_ms = 0;
     g_scan_started = false;
+    g_scan.scanning = false;
 }
 
 static void idle_sta()
@@ -452,8 +458,6 @@ static void idle_sta()
     }
     WiFi.disconnect(false, false);
     g_wifi_started = false;
-    g_begun_ssid[0] = '\0';
-    g_begun_pass[0] = '\0';
     g_got_ip = false;
     g_ntp_started = false;
     close_gw_sock();
@@ -487,6 +491,7 @@ static void ensure_web_station()
         g_web.set_mode(p1web::Mode::Station);
     }
     g_web.set_status(&g_status_view);
+    g_web.set_scan(&g_scan);
     g_readings_view.fields = g_last_readings;
     g_readings_view.count = p1cfg::catalogue_size();
     g_web.set_readings(&g_readings_view);
@@ -494,7 +499,12 @@ static void ensure_web_station()
 
 static void refresh_status_view()
 {
-    const IPAddress ip = WiFi.localIP();
+    IPAddress ip;
+    if (WiFi.status() == WL_CONNECTED) {
+        ip = WiFi.localIP();
+    } else if (g_ap_up) {
+        ip = WiFi.softAPIP();
+    }
     std::snprintf(g_status_ip, sizeof(g_status_ip), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
     const std::uint32_t sec = millis() / 1000u;
     std::snprintf(g_status_uptime, sizeof(g_status_uptime), "%lu s",
@@ -524,13 +534,11 @@ static void refresh_status_view()
     g_status_view.upd_found = g_upd_found;
     g_status_view.upd_channel = g_upd_channel;
     g_status_view.upd_fail = g_upd_fail_msg;
+    g_status_view.net_pending = g_cfg.network_pending();
 }
 
 static void poll_wifi_scan()
 {
-    if (!g_ap_up) {
-        return;
-    }
     const std::int16_t done = WiFi.scanComplete();
     if (done >= 0) {
         g_scan.count = 0;
@@ -546,20 +554,27 @@ static void poll_wifi_scan()
         WiFi.scanDelete();
         p1web::sort_scan_strongest_first(g_scan);
         g_scan.ready = true;
+        g_scan.scanning = false;
         g_scan_started = false;
         g_last_scan_ms = millis();
+        g_want_sta_scan = false;
         return;
     }
     if (done == -1) {
+        g_scan.scanning = true;
         return;  // still scanning
     }
-    // -2 = not started / idle. Do not scan while a join attempt is in progress.
-    if (g_sta_joining) {
+    // Do not start a scan during a setup-mode join attempt (AP still up).
+    if (g_ap_up && g_sta_joining) {
         return;
     }
-    if (!g_scan_started && (g_last_scan_ms == 0 || millis() - g_last_scan_ms > 15000u)) {
+    const bool due =
+        !g_scan_started && (g_last_scan_ms == 0 || millis() - g_last_scan_ms > 15000u);
+    const bool want = g_ap_up ? due : (g_want_sta_scan && due);
+    if (want) {
         if (WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING) {
             g_scan_started = true;
+            g_scan.scanning = true;
         }
     }
 }
@@ -570,30 +585,21 @@ static void handle_web_actions()
     if (act == nullptr) {
         return;
     }
-    if (act->save_wifi) {
-        act->save_wifi = false;
-        char json[192];
-        if (p1web::wifi_creds_json(act->wifi_ssid, act->wifi_pass, json, sizeof(json)) == 0) {
-            g_log.log(p1log::Level::Error, "WiFi save JSON overflow");
-            act->reboot = false;
-            return;
-        }
-        const p1cfg::JsonStatus st = g_cfg.apply_json(json);
-        if (st != p1cfg::JsonStatus::Ok) {
-            g_log.log(p1log::Level::Warn, "WiFi save rejected");
-            act->reboot = false;
-            return;
-        }
-        g_cfg.save();
-        g_log.log(p1log::Level::Info, "WiFi credentials saved from setup page");
+    if (act->wifi_scan) {
+        act->wifi_scan = false;
+        g_want_sta_scan = true;
     }
     if (act->republish_config) {
-        act->republish_config = false;
-        publish_config_snapshot();
+        if (on_station_network()) {
+            act->republish_config = false;
+            publish_config_snapshot();
+        }
     }
     if (act->restart_mqtt) {
-        act->restart_mqtt = false;
-        restart_mqtt();
+        if (on_station_network()) {
+            act->restart_mqtt = false;
+            restart_mqtt();
+        }
     }
     if (act->reset_wifi) {
         act->reset_wifi = false;
@@ -614,17 +620,21 @@ static void handle_web_actions()
         request_reboot("Reboot requested from web UI");
     }
     if (act->ota_check) {
-        act->ota_check = false;
-        const bool newer = ota_check_now();
-        g_last_ota_check_ms = millis();
-        g_ota_boot_check_done = true;
-        if (newer && g_cfg.values().upd_auto && ota_auto_should_install(g_upd_found)) {
-            ota_install_now();
+        if (on_station_network()) {
+            act->ota_check = false;
+            const bool newer = ota_check_now();
+            g_last_ota_check_ms = millis();
+            g_ota_boot_check_done = true;
+            if (newer && g_cfg.values().upd_auto && ota_auto_should_install(g_upd_found)) {
+                ota_install_now();
+            }
         }
     }
     if (act->ota_install) {
-        act->ota_install = false;
-        ota_install_now();
+        if (on_station_network()) {
+            act->ota_install = false;
+            ota_install_now();
+        }
     }
     if (act->fw_upload_started) {
         act->fw_upload_started = false;
@@ -648,11 +658,12 @@ static void handle_web_actions()
 
 static bool scan_has_stored_ssid()
 {
-    if (!g_scan.ready || g_cfg.values().wifi_ssid[0] == '\0') {
+    const char* ssid = net_in_use().wifi_ssid;
+    if (!g_scan.ready || ssid[0] == '\0') {
         return false;
     }
     for (std::size_t i = 0; i < g_scan.count; ++i) {
-        if (std::strcmp(g_scan.entries[i].ssid, g_cfg.values().wifi_ssid) == 0) {
+        if (std::strcmp(g_scan.entries[i].ssid, ssid) == 0) {
             return true;
         }
     }
@@ -662,7 +673,7 @@ static bool scan_has_stored_ssid()
 static void service_provisioning()
 {
     p1web::ProvInput in{};
-    in.have_ssid = g_cfg.values().wifi_ssid[0] != '\0';
+    in.have_ssid = net_in_use().wifi_ssid[0] != '\0';
     in.sta_connected = WiFi.status() == WL_CONNECTED;
     in.ssid_seen = scan_has_stored_ssid();
     in.ap_clients = g_ap_up ? WiFi.softAPgetStationNum() : 0;
@@ -700,17 +711,18 @@ static void service_provisioning()
                                  out.phase == p1web::ProvPhase::NeedAp)) {
         g_wifi_outcome_seen = true;
     }
+    refresh_status_view();
     if (out.phase == p1web::ProvPhase::Station) {
         ensure_web_station();
-        refresh_status_view();
     }
 
     if (g_ap_up) {
         g_dns.loop();
-        poll_wifi_scan();
         g_web.set_mode(p1web::Mode::Ap);
         g_web.set_scan(&g_scan);
+        g_web.set_status(&g_status_view);
     }
+    poll_wifi_scan();
 
     handle_web_actions();
 }
@@ -804,13 +816,13 @@ static void start_wifi()
 
 static void ensure_mdns()
 {
-    if (g_mdns_started || !g_got_ip || g_device_id[0] == '\0') {
+    if (g_mdns_started || !g_got_ip) {
         return;
     }
-    if (MDNS.begin(g_device_id)) {
+    if (MDNS.begin(p1web::kApSsid)) {
         g_mdns_started = true;
         char msg[48];
-        std::snprintf(msg, sizeof(msg), "mDNS %s.local", g_device_id);
+        std::snprintf(msg, sizeof(msg), "mDNS %s.local", p1web::kApSsid);
         g_log.log(p1log::Level::Info, msg);
     }
 }
@@ -1033,7 +1045,7 @@ static void service_status_led()
     p1led::Facts f{};
     f.busy = !g_wifi_outcome_seen || g_fw_busy.load(std::memory_order_relaxed);
     f.ap_up = g_ap_up;
-    f.wifi_ssid_stored = g_cfg.values().wifi_ssid[0] != '\0';
+    f.wifi_ssid_stored = net_in_use().wifi_ssid[0] != '\0';
     f.sta_connected = WiFi.status() == WL_CONNECTED;
     f.mqtt_en = g_cfg.values().mqtt_en;
     f.mqtt_connected = g_mqtt.state() == p1mqtt::Mqtt::State::Connected;
@@ -1959,6 +1971,11 @@ static void handle_line(char* line)
         Serial.println("saved");
         return;
     }
+    if (std::strcmp(line, "reboot") == 0) {
+        Serial.println("rebooting");
+        request_reboot("Reboot requested from serial");
+        return;
+    }
     if (std::strcmp(line, "status") == 0) {
         cmd_status();
         return;
@@ -2108,7 +2125,7 @@ static void handle_line(char* line)
         return;
     }
     Serial.println(
-        "commands: set <KEY> <value> | get | save | status | field <id> on|off | "
+        "commands: set <KEY> <value> | get | save | reboot | status | field <id> on|off | "
         "req on|off | hold on|off | tap | syslog");
 }
 
@@ -2203,6 +2220,7 @@ void setup()
     }
 
     g_cfg.load();
+    g_cfg.capture_boot_network();
     g_log.set_mark_persist(&g_persist_log_mark, nullptr);
     g_log.set_log_mark(g_cfg.values().log_mark);
 

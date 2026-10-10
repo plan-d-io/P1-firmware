@@ -9,10 +9,6 @@ extern const std::uint8_t kStyleCssGz[];
 extern const std::size_t kStyleCssGzLen;
 extern const std::size_t kStyleCssRawLen;
 
-extern const std::uint8_t kRestartingHtmlGz[];
-extern const std::size_t kRestartingHtmlGzLen;
-extern const std::size_t kRestartingHtmlRawLen;
-
 extern const std::uint8_t kRebootingHtmlGz[];
 extern const std::size_t kRebootingHtmlGzLen;
 extern const std::size_t kRebootingHtmlRawLen;
@@ -29,7 +25,6 @@ extern const std::uint8_t kUpdateHtmlGz[];
 extern const std::size_t kUpdateHtmlGzLen;
 extern const std::size_t kUpdateHtmlRawLen;
 
-extern const char kSetupHtmlTpl[];
 extern const char kStatusHtmlTpl[];
 
 }  // namespace assets

@@ -40,9 +40,7 @@ def generate(root: pathlib.Path) -> int:
 
     files = {
         "style.css": web / "style.css",
-        "setup.html": web / "setup.html",
         "status.html": web / "status.html",
-        "restarting.html": web / "restarting.html",
         "rebooting.html": web / "rebooting.html",
         "config.html": web / "config.html",
         "log.html": web / "log.html",
@@ -54,8 +52,6 @@ def generate(root: pathlib.Path) -> int:
 
     style_raw = files["style.css"].read_bytes()
     style_gz = gzip.compress(style_raw, mtime=0, compresslevel=9)
-    restart_raw = files["restarting.html"].read_bytes()
-    restart_gz = gzip.compress(restart_raw, mtime=0, compresslevel=9)
     reboot_raw = files["rebooting.html"].read_bytes()
     reboot_gz = gzip.compress(reboot_raw, mtime=0, compresslevel=9)
     config_raw = files["config.html"].read_bytes()
@@ -64,7 +60,6 @@ def generate(root: pathlib.Path) -> int:
     log_gz = gzip.compress(log_raw, mtime=0, compresslevel=9)
     update_raw = files["update.html"].read_bytes()
     update_gz = gzip.compress(update_raw, mtime=0, compresslevel=9)
-    setup_tpl = files["setup.html"].read_text(encoding="utf-8")
     status_tpl = files["status.html"].read_text(encoding="utf-8")
 
     report = root / ".pio" / "asset-sizes.txt"
@@ -72,12 +67,10 @@ def generate(root: pathlib.Path) -> int:
     with report.open("w", encoding="utf-8") as fh:
         fh.write("asset raw_bytes gzip_bytes\n")
         fh.write(f"style.css {len(style_raw)} {len(style_gz)}\n")
-        fh.write(f"restarting.html {len(restart_raw)} {len(restart_gz)}\n")
         fh.write(f"rebooting.html {len(reboot_raw)} {len(reboot_gz)}\n")
         fh.write(f"config.html {len(config_raw)} {len(config_gz)}\n")
         fh.write(f"log.html {len(log_raw)} {len(log_gz)}\n")
         fh.write(f"update.html {len(update_raw)} {len(update_gz)}\n")
-        fh.write(f"setup.html {len(setup_tpl.encode('utf-8'))} -\n")
         fh.write(f"status.html {len(status_tpl.encode('utf-8'))} -\n")
 
     out_h.parent.mkdir(parents=True, exist_ok=True)
@@ -92,10 +85,6 @@ namespace assets {
 extern const std::uint8_t kStyleCssGz[];
 extern const std::size_t kStyleCssGzLen;
 extern const std::size_t kStyleCssRawLen;
-
-extern const std::uint8_t kRestartingHtmlGz[];
-extern const std::size_t kRestartingHtmlGzLen;
-extern const std::size_t kRestartingHtmlRawLen;
 
 extern const std::uint8_t kRebootingHtmlGz[];
 extern const std::size_t kRebootingHtmlGzLen;
@@ -113,7 +102,6 @@ extern const std::uint8_t kUpdateHtmlGz[];
 extern const std::size_t kUpdateHtmlGzLen;
 extern const std::size_t kUpdateHtmlRawLen;
 
-extern const char kSetupHtmlTpl[];
 extern const char kStatusHtmlTpl[];
 
 }  // namespace assets
@@ -132,10 +120,6 @@ extern const char kStatusHtmlTpl[];
         "const std::size_t kStyleCssGzLen = sizeof(kStyleCssGz);",
         f"const std::size_t kStyleCssRawLen = {len(style_raw)};",
         "",
-        c_bytes(restart_gz, "kRestartingHtmlGz"),
-        "const std::size_t kRestartingHtmlGzLen = sizeof(kRestartingHtmlGz);",
-        f"const std::size_t kRestartingHtmlRawLen = {len(restart_raw)};",
-        "",
         c_bytes(reboot_gz, "kRebootingHtmlGz"),
         "const std::size_t kRebootingHtmlGzLen = sizeof(kRebootingHtmlGz);",
         f"const std::size_t kRebootingHtmlRawLen = {len(reboot_raw)};",
@@ -152,8 +136,6 @@ extern const char kStatusHtmlTpl[];
         "const std::size_t kUpdateHtmlGzLen = sizeof(kUpdateHtmlGz);",
         f"const std::size_t kUpdateHtmlRawLen = {len(update_raw)};",
         "",
-        c_raw_string(setup_tpl, "kSetupHtmlTpl"),
-        "",
         c_raw_string(status_tpl, "kStatusHtmlTpl"),
         "",
         "}  // namespace assets",
@@ -163,7 +145,6 @@ extern const char kStatusHtmlTpl[];
     out_cpp.write_text("\n".join(cpp), encoding="utf-8")
     print(
         f"embed_web: style {len(style_raw)}->{len(style_gz)}  "
-        f"restarting {len(restart_raw)}->{len(restart_gz)}  "
         f"rebooting {len(reboot_raw)}->{len(reboot_gz)}  "
         f"config {len(config_raw)}->{len(config_gz)}  "
         f"log {len(log_raw)}->{len(log_gz)}  "

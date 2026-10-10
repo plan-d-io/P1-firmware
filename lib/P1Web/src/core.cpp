@@ -5,14 +5,6 @@
 #include <cstring>
 
 namespace p1web {
-namespace {
-
-bool starts_with(std::string_view s, std::string_view p)
-{
-    return s.size() >= p.size() && s.substr(0, p.size()) == p;
-}
-
-}  // namespace
 
 Method parse_method(std::string_view m)
 {
@@ -57,6 +49,9 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/api/fields" && method == Method::Get) {
         return Route::ApiFields;
     }
+    if (uri == "/api/networks" && method == Method::Get) {
+        return Route::ApiNetworks;
+    }
     if (uri == "/fields" && method == Method::Post) {
         return Route::FieldsPost;
     }
@@ -99,33 +94,19 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/rebooting.html" || uri == "/rebooting") {
         return Route::Rebooting;
     }
-    if (method == Method::Post && uri == "/save") {
-        return Route::Save;
-    }
-    if (uri == "/restarting.html" || uri == "/restarting") {
-        return Route::Restarting;
-    }
-
-    if (mode == Mode::Ap) {
-        if (uri == "/" || uri == "/setup" || uri == "/setup.html" || uri == "/index.html" ||
-            uri == "/generate_204" || uri == "/hotspot-detect.html" || uri == "/connectivitycheck" ||
-            starts_with(uri, "/connectivitycheck") || starts_with(uri, "/ncsi") ||
-            uri == "/fwlink" || uri == "/canonical.html") {
-            return Route::Setup;
-        }
-        // Captive portal probes and anything else land on setup.
-        return Route::Setup;
-    }
-
-    // Station mode.
-    if (uri == "/" || uri == "/index.html") {
-        return Route::ConfigPage;
+    if (uri == "/setup" || uri == "/setup.html") {
+        return Route::RedirectHome;
     }
     if (uri == "/status" || uri == "/status.html") {
         return Route::Status;
     }
-    if (uri == "/setup" || uri == "/setup.html") {
-        return Route::Setup;  // still reachable if someone bookmarks it
+    if (uri == "/" || uri == "/index.html") {
+        return Route::ConfigPage;
+    }
+    if (mode == Mode::Ap) {
+        // Captive-portal probes and any other unmatched address: serve the
+        // configuration page directly so a phone joining p1dongle pops it up.
+        return Route::ConfigPage;
     }
     return Route::NotFound;
 }
@@ -275,115 +256,6 @@ std::size_t replace_one(std::string_view tpl, std::string_view needle, std::stri
     return n;
 }
 
-static void html_escape_append(char* out, std::size_t cap, std::size_t& n, std::string_view s)
-{
-    for (char c : s) {
-        const char* rep = nullptr;
-        switch (c) {
-        case '&':
-            rep = "&amp;";
-            break;
-        case '<':
-            rep = "&lt;";
-            break;
-        case '>':
-            rep = "&gt;";
-            break;
-        case '"':
-            rep = "&quot;";
-            break;
-        default:
-            break;
-        }
-        if (rep != nullptr) {
-            for (const char* p = rep; *p != '\0'; ++p) {
-                if (n + 1 >= cap) {
-                    return;
-                }
-                out[n++] = *p;
-            }
-        } else {
-            if (n + 1 >= cap) {
-                return;
-            }
-            out[n++] = c;
-        }
-    }
-}
-
-std::size_t render_network_radios(const ScanCache& cache, char* out, std::size_t cap)
-{
-    if (out == nullptr || cap == 0) {
-        return 0;
-    }
-    std::size_t n = 0;
-    if (!cache.ready || cache.count == 0) {
-        const char* empty = "<p class=\"empty\">Scanning for networks…</p>";
-        while (empty[n] != '\0' && n + 1 < cap) {
-            out[n] = empty[n];
-            ++n;
-        }
-        out[n] = '\0';
-        return n;
-    }
-    for (std::size_t i = 0; i < cache.count; ++i) {
-        const ScanEntry& e = cache.entries[i];
-        if (e.ssid[0] == '\0') {
-            continue;
-        }
-        const char* pre = "<label class=\"net\"><input type=\"radio\" name=\"ssid\" value=\"";
-        for (const char* p = pre; *p != '\0'; ++p) {
-            if (n + 1 >= cap) {
-                out[0] = '\0';
-                return 0;
-            }
-            out[n++] = *p;
-        }
-        html_escape_append(out, cap, n, e.ssid);
-        const char* mid = "\"> <span class=\"name\">";
-        for (const char* p = mid; *p != '\0'; ++p) {
-            if (n + 1 >= cap) {
-                out[0] = '\0';
-                return 0;
-            }
-            out[n++] = *p;
-        }
-        html_escape_append(out, cap, n, e.ssid);
-        char rssi[64];
-        const int rn = std::snprintf(rssi, sizeof(rssi), "</span> <span class=\"rssi\">%ld dBm</span></label>\n",
-                                     static_cast<long>(e.rssi));
-        if (rn <= 0) {
-            out[0] = '\0';
-            return 0;
-        }
-        for (int k = 0; k < rn; ++k) {
-            if (n + 1 >= cap) {
-                out[0] = '\0';
-                return 0;
-            }
-            out[n++] = rssi[k];
-        }
-    }
-    out[n] = '\0';
-    return n;
-}
-
-std::size_t render_setup_page(const ScanCache& cache, char* out, std::size_t cap)
-{
-    char* nets = static_cast<char*>(std::malloc(kNetsBuf));
-    if (nets == nullptr) {
-        return 0;
-    }
-    const std::size_t nr = render_network_radios(cache, nets, kNetsBuf);
-    if (nr == 0 && nets[0] == '\0') {
-        std::free(nets);
-        return 0;
-    }
-    const std::size_t n = replace_one(assets::kSetupHtmlTpl, "{{NETWORKS}}", nets, out, cap);
-    std::free(nets);
-    return n;
-}
-
 UploadRefuse check_upload_start(bool window_open, bool busy, bool have_length,
                                 std::size_t content_length, std::size_t max_image)
 {
@@ -519,7 +391,8 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put_bool("upd_available", v.upd_available) || !put(",") ||
         !put_u("upd_found", v.upd_found) || !put(",") ||
         !put_str("upd_channel", v.upd_channel) || !put(",") ||
-        !put_str("upd_fail", v.upd_fail) || !put("}")) {
+        !put_str("upd_fail", v.upd_fail) || !put(",") ||
+        !put_bool("net_pending", v.net_pending) || !put("}")) {
         return 0;
     }
     out[n] = '\0';
@@ -647,87 +520,6 @@ std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char*
     return n > 0 ? static_cast<std::size_t>(n) : 0;
 }
 
-static int hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
-
-static bool url_decode_append(char* out, std::size_t cap, std::size_t& n, std::string_view in)
-{
-    for (std::size_t i = 0; i < in.size(); ++i) {
-        char c = in[i];
-        if (c == '+') {
-            c = ' ';
-        } else if (c == '%' && i + 2 < in.size()) {
-            const int hi = hex_nibble(in[i + 1]);
-            const int lo = hex_nibble(in[i + 2]);
-            if (hi < 0 || lo < 0) {
-                return false;
-            }
-            c = static_cast<char>((hi << 4) | lo);
-            i += 2;
-        }
-        if (n + 1 >= cap) {
-            return false;
-        }
-        out[n++] = c;
-    }
-    return true;
-}
-
-bool parse_save_form(std::string_view body, char* ssid, std::size_t ssid_cap, char* pass,
-                     std::size_t pass_cap)
-{
-    if (ssid == nullptr || pass == nullptr || ssid_cap == 0 || pass_cap == 0) {
-        return false;
-    }
-    ssid[0] = '\0';
-    pass[0] = '\0';
-    char other[kSsidMax]{};
-
-    auto take = [&](std::string_view key, char* dest, std::size_t cap) {
-        std::size_t start = 0;
-        while (start < body.size()) {
-            std::size_t amp = body.find('&', start);
-            if (amp == std::string_view::npos) {
-                amp = body.size();
-            }
-            std::string_view pair = body.substr(start, amp - start);
-            const auto eq = pair.find('=');
-            std::string_view k = eq == std::string_view::npos ? pair : pair.substr(0, eq);
-            std::string_view v = eq == std::string_view::npos ? std::string_view{} : pair.substr(eq + 1);
-            if (k == key) {
-                std::size_t n = 0;
-                if (!url_decode_append(dest, cap, n, v)) {
-                    return false;
-                }
-                dest[n] = '\0';
-                return true;
-            }
-            start = amp + 1;
-        }
-        return true;
-    };
-
-    if (!take("ssid", ssid, ssid_cap) || !take("ssid_other", other, sizeof(other)) ||
-        !take("pass", pass, pass_cap)) {
-        return false;
-    }
-    if (other[0] != '\0') {
-        std::snprintf(ssid, ssid_cap, "%s", other);
-    }
-    return ssid[0] != '\0';
-}
-
 static bool json_escape_append(char* out, std::size_t cap, std::size_t& n, std::string_view s)
 {
     for (char c : s) {
@@ -750,35 +542,53 @@ static bool json_escape_append(char* out, std::size_t cap, std::size_t& n, std::
     return true;
 }
 
-std::size_t wifi_creds_json(std::string_view ssid, std::string_view pass, char* out,
-                            std::size_t cap)
+std::size_t render_api_networks(const ScanCache& cache, char* out, std::size_t cap)
 {
     if (out == nullptr || cap < 32) {
         return 0;
     }
     std::size_t n = 0;
-    const char* pre = "{\"WIFI_SSID\":\"";
-    for (const char* p = pre; *p; ++p) {
-        out[n++] = *p;
-    }
-    if (!json_escape_append(out, cap, n, ssid)) {
+    auto putc = [&](char c) -> bool {
+        if (n + 1 >= cap) {
+            return false;
+        }
+        out[n++] = c;
+        return true;
+    };
+    auto put = [&](const char* s) -> bool {
+        for (const char* p = s; *p; ++p) {
+            if (!putc(*p)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!put("{\"scanning\":") || !put(cache.scanning ? "true" : "false") ||
+        !put(",\"networks\":[")) {
         return 0;
     }
-    const char* mid = "\",\"WIFI_PASS\":\"";
-    for (const char* p = mid; *p; ++p) {
-        if (n + 1 >= cap) {
+    bool first = true;
+    const std::size_t lim =
+        cache.count < kMaxScanResults ? cache.count : kMaxScanResults;
+    for (std::size_t i = 0; i < lim; ++i) {
+        const ScanEntry& e = cache.entries[i];
+        if (e.ssid[0] == '\0') {
+            continue;
+        }
+        if (!first && !putc(',')) {
             return 0;
         }
-        out[n++] = *p;
+        first = false;
+        char rssi[16];
+        std::snprintf(rssi, sizeof(rssi), "%ld", static_cast<long>(e.rssi));
+        if (!put("{\"ssid\":\"") || !json_escape_append(out, cap, n, e.ssid) ||
+            !put("\",\"rssi\":") || !put(rssi) || !putc('}')) {
+            return 0;
+        }
     }
-    if (!json_escape_append(out, cap, n, pass)) {
+    if (!put("]}")) {
         return 0;
     }
-    if (n + 3 >= cap) {
-        return 0;
-    }
-    out[n++] = '"';
-    out[n++] = '}';
     out[n] = '\0';
     return n;
 }

@@ -47,6 +47,14 @@ esp_err_t send_plain(httpd_req_t* req, const char* status, const char* body)
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
+esp_err_t send_redirect_home(httpd_req_t* req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, nullptr, 0);
+}
+
 const char* refuse_http_status(UploadRefuse r)
 {
     switch (r) {
@@ -197,31 +205,12 @@ esp_err_t dispatch(httpd_req_t* req)
     switch (route) {
     case Route::Style:
         return send_gzip(req, "text/css", assets::kStyleCssGz, assets::kStyleCssGzLen);
-    case Route::Restarting:
-        return send_gzip(req, "text/html", assets::kRestartingHtmlGz, assets::kRestartingHtmlGzLen);
+    case Route::RedirectHome:
+        return send_redirect_home(req);
     case Route::Rebooting:
         return send_gzip(req, "text/html", assets::kRebootingHtmlGz, assets::kRebootingHtmlGzLen);
     case Route::ConfigPage:
         return send_gzip(req, "text/html", assets::kConfigHtmlGz, assets::kConfigHtmlGzLen);
-    case Route::Setup: {
-        char* page = static_cast<char*>(malloc(kHtmlBuf));
-        if (page == nullptr) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
-            return ESP_FAIL;
-        }
-        ScanCache empty{};
-        const ScanCache* scan = g_server->scan_ptr();
-        const std::size_t n =
-            render_setup_page(scan != nullptr ? *scan : empty, page, kHtmlBuf);
-        esp_err_t err = ESP_FAIL;
-        if (n == 0) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "setup render");
-        } else {
-            err = send_html(req, page, n);
-        }
-        free(page);
-        return err;
-    }
     case Route::Status: {
         char* page = static_cast<char*>(malloc(kHtmlBuf));
         if (page == nullptr) {
@@ -291,6 +280,31 @@ esp_err_t dispatch(httpd_req_t* req)
         if (n == 0) {
             free(json);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "fields json");
+            return ESP_FAIL;
+        }
+        const esp_err_t err = send_json(req, json, n);
+        free(json);
+        return err;
+    }
+    case Route::ApiNetworks: {
+        if (g_server->mode_for_handlers() == Mode::Station) {
+            g_server->actions()->wifi_scan = true;
+        }
+        char* json = static_cast<char*>(malloc(kApiNetworksMax));
+        if (json == nullptr) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            return ESP_FAIL;
+        }
+        ScanCache empty{};
+        const ScanCache* scan = g_server->scan_ptr();
+        ScanCache view = scan != nullptr ? *scan : empty;
+        if (g_server->actions()->wifi_scan && !view.scanning) {
+            view.scanning = true;
+        }
+        const std::size_t n = render_api_networks(view, json, kApiNetworksMax);
+        if (n == 0) {
+            free(json);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "networks json");
             return ESP_FAIL;
         }
         const esp_err_t err = send_json(req, json, n);
@@ -481,34 +495,15 @@ esp_err_t dispatch(httpd_req_t* req)
         store->save();
         g_server->actions()->republish_config = true;
         g_server->actions()->restart_mqtt = true;
-        httpd_resp_set_type(req, "text/plain");
-        return httpd_resp_send(req, "Ok", 2);
-    }
-    case Route::Save: {
-        if (req->content_len <= 0 || req->content_len > 512) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
+        const bool reboot = store->consume_reboot_needed();
+        char json[40];
+        const int n = std::snprintf(json, sizeof(json), "{\"ok\":true,\"reboot\":%s}",
+                                    reboot ? "true" : "false");
+        if (n <= 0 || static_cast<std::size_t>(n) >= sizeof(json)) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "reply");
             return ESP_FAIL;
         }
-        char body[513];
-        int got = 0;
-        while (got < req->content_len) {
-            const int r = httpd_req_recv(req, body + got, req->content_len - got);
-            if (r <= 0) {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv");
-                return ESP_FAIL;
-            }
-            got += r;
-        }
-        body[got] = '\0';
-        Actions* act = g_server->actions();
-        if (!parse_save_form(body, act->wifi_ssid, sizeof(act->wifi_ssid), act->wifi_pass,
-                             sizeof(act->wifi_pass))) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid required");
-            return ESP_FAIL;
-        }
-        act->save_wifi = true;
-        act->reboot = true;
-        return send_gzip(req, "text/html", assets::kRestartingHtmlGz, assets::kRestartingHtmlGzLen);
+        return send_json(req, json, static_cast<std::size_t>(n));
     }
     case Route::NotFound:
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
@@ -520,23 +515,7 @@ esp_err_t dispatch(httpd_req_t* req)
 esp_err_t on_404(httpd_req_t* req, httpd_err_code_t /*err*/)
 {
     if (g_server != nullptr && g_server->mode_for_handlers() == Mode::Ap) {
-        char* page = static_cast<char*>(malloc(kHtmlBuf));
-        if (page == nullptr) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
-            return ESP_FAIL;
-        }
-        ScanCache empty{};
-        const ScanCache* scan = g_server->scan_ptr();
-        const std::size_t n =
-            render_setup_page(scan != nullptr ? *scan : empty, page, kHtmlBuf);
-        esp_err_t err = ESP_FAIL;
-        if (n == 0) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "setup render");
-        } else {
-            err = send_html(req, page, n);
-        }
-        free(page);
-        return err;
+        return send_gzip(req, "text/html", assets::kConfigHtmlGz, assets::kConfigHtmlGzLen);
     }
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
     return ESP_FAIL;
@@ -611,18 +590,16 @@ bool Server::begin(Mode mode)
     register_one(handle, "/status", HTTP_GET);
     register_one(handle, "/status.html", HTTP_GET);
     register_one(handle, "/style.css", HTTP_GET);
-    register_one(handle, "/restarting", HTTP_GET);
-    register_one(handle, "/restarting.html", HTTP_GET);
     register_one(handle, "/rebooting", HTTP_GET);
     register_one(handle, "/rebooting.html", HTTP_GET);
     register_one(handle, "/generate_204", HTTP_GET);
     register_one(handle, "/hotspot-detect.html", HTTP_GET);
-    register_one(handle, "/save", HTTP_POST);
     register_one(handle, "/config", HTTP_GET);
     register_one(handle, "/config", HTTP_POST);
     register_one(handle, "/api/status", HTTP_GET);
     register_one(handle, "/api/data", HTTP_GET);
     register_one(handle, "/api/fields", HTTP_GET);
+    register_one(handle, "/api/networks", HTTP_GET);
     register_one(handle, "/fields", HTTP_POST);
     register_one(handle, "/syslog", HTTP_GET);
     register_one(handle, "/syslog0", HTTP_GET);

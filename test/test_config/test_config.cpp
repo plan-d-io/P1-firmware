@@ -55,6 +55,9 @@ void test_defaults_and_stored()
     TEST_ASSERT_NOT_NULL(s.find_setting("RINT_SPIFFS"));
     TEST_ASSERT_NOT_NULL(s.find_setting("EMAIL"));
     TEST_ASSERT_EQUAL(p1cfg::CFG_IN_API, s.find_setting("EMAIL")->flags & p1cfg::CFG_IN_API);
+    TEST_ASSERT_TRUE((s.find_setting("WIFI_SSID")->flags & p1cfg::CFG_REBOOT) != 0);
+    TEST_ASSERT_TRUE((s.find_setting("WIFI_PASS")->flags & p1cfg::CFG_REBOOT) != 0);
+    TEST_ASSERT_TRUE((s.find_setting("FIP_EN")->flags & p1cfg::CFG_REBOOT) != 0);
 
     mem.begin(false);
     mem.put_u32("MQTT_PORT", 8883);
@@ -440,8 +443,10 @@ void test_wifi_settings_migrate()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_NOT_NULL(s.find_setting("WIFI_SSID"));
     TEST_ASSERT_NOT_NULL(s.find_setting("WIFI_PASS"));
-    TEST_ASSERT_EQUAL(p1cfg::CFG_IN_API | p1cfg::CFG_SECRET,
+    TEST_ASSERT_EQUAL(p1cfg::CFG_IN_API | p1cfg::CFG_SECRET | p1cfg::CFG_REBOOT,
                       static_cast<int>(s.find_setting("WIFI_PASS")->flags));
+    TEST_ASSERT_EQUAL(p1cfg::CFG_IN_API | p1cfg::CFG_REBOOT,
+                      static_cast<int>(s.find_setting("WIFI_SSID")->flags));
 }
 
 void test_boot_facts_migrate()
@@ -573,6 +578,35 @@ void test_rel_chan_change_flag()
     TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"REL_CHAN":"nope"})"));
     TEST_ASSERT_FALSE(s.consume_rel_chan_changed());
     TEST_ASSERT_EQUAL_STRING("develop", s.values().rel_chan);
+}
+
+void test_cfg_reboot_changed()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    std::strcpy(s.values().wifi_ssid, "TestNet");
+    std::strcpy(s.values().wifi_pass, "secret");
+    s.capture_boot_network();
+    TEST_ASSERT_FALSE(s.network_pending());
+    TEST_ASSERT_FALSE(s.consume_reboot_needed());
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"MQTT_HOST":"192.0.2.20"})"));
+    TEST_ASSERT_FALSE(s.consume_reboot_needed());
+    TEST_ASSERT_FALSE(s.network_pending());
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"WIFI_PASS":"other"})"));
+    TEST_ASSERT_TRUE(s.consume_reboot_needed());
+    TEST_ASSERT_FALSE(s.consume_reboot_needed());
+    TEST_ASSERT_TRUE(s.network_pending());
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"WIFI_SSID":"TestNet"})"));
+    TEST_ASSERT_FALSE(s.consume_reboot_needed());
+    TEST_ASSERT_TRUE(s.network_pending());
+
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"WIFI_PASS":"secret"})"));
+    TEST_ASSERT_TRUE(s.consume_reboot_needed());
+    TEST_ASSERT_FALSE(s.network_pending());
 }
 
 void test_static_ip_subnet_rules()
@@ -915,6 +949,7 @@ int main()
     RUN_TEST(test_schema6_migrates_new_keys);
     RUN_TEST(test_ip_and_rel_chan_validation);
     RUN_TEST(test_rel_chan_change_flag);
+    RUN_TEST(test_cfg_reboot_changed);
     RUN_TEST(test_static_ip_subnet_rules);
     RUN_TEST(test_uuid_generated_once);
     RUN_TEST(test_to_json_fits_max_strings);

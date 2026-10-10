@@ -24,6 +24,36 @@ void copy_str(char* dst, std::size_t cap, const char* src)
     dst[n] = '\0';
 }
 
+void copy_network(NetworkSettings& d, const Settings& s)
+{
+    copy_str(d.wifi_ssid, sizeof(d.wifi_ssid), s.wifi_ssid);
+    copy_str(d.wifi_pass, sizeof(d.wifi_pass), s.wifi_pass);
+    d.fip_en = s.fip_en;
+    copy_str(d.fipaddr, sizeof(d.fipaddr), s.fipaddr);
+    copy_str(d.fsubn, sizeof(d.fsubn), s.fsubn);
+    copy_str(d.fdefgtw, sizeof(d.fdefgtw), s.fdefgtw);
+    copy_str(d.fdns1, sizeof(d.fdns1), s.fdns1);
+    copy_str(d.fdns2, sizeof(d.fdns2), s.fdns2);
+}
+
+bool network_differs(const Settings& a, const Settings& b)
+{
+    return std::strcmp(a.wifi_ssid, b.wifi_ssid) != 0 ||
+           std::strcmp(a.wifi_pass, b.wifi_pass) != 0 || a.fip_en != b.fip_en ||
+           std::strcmp(a.fipaddr, b.fipaddr) != 0 || std::strcmp(a.fsubn, b.fsubn) != 0 ||
+           std::strcmp(a.fdefgtw, b.fdefgtw) != 0 || std::strcmp(a.fdns1, b.fdns1) != 0 ||
+           std::strcmp(a.fdns2, b.fdns2) != 0;
+}
+
+bool network_differs(const NetworkSettings& a, const Settings& b)
+{
+    return std::strcmp(a.wifi_ssid, b.wifi_ssid) != 0 ||
+           std::strcmp(a.wifi_pass, b.wifi_pass) != 0 || a.fip_en != b.fip_en ||
+           std::strcmp(a.fipaddr, b.fipaddr) != 0 || std::strcmp(a.fsubn, b.fsubn) != 0 ||
+           std::strcmp(a.fdefgtw, b.fdefgtw) != 0 || std::strcmp(a.fdns1, b.fdns1) != 0 ||
+           std::strcmp(a.fdns2, b.fdns2) != 0;
+}
+
 int field_index(std::string_view id)
 {
     const Field* all = catalogue();
@@ -456,18 +486,20 @@ void Store::bind_table()
     add_i32("FRMT_PYLD", "Reading payload format", CFG_IN_API, &v_.frmt_pyld, 3);
     add_u32("UPL_THROTTLE", "Upload throttle", CFG_IN_API, &v_.upl_throttle, 10);
     add_str("REGION", "Meter region", CFG_IN_API, v_.region, sizeof(v_.region), "auto");
-    add_str("WIFI_SSID", "WiFi network", CFG_IN_API, v_.wifi_ssid, sizeof(v_.wifi_ssid), "");
-    add_str("WIFI_PASS", "WiFi password", CFG_IN_API | CFG_SECRET, v_.wifi_pass,
+    add_str("WIFI_SSID", "WiFi network", CFG_IN_API | CFG_REBOOT, v_.wifi_ssid,
+            sizeof(v_.wifi_ssid), "");
+    add_str("WIFI_PASS", "WiFi password", CFG_IN_API | CFG_SECRET | CFG_REBOOT, v_.wifi_pass,
             sizeof(v_.wifi_pass), "");
     add_u32("REBOOTS", "Boot count", CFG_IN_API, &v_.reboots, 0);
     add_str("LAST_RESET", "Last reset reason (firmware)", CFG_IN_API, v_.last_reset,
             sizeof(v_.last_reset), "");
-    add_bool("FIP_EN", "Use fixed IP", CFG_IN_API, &v_.fip_en, false);
-    add_str("FIPADDR", "IP address", CFG_IN_API, v_.fipaddr, sizeof(v_.fipaddr), "");
-    add_str("FSUBN", "Subnet mask", CFG_IN_API, v_.fsubn, sizeof(v_.fsubn), "");
-    add_str("FDEFGTW", "Default gateway", CFG_IN_API, v_.fdefgtw, sizeof(v_.fdefgtw), "");
-    add_str("FDNS1", "Primary DNS", CFG_IN_API, v_.fdns1, sizeof(v_.fdns1), "");
-    add_str("FDNS2", "Secondary DNS", CFG_IN_API, v_.fdns2, sizeof(v_.fdns2), "");
+    add_bool("FIP_EN", "Use fixed IP", CFG_IN_API | CFG_REBOOT, &v_.fip_en, false);
+    add_str("FIPADDR", "IP address", CFG_IN_API | CFG_REBOOT, v_.fipaddr, sizeof(v_.fipaddr), "");
+    add_str("FSUBN", "Subnet mask", CFG_IN_API | CFG_REBOOT, v_.fsubn, sizeof(v_.fsubn), "");
+    add_str("FDEFGTW", "Default gateway", CFG_IN_API | CFG_REBOOT, v_.fdefgtw, sizeof(v_.fdefgtw),
+            "");
+    add_str("FDNS1", "Primary DNS", CFG_IN_API | CFG_REBOOT, v_.fdns1, sizeof(v_.fdns1), "");
+    add_str("FDNS2", "Secondary DNS", CFG_IN_API | CFG_REBOOT, v_.fdns2, sizeof(v_.fdns2), "");
     add_bool("EID_EN", "EnergieID enabled", CFG_IN_API, &v_.eid_en, false);
     add_str("EIDCLAIM", "EnergieID claim code", CFG_IN_API, v_.eidclaim, sizeof(v_.eidclaim), "");
     add_str("EID_PROVKEY", "EnergieID key", CFG_IN_API | CFG_SECRET, v_.eid_provkey,
@@ -942,6 +974,7 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
     if (std::strcmp(saved.rel_chan, v_.rel_chan) != 0) {
         rel_chan_changed_ = true;
     }
+    reboot_needed_ = network_differs(saved, v_);
     return JsonStatus::Ok;
 }
 
@@ -950,6 +983,23 @@ bool Store::consume_rel_chan_changed()
     const bool changed = rel_chan_changed_;
     rel_chan_changed_ = false;
     return changed;
+}
+
+void Store::capture_boot_network()
+{
+    copy_network(boot_net_, v_);
+}
+
+bool Store::network_pending() const
+{
+    return network_differs(boot_net_, v_);
+}
+
+bool Store::consume_reboot_needed()
+{
+    const bool needed = reboot_needed_;
+    reboot_needed_ = false;
+    return needed;
 }
 
 JsonStatus Store::apply_fields_json(std::string_view json, char* bad_key, std::size_t bad_key_cap)

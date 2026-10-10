@@ -62,6 +62,19 @@ constexpr std::size_t kMaxFields = 64;
 constexpr std::size_t kMaxFieldId = 16;
 constexpr std::size_t kOverrideBufCap = kMaxFields * (kMaxFieldId + 3) + 1;
 
+// WiFi and fixed-IP settings copied at boot. Join, retry and static-IP use
+// this copy until the next reboot; live Settings can change underneath.
+struct NetworkSettings {
+    char wifi_ssid[kSsidMax]{};
+    char wifi_pass[kPassMax]{};
+    bool fip_en = false;
+    char fipaddr[kIpMax]{};
+    char fsubn[kIpMax]{};
+    char fdefgtw[kIpMax]{};
+    char fdns1[kIpMax]{};
+    char fdns2[kIpMax]{};
+};
+
 struct Settings {
     bool mqtt_en = false;
     bool mqtt_tls = false;
@@ -339,6 +352,14 @@ public:
     // True when a successful apply_json changed REL_CHAN. Cleared on read.
     bool consume_rel_chan_changed();
 
+    // Snapshot WIFI_* / FIP_* after load, once per boot. Join uses this copy.
+    void capture_boot_network();
+    const NetworkSettings& boot_network() const { return boot_net_; }
+    // Stored network settings differ from the boot copy.
+    bool network_pending() const;
+    // True when the last successful apply_json changed a CFG_REBOOT value.
+    bool consume_reboot_needed();
+
 private:
     void bind_table();
     void load_one(const CfgEntry& e);
@@ -362,6 +383,8 @@ private:
     bool ota_fail_have_ = false;
     std::uint32_t ota_fail_ver_ = 0;
     bool rel_chan_changed_ = false;
+    bool reboot_needed_ = false;
+    NetworkSettings boot_net_{};
 };
 
 }  // namespace p1cfg

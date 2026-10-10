@@ -12,6 +12,8 @@
   <h2>Digital meter dongle</h2>
   <h2 id="hostnameHeader"></h2>
   <p class="msg" id="infoMessage"></p>
+  <p class="msg" id="netPendingBanner" style="display:none;color:#5aaf6f"></p>
+  <p class="field-hint" id="netPendingHint" style="display:none">After the reboot, the dongle joins your network. You can find it at http://p1dongle.local, or as 'p1dongle' in your router's list of devices.</p>
 
   <div class="svg-container" aria-label="Status">
     <div class="ind" id="ind-wifi"></div>
@@ -96,7 +98,7 @@
 
   var LAYOUT = {
     basic: [
-      ["WIFI_SSID", "WiFi Network", "text"],
+      ["WIFI_SSID", "WiFi Network", "wifi"],
       ["WIFI_PASS", "WiFi Password", "password"],
       ["EMAIL", "User Email", "email"],
       ["REGION", "Meter region", "select", [
@@ -149,6 +151,9 @@
   var initial = {};
   var secretsSet = {};
   var fieldInitial = {};
+  var storedSsid = "";
+  var wifiUserChoice = null;
+  var lastStatus = {};
 
   function el(tag, attrs, kids) {
     var n = document.createElement(tag);
@@ -166,6 +171,28 @@
     var wrap = el("div", {"data-key": key});
     wrap.appendChild(el("label", {for: key, text: label}));
     var input;
+    if (kind === "wifi") {
+      wrap.appendChild(el("label", {for: key, text: label}));
+      input = el("select", {id: key, name: key});
+      wrap.appendChild(input);
+      var other = el("input", {
+        type: "text",
+        id: "WIFI_SSID_OTHER",
+        name: "WIFI_SSID_OTHER",
+        placeholder: "Network name",
+        style: "display:none",
+        autocomplete: "off"
+      });
+      wrap.appendChild(other);
+      wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
+      input.addEventListener("change", function () {
+        wifiUserChoice = input.value;
+        other.style.display = input.value === "__other__" ? "" : "none";
+        updateWifiPassHint();
+      });
+      other.addEventListener("input", updateWifiPassHint);
+      return wrap;
+    }
     if (kind === "checkbox") {
       input = el("input", {type: "checkbox", id: key, name: key});
     } else if (kind === "select") {
@@ -198,6 +225,14 @@
       row.appendChild(btn);
       wrap.appendChild(row);
       if (hint) wrap.appendChild(el("p", {class: "field-hint", text: hint}));
+      if (key === "WIFI_PASS") {
+        wrap.appendChild(el("p", {
+          class: "field-hint",
+          id: "WIFI_PASS_net_hint",
+          text: "Enter the password for this network, or leave blank for an open network.",
+          style: "display:none"
+        }));
+      }
       wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
       return wrap;
     } else {
@@ -235,6 +270,7 @@
           el("a", {href: "/update", text: "Upload firmware file"})
         ]));
         host.appendChild(el("p", {class: "field-hint", id: "updDirtyHint", text: "Save your changes before checking.", style: "display:none"}));
+        host.appendChild(el("p", {class: "field-hint", id: "updSetupHint", text: "Available once the dongle is on your network.", style: "display:none"}));
       }
     });
   }
@@ -293,9 +329,75 @@
     return any ? body : null;
   }
 
+  function currentWifiSsid() {
+    var sel = document.getElementById("WIFI_SSID");
+    if (!sel) return "";
+    if (sel.value === "__other__") {
+      var o = document.getElementById("WIFI_SSID_OTHER");
+      return o ? o.value : "";
+    }
+    return sel.value;
+  }
+
+  function updateWifiPassHint() {
+    var hint = document.getElementById("WIFI_PASS_net_hint");
+    if (!hint) return;
+    hint.style.display = currentWifiSsid() !== (initial.WIFI_SSID || "") ? "" : "none";
+  }
+
+  function fillNetworks(list) {
+    var sel = document.getElementById("WIFI_SSID");
+    if (!sel) return;
+    var keep = wifiUserChoice !== null ? wifiUserChoice : (storedSsid || sel.value);
+    sel.innerHTML = "";
+    var seen = {};
+    (list || []).forEach(function (n) {
+      if (!n || !n.ssid || seen[n.ssid]) return;
+      seen[n.ssid] = true;
+      sel.appendChild(el("option", {value: n.ssid, text: n.ssid + " (" + n.rssi + " dBm)"}));
+    });
+    if (storedSsid && !seen[storedSsid]) {
+      sel.insertBefore(el("option", {value: storedSsid, text: storedSsid}), sel.firstChild);
+      seen[storedSsid] = true;
+    }
+    sel.appendChild(el("option", {value: "__other__", text: "Other (hidden network)…"}));
+    if (keep === "__other__") {
+      sel.value = "__other__";
+    } else if (keep && seen[keep]) {
+      sel.value = keep;
+    } else if (storedSsid) {
+      sel.value = storedSsid;
+    }
+    var other = document.getElementById("WIFI_SSID_OTHER");
+    if (other) other.style.display = sel.value === "__other__" ? "" : "none";
+    updateWifiPassHint();
+  }
+
+  function loadNetworks() {
+    fetch("/api/networks").then(function (r) { return r.json(); }).then(function (j) {
+      fillNetworks(j.networks);
+      if (j.scanning) setTimeout(loadNetworks, 1000);
+    }).catch(function () {});
+  }
+
+  function applyNetPending(s) {
+    var banner = document.getElementById("netPendingBanner");
+    var hint = document.getElementById("netPendingHint");
+    if (!banner) return;
+    if (s.net_pending) {
+      banner.style.display = "";
+      banner.textContent = "Saved. Reboot the dongle to apply the new network settings.";
+      if (hint) hint.style.display = s.wifi ? "none" : "";
+    } else {
+      banner.style.display = "none";
+      if (hint) hint.style.display = "none";
+    }
+  }
+
   function applyValues(cfg) {
     initial = {};
     secretsSet = {};
+    wifiUserChoice = null;
     Object.keys(LAYOUT).forEach(function (sec) {
       LAYOUT[sec].forEach(function (spec) {
         var key = spec[0], kind = spec[2];
@@ -311,6 +413,11 @@
           return;
         }
         var val = entry && typeof entry === "object" ? entry.value : entry;
+        if (kind === "wifi") {
+          storedSsid = val == null ? "" : String(val);
+          initial[key] = storedSsid;
+          return;
+        }
         if (kind === "checkbox") {
           input.checked = !!val;
           initial[key] = !!val;
@@ -323,6 +430,8 @@
         }
       });
     });
+    loadNetworks();
+    updateWifiPassHint();
     syncUpdActionAvailability();
   }
 
@@ -348,7 +457,17 @@
         var key = spec[0], kind = spec[2];
         var input = document.getElementById(key);
         if (!input) return;
+        if (kind === "wifi") {
+          var ssid = currentWifiSsid();
+          if (ssid !== initial[key]) { body[key] = ssid; any = true; }
+          return;
+        }
         if (kind === "password") {
+          if (key === "WIFI_PASS" && currentWifiSsid() !== (initial.WIFI_SSID || "")) {
+            body[key] = input.value;
+            any = true;
+            return;
+          }
           if (input.dataset.changed === "1" && input.value !== "") {
             body[key] = input.value;
             any = true;
@@ -378,9 +497,19 @@
 
   function syncUpdActionAvailability() {
     var dirty = formDirty();
+    var onNet = !!lastStatus.wifi;
     var check = document.getElementById("updCheckBtn");
     var inst = document.getElementById("updInstallBtn");
     var hint = document.getElementById("updDirtyHint");
+    var setupHint = document.getElementById("updSetupHint");
+    if (!onNet) {
+      if (check) check.disabled = true;
+      if (inst) inst.disabled = true;
+      if (hint) hint.style.display = "none";
+      if (setupHint) setupHint.style.display = "";
+      return;
+    }
+    if (setupHint) setupHint.style.display = "none";
     if (check) check.disabled = dirty;
     if (inst) inst.disabled = dirty;
     if (hint) hint.style.display = dirty ? "" : "none";
@@ -417,6 +546,8 @@
 
   function refreshStatus() {
     fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
+      lastStatus = s;
+      applyNetPending(s);
       document.getElementById("hostnameHeader").textContent = s.device_id || "";
       setIcon("ind-wifi", s.wifi ? wifiIcon(s.rssi) : "wifi-strength-outline");
       setIcon("ind-meter", s.meter ? "counter" : "numeric-off");
@@ -509,6 +640,7 @@
     function finishOk() {
       document.getElementById("infoMessage").style.color = "#5aaf6f";
       document.getElementById("infoMessage").textContent = "Saved.";
+      refreshStatus();
       syncUpdActionAvailability();
     }
     if (cfgBody) {
@@ -599,7 +731,7 @@
   renderForm();
 
   document.getElementById("updCheckBtn").addEventListener("click", function () {
-    if (formDirty()) return;
+    if (!lastStatus.wifi || formDirty()) return;
     document.getElementById("infoMessage").textContent = "Checking…";
     fetch("/update/check", {method: "POST"}).then(function (r) {
       return r.text().then(function (t) { return {ok: r.ok, text: t}; });
@@ -616,7 +748,7 @@
     });
   });
   document.getElementById("updInstallBtn").addEventListener("click", function () {
-    if (formDirty()) return;
+    if (!lastStatus.wifi || formDirty()) return;
     if (!window.confirm(
           "Install the available firmware update? The dongle will be unreachable for a few minutes while it downloads and reboots.")) {
       return;

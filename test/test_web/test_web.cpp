@@ -8,12 +8,19 @@
 
 void test_route_ap_fallback()
 {
-    TEST_ASSERT_EQUAL(p1web::Route::Setup, p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/"));
-    TEST_ASSERT_EQUAL(p1web::Route::Setup,
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/index.html"));
+    TEST_ASSERT_EQUAL(p1web::Route::RedirectHome,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/setup"));
-    TEST_ASSERT_EQUAL(p1web::Route::Setup,
+    TEST_ASSERT_EQUAL(p1web::Route::RedirectHome,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/setup.html"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/generate_204"));
-    TEST_ASSERT_EQUAL(p1web::Route::Setup,
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/hotspot-detect.html"));
+    TEST_ASSERT_EQUAL(p1web::Route::ConfigPage,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/anything/else"));
     TEST_ASSERT_EQUAL(p1web::Route::Style,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/style.css"));
@@ -23,12 +30,22 @@ void test_route_ap_fallback()
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/update"));
     TEST_ASSERT_EQUAL(p1web::Route::UpdateWindow,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/update/window"));
-    TEST_ASSERT_EQUAL(p1web::Route::Save,
-                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/save"));
     TEST_ASSERT_EQUAL(p1web::Route::ConfigGet,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/config"));
     TEST_ASSERT_EQUAL(p1web::Route::ConfigPost,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/config"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiStatus,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/api/status"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiData,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/api/data"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiFields,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/api/fields"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiNetworks,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/api/networks"));
+    TEST_ASSERT_EQUAL(p1web::Route::FieldsPost,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/fields"));
+    TEST_ASSERT_EQUAL(p1web::Route::Status,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/status"));
 }
 
 void test_route_station()
@@ -88,6 +105,12 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/config"));
     TEST_ASSERT_EQUAL(p1web::Route::ConfigPost,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/config"));
+    TEST_ASSERT_EQUAL(p1web::Route::ApiNetworks,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/networks"));
+    TEST_ASSERT_EQUAL(p1web::Route::RedirectHome,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/setup"));
+    TEST_ASSERT_EQUAL(p1web::Route::RedirectHome,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/setup.html"));
 }
 
 void test_gzip_blobs()
@@ -96,10 +119,6 @@ void test_gzip_blobs()
     TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kStyleCssGz[0]);
     TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kStyleCssGz[1]);
     TEST_ASSERT_TRUE(p1web::assets::kStyleCssRawLen > p1web::assets::kStyleCssGzLen);
-
-    TEST_ASSERT_TRUE(p1web::assets::kRestartingHtmlGzLen > 2);
-    TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kRestartingHtmlGz[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kRestartingHtmlGz[1]);
 
     TEST_ASSERT_TRUE(p1web::assets::kConfigHtmlGzLen > 2);
     TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kConfigHtmlGz[0]);
@@ -168,6 +187,7 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_found\":0"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_channel\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_fail\":\"\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"net_pending\":false"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
@@ -232,6 +252,7 @@ void test_api_status_json_max()
     v.upd_found = 4294967295u;
     v.upd_channel = upd_channel;
     v.upd_fail = upd_fail;
+    v.net_pending = true;
 
     char buf[p1web::kApiStatusMax];
     const std::size_t n = p1web::render_api_status(v, buf, sizeof(buf));
@@ -466,22 +487,63 @@ void test_provision_drop_retries_then_setup()
     TEST_ASSERT_FALSE(out.want_sta);
 }
 
-void test_save_form_and_json()
+void test_api_networks_json_max()
 {
-    char ssid[33];
-    char pass[64];
-    TEST_ASSERT_TRUE(p1web::parse_save_form("ssid=TestNet&pass=secret%21", ssid, sizeof(ssid), pass,
-                                            sizeof(pass)));
-    TEST_ASSERT_EQUAL_STRING("TestNet", ssid);
-    TEST_ASSERT_EQUAL_STRING("secret!", pass);
+    p1web::ScanCache c{};
+    c.scanning = false;
+    c.ready = true;
+    c.count = p1web::kMaxScanResults;
+    for (std::size_t i = 0; i < c.count; ++i) {
+        for (std::size_t j = 0; j + 1 < p1web::kSsidMax; ++j) {
+            c.entries[i].ssid[j] = '"';
+        }
+        c.entries[i].ssid[p1web::kSsidMax - 1] = '\0';
+        c.entries[i].rssi = -2147483647 - 1;
+    }
+    char buf[p1web::kApiNetworksMax];
+    const std::size_t n = p1web::render_api_networks(c, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"scanning\":false"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\\\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"rssi\":"));
+}
 
-    TEST_ASSERT_TRUE(p1web::parse_save_form("ssid=Ignore&ssid_other=Hidden&pass=", ssid,
-                                            sizeof(ssid), pass, sizeof(pass)));
-    TEST_ASSERT_EQUAL_STRING("Hidden", ssid);
+void test_status_page_full_size()
+{
+    char device_id[9];
+    char ip[p1cfg::kIpMax];
+    char uptime[24];
+    char heap[16];
+    char rssi[12];
+    char telegrams[48];
+    std::memset(device_id, 'P', sizeof(device_id) - 1);
+    device_id[sizeof(device_id) - 1] = '\0';
+    std::memset(ip, '1', sizeof(ip) - 1);
+    ip[sizeof(ip) - 1] = '\0';
+    std::memset(uptime, '8', sizeof(uptime) - 1);
+    uptime[sizeof(uptime) - 1] = '\0';
+    std::memset(heap, '7', sizeof(heap) - 1);
+    heap[sizeof(heap) - 1] = '\0';
+    std::memset(rssi, '6', sizeof(rssi) - 1);
+    rssi[sizeof(rssi) - 1] = '\0';
+    std::memset(telegrams, 'T', sizeof(telegrams) - 1);
+    telegrams[sizeof(telegrams) - 1] = '\0';
 
-    char json[160];
-    TEST_ASSERT_TRUE(p1web::wifi_creds_json("TestNet", "a\"b", json, sizeof(json)) > 0);
-    TEST_ASSERT_EQUAL_STRING("{\"WIFI_SSID\":\"TestNet\",\"WIFI_PASS\":\"a\\\"b\"}", json);
+    p1web::StatusView v{};
+    v.device_id = device_id;
+    v.fw_ver = "99.99";
+    v.ip = ip;
+    v.uptime = uptime;
+    v.heap = heap;
+    v.rssi = rssi;
+    v.mqtt = "Unsupported";
+    v.telegrams = telegrams;
+    char page[p1web::kHtmlBuf];
+    const std::size_t n = p1web::render_status_page(v, page, sizeof(page));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(page));
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "Unsupported"));
 }
 
 void test_upload_gates()
@@ -540,26 +602,6 @@ void test_update_window_json_worst()
     TEST_ASSERT_EQUAL_STRING("{\"open\":false,\"left_s\":0,\"busy\":false}", buf);
 }
 
-void test_setup_page_full_size()
-{
-    p1web::ScanCache c{};
-    c.ready = true;
-    c.count = p1web::kMaxScanResults;
-    for (std::size_t i = 0; i < c.count; ++i) {
-        for (std::size_t j = 0; j + 1 < p1web::kSsidMax; ++j) {
-            c.entries[i].ssid[j] = 'A';
-        }
-        c.entries[i].ssid[p1web::kSsidMax - 1] = '\0';
-        c.entries[i].rssi = -128;
-    }
-    char page[p1web::kHtmlBuf];
-    const std::size_t n = p1web::render_setup_page(c, page, sizeof(page));
-    TEST_ASSERT_TRUE(n > 0);
-    TEST_ASSERT_TRUE(n < sizeof(page));
-    TEST_ASSERT_NOT_NULL(std::strstr(page, "Firmware upload"));
-    TEST_ASSERT_NOT_NULL(std::strstr(page, "href=\"/update\""));
-}
-
 void test_scan_sort()
 {
     p1web::ScanCache c{};
@@ -599,10 +641,10 @@ int main()
     RUN_TEST(test_provision_no_retry_while_client_connected);
     RUN_TEST(test_provision_no_ssid_never_attempts);
     RUN_TEST(test_provision_drop_retries_then_setup);
-    RUN_TEST(test_save_form_and_json);
+    RUN_TEST(test_api_networks_json_max);
+    RUN_TEST(test_status_page_full_size);
     RUN_TEST(test_upload_gates);
     RUN_TEST(test_update_window_json_worst);
-    RUN_TEST(test_setup_page_full_size);
     RUN_TEST(test_scan_sort);
     return UNITY_END();
 }

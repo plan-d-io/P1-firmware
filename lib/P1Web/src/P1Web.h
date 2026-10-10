@@ -18,16 +18,20 @@ constexpr std::uint32_t kRetryAttemptMs = 20000;
 constexpr std::size_t kMaxScanResults = 24;
 constexpr std::size_t kSsidMax = 33;
 constexpr std::size_t kPassMax = 64;
-// Setup page is template + 24 max-length SSIDs; malloc, not a stack buffer.
-constexpr std::size_t kHtmlBuf = 8192;
-constexpr std::size_t kNetsBuf = 6144;
+// Status page: 838 B template + worst-case replacements (~60 B). malloc.
+constexpr std::size_t kHtmlBuf = 1024;
 constexpr std::size_t kUpdateWindowJsonMax = 64;
 constexpr std::uint8_t kFirmwareMagic = 0xE9;
 constexpr std::size_t kUploadChunk = 4096;
 constexpr char kCacheControl[] = "public, max-age=300";
 constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
-constexpr std::size_t kApiStatusMax = 896;
+// Previous 896 plus `"net_pending":false` (20). Headroom for escaping.
+constexpr std::size_t kApiStatusMax = 1024;
+// 24 entries, 32-char SSIDs fully escaped (64), rssi int32 min:
+// {"ssid":"<64>","rssi":-2147483648} = 93; 24*93 + 23 commas +
+// {"scanning":false,"networks":[]} (33) = 2288. 2560 is headroom.
+constexpr std::size_t kApiNetworksMax = 2560;
 constexpr std::size_t kApiDataMax = 6144;
 // Worst case: every catalogue slot selectable, id at kMaxFieldId, label at
 // kFieldLabelMax, region "common", on false.
@@ -46,18 +50,17 @@ constexpr std::size_t kSyslogChunk = 512;
 enum class Mode : std::uint8_t { Ap, Station };
 
 enum class Route : std::uint8_t {
-    Setup,
     Status,
     ConfigPage,
     Style,
-    Save,
-    Restarting,
+    RedirectHome,
     Rebooting,
     ConfigGet,
     ConfigPost,
     ApiStatus,
     ApiData,
     ApiFields,
+    ApiNetworks,
     FieldsPost,
     Syslog,
     Syslog0,
@@ -133,6 +136,7 @@ struct ScanCache {
     ScanEntry entries[kMaxScanResults]{};
     std::size_t count = 0;
     bool ready = false;
+    bool scanning = false;
 };
 
 struct StatusView {
@@ -156,6 +160,7 @@ struct StatusView {
     unsigned upd_found = 0;
     const char* upd_channel = "";
     const char* upd_fail = "";
+    bool net_pending = false;
 };
 
 struct FieldReading {
@@ -170,9 +175,7 @@ struct ReadingsView {
 
 // Pending side effects for the loop task. Handlers only set these.
 struct Actions {
-    bool save_wifi = false;
-    char wifi_ssid[kSsidMax]{};
-    char wifi_pass[kPassMax]{};
+    bool wifi_scan = false;
     bool reboot = false;
     bool reset_wifi = false;
     bool reset_factory = false;
@@ -223,12 +226,11 @@ std::size_t render_update_window(bool open, unsigned left_s, bool busy, char* ou
 
 void sort_scan_strongest_first(ScanCache& cache);
 
-std::size_t render_network_radios(const ScanCache& cache, char* out, std::size_t cap);
-std::size_t render_setup_page(const ScanCache& cache, char* out, std::size_t cap);
 std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap);
 std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap);
 std::size_t render_api_data(const ReadingsView& r, char* out, std::size_t cap);
 std::size_t render_api_fields(const p1cfg::Store& store, char* out, std::size_t cap);
+std::size_t render_api_networks(const ScanCache& cache, char* out, std::size_t cap);
 
 // "Invalid:MQTT_PORT" style body for POST /config and POST /fields failures.
 std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char* out,
@@ -238,14 +240,6 @@ std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char*
 // (excluding NUL), or 0 on overflow.
 std::size_t replace_one(std::string_view tpl, std::string_view needle, std::string_view value,
                         char* out, std::size_t cap);
-
-// Parse application/x-www-form-urlencoded body for ssid / ssid_other / pass.
-bool parse_save_form(std::string_view body, char* ssid, std::size_t ssid_cap, char* pass,
-                     std::size_t pass_cap);
-
-// Build {"WIFI_SSID":"...","WIFI_PASS":"..."} into out.
-std::size_t wifi_creds_json(std::string_view ssid, std::string_view pass, char* out,
-                             std::size_t cap);
 
 #if defined(ARDUINO)
 class Server {
