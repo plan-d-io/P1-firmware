@@ -84,6 +84,18 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/update/install" && method == Method::Post) {
         return Route::OtaInstall;
     }
+    if (uri == "/update/window" && method == Method::Get) {
+        return Route::UpdateWindow;
+    }
+    if (uri == "/update") {
+        if (method == Method::Get) {
+            return Route::UpdatePage;
+        }
+        if (method == Method::Post) {
+            return Route::UpdateUpload;
+        }
+        return Route::NotFound;
+    }
     if (uri == "/rebooting.html" || uri == "/rebooting") {
         return Route::Rebooting;
     }
@@ -287,7 +299,7 @@ std::size_t render_network_radios(const ScanCache& cache, char* out, std::size_t
             out[n++] = *p;
         }
         html_escape_append(out, cap, n, e.ssid);
-        char rssi[32];
+        char rssi[64];
         const int rn = std::snprintf(rssi, sizeof(rssi), "</span> <span class=\"rssi\">%ld dBm</span></label>\n",
                                      static_cast<long>(e.rssi));
         if (rn <= 0) {
@@ -308,11 +320,78 @@ std::size_t render_network_radios(const ScanCache& cache, char* out, std::size_t
 
 std::size_t render_setup_page(const ScanCache& cache, char* out, std::size_t cap)
 {
-    char nets[2048];
-    if (render_network_radios(cache, nets, sizeof(nets)) == 0 && nets[0] == '\0') {
-        // render_network_radios always writes something; treat overflow as fail
+    char* nets = static_cast<char*>(std::malloc(kNetsBuf));
+    if (nets == nullptr) {
+        return 0;
     }
-    return replace_one(assets::kSetupHtmlTpl, "{{NETWORKS}}", nets, out, cap);
+    const std::size_t nr = render_network_radios(cache, nets, kNetsBuf);
+    if (nr == 0 && nets[0] == '\0') {
+        std::free(nets);
+        return 0;
+    }
+    const std::size_t n = replace_one(assets::kSetupHtmlTpl, "{{NETWORKS}}", nets, out, cap);
+    std::free(nets);
+    return n;
+}
+
+UploadRefuse check_upload_start(bool window_open, bool busy, bool have_length,
+                                std::size_t content_length, std::size_t max_image)
+{
+    if (!window_open) {
+        return UploadRefuse::WindowClosed;
+    }
+    if (busy) {
+        return UploadRefuse::Busy;
+    }
+    if (!have_length || content_length == 0) {
+        return UploadRefuse::NoFile;
+    }
+    if (content_length > max_image) {
+        return UploadRefuse::TooLarge;
+    }
+    return UploadRefuse::Ok;
+}
+
+UploadRefuse check_firmware_magic(std::uint8_t first)
+{
+    if (first != kFirmwareMagic) {
+        return UploadRefuse::NotFirmware;
+    }
+    return UploadRefuse::Ok;
+}
+
+const char* upload_refuse_reason(UploadRefuse r)
+{
+    switch (r) {
+    case UploadRefuse::Ok:
+        return "";
+    case UploadRefuse::WindowClosed:
+        return "Press the button on the dongle first.";
+    case UploadRefuse::Busy:
+        return "An update is already in progress.";
+    case UploadRefuse::NoFile:
+        return "No file received.";
+    case UploadRefuse::TooLarge:
+        return "File is too large to be firmware.";
+    case UploadRefuse::NotFirmware:
+        return "Not a firmware image.";
+    }
+    return "";
+}
+
+std::size_t render_update_window(bool open, unsigned left_s, bool busy, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    const unsigned shown = open ? left_s : 0;
+    const int n = std::snprintf(out, cap, "{\"open\":%s,\"left_s\":%u,\"busy\":%s}",
+                                open ? "true" : "false", shown, busy ? "true" : "false");
+    if (n <= 0 || static_cast<std::size_t>(n) >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return static_cast<std::size_t>(n);
 }
 
 std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap)

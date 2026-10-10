@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <esp_crt_bundle.h>
 #include <esp_mac.h>
+#include <esp_ota_ops.h>
 #include <esp_random.h>
 #include <esp_system.h>
 #include <esp32-hal-rgb-led.h>
@@ -153,6 +154,10 @@ static bool g_led_logged_have = false;
 static p1btn::Helper g_btn{};
 static std::atomic<bool> g_have_tap{false};
 static std::atomic<std::uint32_t> g_tap_ms{0};
+static std::atomic<bool> g_fw_busy{false};
+static bool g_lan_reboot_armed = false;
+static std::uint32_t g_lan_reboot_at = 0;
+static p1web::UploadIo g_upload_io{};
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
@@ -580,6 +585,23 @@ static void handle_web_actions()
         act->ota_install = false;
         ota_install_now();
     }
+    if (act->fw_upload_started) {
+        act->fw_upload_started = false;
+        g_log.log(p1log::Level::Info, "Firmware upload started");
+    }
+    if (act->fw_upload_failed) {
+        act->fw_upload_failed = false;
+        char msg[112];
+        std::snprintf(msg, sizeof(msg), "Firmware upload failed: %s", act->fw_upload_err);
+        g_log.log(p1log::Level::Error, msg);
+        act->fw_upload_err[0] = '\0';
+    }
+    if (act->fw_upload_complete) {
+        act->fw_upload_complete = false;
+        g_log.log(p1log::Level::Info, "Firmware upload complete");
+        g_lan_reboot_at = millis() + 1000u;
+        g_lan_reboot_armed = true;
+    }
 }
 
 static void service_provisioning()
@@ -624,6 +646,57 @@ static void open_upload_window()
     g_tap_ms.store(millis(), std::memory_order_relaxed);
     g_have_tap.store(true, std::memory_order_release);
     g_log.log(p1log::Level::Info, "Upload window opened by button");
+}
+
+static bool claim_fw_busy()
+{
+    bool expected = false;
+    return g_fw_busy.compare_exchange_strong(expected, true);
+}
+
+static void release_fw_busy()
+{
+    g_fw_busy.store(false, std::memory_order_release);
+}
+
+static p1web::UploadWindow fw_window()
+{
+    p1web::UploadWindow w{};
+    w.busy = g_fw_busy.load(std::memory_order_relaxed);
+    if (!g_have_tap.load(std::memory_order_acquire)) {
+        return w;
+    }
+    const std::uint32_t elapsed = millis() - g_tap_ms.load(std::memory_order_relaxed);
+    if (elapsed < p1led::kUploadWindowMs) {
+        w.open = true;
+        w.left_s = (p1led::kUploadWindowMs - elapsed) / 1000u;
+    }
+    return w;
+}
+
+static bool fw_begin(std::size_t nbytes)
+{
+    return Update.begin(nbytes);
+}
+
+static bool fw_write(const std::uint8_t* data, std::size_t n)
+{
+    return Update.write(const_cast<std::uint8_t*>(data), n) == n;
+}
+
+static bool fw_end()
+{
+    return Update.end() && Update.isFinished();
+}
+
+static void fw_abort()
+{
+    Update.abort();
+}
+
+static std::size_t fw_max_image()
+{
+    return static_cast<std::size_t>(ESP.getFreeSketchSpace());
 }
 
 static void poll_button()
@@ -883,7 +956,7 @@ static void service_status_led()
 {
     const std::uint32_t now = millis();
     p1led::Facts f{};
-    f.busy = !g_wifi_outcome_seen;
+    f.busy = !g_wifi_outcome_seen || g_fw_busy.load(std::memory_order_relaxed);
     f.ap_up = g_ap_up;
     f.wifi_ssid_stored = g_cfg.values().wifi_ssid[0] != '\0';
     f.sta_connected = WiFi.status() == WL_CONNECTED;
@@ -1262,6 +1335,11 @@ static void ota_install_now()
         return;
     }
 
+    if (!claim_fw_busy()) {
+        g_log.log(p1log::Level::Warn, "OTA install skipped: an update is already in progress");
+        return;
+    }
+
     // Steady red before the blocking download (loop cannot animate during it).
     led_show_busy_red();
     mqtt_pause_for_https();
@@ -1280,6 +1358,7 @@ static void ota_install_now()
     if (!https.begin(client, url)) {
         g_log.log(p1log::Level::Error, "OTA install: HTTPS begin failed");
         mqtt_resume_after_https();
+        release_fw_busy();
         return;
     }
 
@@ -1289,6 +1368,7 @@ static void ota_install_now()
         g_log.log(p1log::Level::Error, msg);
         https.end();
         mqtt_resume_after_https();
+        release_fw_busy();
         return;
     }
 
@@ -1297,6 +1377,7 @@ static void ota_install_now()
         g_log.log(p1log::Level::Error, "OTA install: missing Content-Length");
         https.end();
         mqtt_resume_after_https();
+        release_fw_busy();
         return;
     }
 
@@ -1306,6 +1387,7 @@ static void ota_install_now()
         g_log.log(p1log::Level::Error, msg);
         https.end();
         mqtt_resume_after_https();
+        release_fw_busy();
         return;
     }
 
@@ -1318,6 +1400,7 @@ static void ota_install_now()
         Update.abort();
         https.end();
         mqtt_resume_after_https();
+        release_fw_busy();
         return;
     }
 
@@ -1327,6 +1410,7 @@ static void ota_install_now()
         g_log.log(p1log::Level::Error, msg);
         https.end();
         mqtt_resume_after_https();
+        release_fw_busy();
         return;
     }
 
@@ -1967,16 +2051,27 @@ void setup()
         g_log.log(p1log::Level::Info, msg);
     }
 
-    char boot[96];
-    std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u", p1fw::kFwVer,
-                  g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
-                  static_cast<unsigned>(rx));
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const char* part = (running != nullptr && running->label[0] != '\0') ? running->label : "?";
+    char boot[112];
+    std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u part=%s",
+                  p1fw::kFwVer, g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
+                  static_cast<unsigned>(rx), part);
     g_log.log(p1log::Level::Info, boot);
     char reasons[128];
     std::snprintf(reasons, sizeof(reasons), "Reset hw=%s fw=%s", g_hw_reset_reason,
                   g_fw_reset_reason[0] != '\0' ? g_fw_reset_reason : "(none)");
     g_log.log(p1log::Level::Info, reasons);
 
+    g_upload_io.window = &fw_window;
+    g_upload_io.claim_busy = &claim_fw_busy;
+    g_upload_io.release_busy = &release_fw_busy;
+    g_upload_io.begin = &fw_begin;
+    g_upload_io.write = &fw_write;
+    g_upload_io.end = &fw_end;
+    g_upload_io.abort = &fw_abort;
+    g_upload_io.max_image = &fw_max_image;
+    g_web.set_upload_io(&g_upload_io);
     g_web.set_store(&g_cfg);
     g_web.set_files(&g_fs);
     WiFi.onEvent(on_wifi_event);
@@ -1991,6 +2086,12 @@ void loop()
 
     poll_serial();
     poll_button();
+    if (g_lan_reboot_armed &&
+        static_cast<std::int32_t>(millis() - g_lan_reboot_at) >= 0) {
+        g_lan_reboot_armed = false;
+        request_reboot("Firmware uploaded over LAN");
+        return;
+    }
     service_provisioning();
     service_gateway_reach_check();
     service_status_led();

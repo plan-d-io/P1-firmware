@@ -231,6 +231,9 @@
         inst.style.display = "none";
         actions.appendChild(inst);
         host.appendChild(actions);
+        host.appendChild(el("p", {class: "field-hint"}, [
+          el("a", {href: "/update", text: "Upload firmware file"})
+        ]));
         host.appendChild(el("p", {class: "field-hint", id: "updDirtyHint", text: "Save your changes before checking.", style: "display:none"}));
       }
     });

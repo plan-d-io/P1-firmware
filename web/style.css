@@ -112,6 +112,13 @@ a {
     box-sizing: border-box;
 }
 
+input[type="file"] {
+    width: 100%;
+    margin: 10px 0;
+    color: #eaeaea;
+    box-sizing: border-box;
+}
+
 input[type="text"],
 input[type="password"],
 input[type="email"],
@@ -160,6 +167,11 @@ button.submit,
 
 .submit:hover {
     background-color: #5aaf6f;
+}
+
+.submit:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .reboot {

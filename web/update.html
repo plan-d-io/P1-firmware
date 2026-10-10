@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firmware upload</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+  <h2>Firmware upload</h2>
+  <p class="lede">Use this to install a firmware file by hand, for example when the automatic update cannot reach the internet.</p>
+  <p class="lede" id="statusLine">Press the button on the dongle to open the upload window.</p>
+  <p class="lede" id="pctLine" style="display:none"></p>
+  <input id="file" type="file" accept=".bin">
+  <button type="button" class="submit" id="uploadBtn" disabled>Upload</button>
+  <p class="msg" id="errLine"></p>
+</div>
+<script>
+(function () {
+  var sending = false;
+  var fileEl = document.getElementById("file");
+  var btn = document.getElementById("uploadBtn");
+  var statusLine = document.getElementById("statusLine");
+  var pctLine = document.getElementById("pctLine");
+  var errLine = document.getElementById("errLine");
+
+  function syncBtn(open, busy) {
+    btn.disabled = sending || busy || !open || !fileEl.files.length;
+  }
+
+  function applyWindow(w) {
+    if (sending) return;
+    if (w.busy) {
+      statusLine.textContent = "An update is in progress.";
+    } else if (w.open) {
+      statusLine.textContent = "Upload window open — " + String(w.left_s) + " s left.";
+    } else {
+      statusLine.textContent = "Press the button on the dongle to open the upload window.";
+    }
+    syncBtn(!!w.open, !!w.busy);
+  }
+
+  function poll() {
+    if (sending) return;
+    fetch("/update/window").then(function (r) { return r.json(); }).then(applyWindow).catch(function () {});
+  }
+
+  fileEl.addEventListener("change", function () {
+    errLine.textContent = "";
+    poll();
+  });
+
+  btn.addEventListener("click", function () {
+    var f = fileEl.files[0];
+    if (!f || sending) return;
+    sending = true;
+    btn.disabled = true;
+    errLine.textContent = "";
+    pctLine.style.display = "";
+    pctLine.textContent = "0%";
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/update");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = function (ev) {
+      if (!ev.lengthComputable || ev.total <= 0) return;
+      pctLine.textContent = String(Math.floor((ev.loaded / ev.total) * 100)) + "%";
+    };
+    xhr.onload = function () {
+      var text = xhr.responseText || "";
+      if (xhr.status === 200) {
+        window.location.href = "/rebooting?update=uploaded";
+        return;
+      }
+      sending = false;
+      pctLine.style.display = "none";
+      errLine.textContent = text;
+      poll();
+    };
+    xhr.onerror = function () {
+      sending = false;
+      pctLine.style.display = "none";
+      errLine.textContent = "Upload failed.";
+      poll();
+    };
+    xhr.send(f);
+  });
+
+  setInterval(poll, 1000);
+  poll();
+})();
+</script>
+</body>
+</html>

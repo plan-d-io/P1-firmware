@@ -25,6 +25,10 @@
     lede.textContent =
       "The dongle is downloading firmware and will reboot when finished. You can close this window.";
     endpoint = "/update/install";
+  } else if (update === "uploaded") {
+    heading.textContent = "Restarting";
+    lede.textContent =
+      "The dongle is installing the uploaded firmware and will reboot. You can close this window.";
   } else if (reset === null || reset === "") {
     heading.textContent = "Restarting";
     endpoint = "/reboot";

@@ -2,6 +2,8 @@
 
 #include "P1Web.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
@@ -35,6 +37,153 @@ esp_err_t send_json(httpd_req_t* req, const char* json, std::size_t len)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, json, static_cast<ssize_t>(len));
+}
+
+esp_err_t send_plain(httpd_req_t* req, const char* status, const char* body)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+const char* refuse_http_status(UploadRefuse r)
+{
+    switch (r) {
+    case UploadRefuse::WindowClosed:
+        return "403 Forbidden";
+    case UploadRefuse::Busy:
+        return "409 Conflict";
+    case UploadRefuse::NoFile:
+        return "400 Bad Request";
+    case UploadRefuse::TooLarge:
+        return "413 Payload Too Large";
+    case UploadRefuse::NotFirmware:
+        return "400 Bad Request";
+    default:
+        return "400 Bad Request";
+    }
+}
+
+void note_upload_fail(Actions* act, const char* reason)
+{
+    if (act == nullptr || reason == nullptr) {
+        return;
+    }
+    act->fw_upload_failed = true;
+    std::snprintf(act->fw_upload_err, sizeof(act->fw_upload_err), "%s", reason);
+}
+
+esp_err_t handle_update_upload(httpd_req_t* req)
+{
+    const UploadIo* io = g_server->upload_io_ptr();
+    Actions* act = g_server->actions();
+    UploadWindow w{};
+    std::size_t max_image = 0;
+    if (io != nullptr && io->window != nullptr) {
+        w = io->window();
+    }
+    if (io != nullptr && io->max_image != nullptr) {
+        max_image = io->max_image();
+    }
+
+    const std::size_t content_len = static_cast<std::size_t>(req->content_len);
+    const bool have_length = content_len > 0;
+    const UploadRefuse gate =
+        check_upload_start(w.open, w.busy, have_length, content_len, max_image);
+    if (gate != UploadRefuse::Ok) {
+        return send_plain(req, refuse_http_status(gate), upload_refuse_reason(gate));
+    }
+    if (io == nullptr || io->claim_busy == nullptr || io->begin == nullptr ||
+        io->write == nullptr || io->end == nullptr || io->abort == nullptr ||
+        io->release_busy == nullptr) {
+        return send_plain(req, "500 Internal Server Error", "Install failed.");
+    }
+    if (!io->claim_busy()) {
+        return send_plain(req, refuse_http_status(UploadRefuse::Busy),
+                          upload_refuse_reason(UploadRefuse::Busy));
+    }
+
+    act->fw_upload_started = true;
+
+    if (!io->begin(content_len)) {
+        io->release_busy();
+        note_upload_fail(act, "Cannot start update.");
+        return send_plain(req, "500 Internal Server Error", "Cannot start update.");
+    }
+
+    char* chunk = static_cast<char*>(malloc(kUploadChunk));
+    if (chunk == nullptr) {
+        io->abort();
+        io->release_busy();
+        note_upload_fail(act, "Install failed.");
+        return send_plain(req, "500 Internal Server Error", "Install failed.");
+    }
+
+    std::size_t got = 0;
+    bool first = true;
+    int timeouts = 0;
+    constexpr int kTimeoutTries = 8;
+    while (got < content_len) {
+        const std::size_t want = std::min(kUploadChunk, content_len - got);
+        const int recvd = httpd_req_recv(req, chunk, want);
+        if (recvd == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeouts > kTimeoutTries) {
+                io->abort();
+                io->release_busy();
+                free(chunk);
+                note_upload_fail(act, "Upload interrupted.");
+                return send_plain(req, "500 Internal Server Error", "Upload interrupted.");
+            }
+            continue;
+        }
+        if (recvd <= 0) {
+            io->abort();
+            io->release_busy();
+            free(chunk);
+            note_upload_fail(act, "Upload interrupted.");
+            return send_plain(req, "500 Internal Server Error", "Upload interrupted.");
+        }
+        timeouts = 0;
+        if (first) {
+            first = false;
+            const UploadRefuse mag =
+                check_firmware_magic(static_cast<std::uint8_t>(chunk[0]));
+            if (mag != UploadRefuse::Ok) {
+                io->abort();
+                io->release_busy();
+                free(chunk);
+                note_upload_fail(act, upload_refuse_reason(mag));
+                return send_plain(req, refuse_http_status(mag), upload_refuse_reason(mag));
+            }
+        }
+        if (!io->write(reinterpret_cast<const std::uint8_t*>(chunk),
+                       static_cast<std::size_t>(recvd))) {
+            io->abort();
+            io->release_busy();
+            free(chunk);
+            note_upload_fail(act, "Install failed.");
+            return send_plain(req, "500 Internal Server Error", "Install failed.");
+        }
+        got += static_cast<std::size_t>(recvd);
+    }
+    free(chunk);
+
+    if (got != content_len) {
+        io->abort();
+        io->release_busy();
+        note_upload_fail(act, "Incomplete upload.");
+        return send_plain(req, "500 Internal Server Error", "Incomplete upload.");
+    }
+    if (!io->end()) {
+        io->abort();
+        io->release_busy();
+        note_upload_fail(act, "Install failed.");
+        return send_plain(req, "500 Internal Server Error", "Install failed.");
+    }
+
+    act->fw_upload_complete = true;
+    return send_plain(req, "200 OK", "Installed. Rebooting.");
 }
 
 esp_err_t dispatch(httpd_req_t* req)
@@ -241,10 +390,34 @@ esp_err_t dispatch(httpd_req_t* req)
         return httpd_resp_send(req, "Ok", 2);
     }
     case Route::OtaInstall: {
+        const UploadIo* io = g_server->upload_io_ptr();
+        if (io != nullptr && io->window != nullptr && io->window().busy) {
+            return send_plain(req, refuse_http_status(UploadRefuse::Busy),
+                              upload_refuse_reason(UploadRefuse::Busy));
+        }
         g_server->actions()->ota_install = true;
         httpd_resp_set_type(req, "text/plain");
         return httpd_resp_send(req, "Ok", 2);
     }
+    case Route::UpdatePage:
+        return send_gzip(req, "text/html; charset=utf-8", assets::kUpdateHtmlGz,
+                         assets::kUpdateHtmlGzLen);
+    case Route::UpdateWindow: {
+        UploadWindow w{};
+        const UploadIo* io = g_server->upload_io_ptr();
+        if (io != nullptr && io->window != nullptr) {
+            w = io->window();
+        }
+        char json[kUpdateWindowJsonMax];
+        const std::size_t n = render_update_window(w.open, w.left_s, w.busy, json, sizeof(json));
+        if (n == 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "window json");
+            return ESP_FAIL;
+        }
+        return send_json(req, json, n);
+    }
+    case Route::UpdateUpload:
+        return handle_update_upload(req);
     case Route::ConfigGet: {
         p1cfg::Store* store = g_server->store_ptr();
         if (store == nullptr) {
@@ -408,6 +581,11 @@ p1log::FileStore* Server::files_ptr() const
     return files_;
 }
 
+const UploadIo* Server::upload_io_ptr() const
+{
+    return upload_io_;
+}
+
 bool Server::begin(Mode mode)
 {
     if (running_) {
@@ -415,7 +593,7 @@ bool Server::begin(Mode mode)
         return true;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 32;
+    cfg.max_uri_handlers = 40;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;
     httpd_handle_t handle = nullptr;
@@ -455,6 +633,9 @@ bool Server::begin(Mode mode)
     register_one(handle, "/reset/factory", HTTP_POST);
     register_one(handle, "/update/check", HTTP_POST);
     register_one(handle, "/update/install", HTTP_POST);
+    register_one(handle, "/update", HTTP_GET);
+    register_one(handle, "/update", HTTP_POST);
+    register_one(handle, "/update/window", HTTP_GET);
     httpd_register_err_handler(handle, HTTPD_404_NOT_FOUND, on_404);
 
     running_ = true;
@@ -502,6 +683,11 @@ void Server::set_store(p1cfg::Store* store)
 void Server::set_files(p1log::FileStore* files)
 {
     files_ = files;
+}
+
+void Server::set_upload_io(const UploadIo* io)
+{
+    upload_io_ = io;
 }
 
 Actions* Server::actions()

@@ -16,7 +16,12 @@ constexpr std::uint32_t kConnectTimeoutMs = 60000;
 constexpr std::size_t kMaxScanResults = 24;
 constexpr std::size_t kSsidMax = 33;
 constexpr std::size_t kPassMax = 64;
-constexpr std::size_t kHtmlBuf = 3072;
+// Setup page is template + 24 max-length SSIDs; malloc, not a stack buffer.
+constexpr std::size_t kHtmlBuf = 8192;
+constexpr std::size_t kNetsBuf = 6144;
+constexpr std::size_t kUpdateWindowJsonMax = 64;
+constexpr std::uint8_t kFirmwareMagic = 0xE9;
+constexpr std::size_t kUploadChunk = 4096;
 constexpr char kCacheControl[] = "public, max-age=300";
 constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
@@ -60,6 +65,9 @@ enum class Route : std::uint8_t {
     ResetFactory,
     OtaCheck,
     OtaInstall,
+    UpdatePage,
+    UpdateWindow,
+    UpdateUpload,
     NotFound,
 };
 
@@ -154,7 +162,46 @@ struct Actions {
     bool restart_mqtt = false;
     bool ota_check = false;
     bool ota_install = false;
+    bool fw_upload_started = false;
+    bool fw_upload_failed = false;
+    bool fw_upload_complete = false;
+    char fw_upload_err[80]{};
 };
+
+enum class UploadRefuse : std::uint8_t {
+    Ok = 0,
+    WindowClosed,
+    Busy,
+    NoFile,
+    TooLarge,
+    NotFirmware,
+};
+
+struct UploadWindow {
+    bool open = false;
+    unsigned left_s = 0;
+    bool busy = false;
+};
+
+// Board code fills this in. P1Web must not include Update.h.
+struct UploadIo {
+    UploadWindow (*window)() = nullptr;
+    bool (*claim_busy)() = nullptr;
+    void (*release_busy)() = nullptr;
+    bool (*begin)(std::size_t nbytes) = nullptr;
+    bool (*write)(const std::uint8_t* data, std::size_t n) = nullptr;
+    bool (*end)() = nullptr;
+    void (*abort)() = nullptr;
+    std::size_t (*max_image)() = nullptr;
+};
+
+UploadRefuse check_upload_start(bool window_open, bool busy, bool have_length,
+                                std::size_t content_length, std::size_t max_image);
+UploadRefuse check_firmware_magic(std::uint8_t first);
+const char* upload_refuse_reason(UploadRefuse r);
+
+std::size_t render_update_window(bool open, unsigned left_s, bool busy, char* out,
+                                 std::size_t cap);
 
 void sort_scan_strongest_first(ScanCache& cache);
 
@@ -193,6 +240,7 @@ public:
     void set_readings(const ReadingsView* readings);
     void set_store(p1cfg::Store* store);
     void set_files(p1log::FileStore* files);
+    void set_upload_io(const UploadIo* io);
     Actions* actions();
     bool running() const { return running_; }
 
@@ -203,6 +251,7 @@ public:
     const ReadingsView* readings_ptr() const;
     p1cfg::Store* store_ptr() const;
     p1log::FileStore* files_ptr() const;
+    const UploadIo* upload_io_ptr() const;
 
 private:
     bool running_ = false;
@@ -213,6 +262,7 @@ private:
     const ReadingsView* readings_ = nullptr;
     p1cfg::Store* store_ = nullptr;
     p1log::FileStore* files_ = nullptr;
+    const UploadIo* upload_io_ = nullptr;
     Actions actions_{};
 };
 

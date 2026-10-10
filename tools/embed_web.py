@@ -46,6 +46,7 @@ def generate(root: pathlib.Path) -> int:
         "rebooting.html": web / "rebooting.html",
         "config.html": web / "config.html",
         "log.html": web / "log.html",
+        "update.html": web / "update.html",
     }
     for path in files.values():
         if not path.is_file():
@@ -61,6 +62,8 @@ def generate(root: pathlib.Path) -> int:
     config_gz = gzip.compress(config_raw, mtime=0, compresslevel=9)
     log_raw = files["log.html"].read_bytes()
     log_gz = gzip.compress(log_raw, mtime=0, compresslevel=9)
+    update_raw = files["update.html"].read_bytes()
+    update_gz = gzip.compress(update_raw, mtime=0, compresslevel=9)
     setup_tpl = files["setup.html"].read_text(encoding="utf-8")
     status_tpl = files["status.html"].read_text(encoding="utf-8")
 
@@ -73,6 +76,7 @@ def generate(root: pathlib.Path) -> int:
         fh.write(f"rebooting.html {len(reboot_raw)} {len(reboot_gz)}\n")
         fh.write(f"config.html {len(config_raw)} {len(config_gz)}\n")
         fh.write(f"log.html {len(log_raw)} {len(log_gz)}\n")
+        fh.write(f"update.html {len(update_raw)} {len(update_gz)}\n")
         fh.write(f"setup.html {len(setup_tpl.encode('utf-8'))} -\n")
         fh.write(f"status.html {len(status_tpl.encode('utf-8'))} -\n")
 
@@ -104,6 +108,10 @@ extern const std::size_t kConfigHtmlRawLen;
 extern const std::uint8_t kLogHtmlGz[];
 extern const std::size_t kLogHtmlGzLen;
 extern const std::size_t kLogHtmlRawLen;
+
+extern const std::uint8_t kUpdateHtmlGz[];
+extern const std::size_t kUpdateHtmlGzLen;
+extern const std::size_t kUpdateHtmlRawLen;
 
 extern const char kSetupHtmlTpl[];
 extern const char kStatusHtmlTpl[];
@@ -140,6 +148,10 @@ extern const char kStatusHtmlTpl[];
         "const std::size_t kLogHtmlGzLen = sizeof(kLogHtmlGz);",
         f"const std::size_t kLogHtmlRawLen = {len(log_raw)};",
         "",
+        c_bytes(update_gz, "kUpdateHtmlGz"),
+        "const std::size_t kUpdateHtmlGzLen = sizeof(kUpdateHtmlGz);",
+        f"const std::size_t kUpdateHtmlRawLen = {len(update_raw)};",
+        "",
         c_raw_string(setup_tpl, "kSetupHtmlTpl"),
         "",
         c_raw_string(status_tpl, "kStatusHtmlTpl"),
@@ -154,7 +166,8 @@ extern const char kStatusHtmlTpl[];
         f"restarting {len(restart_raw)}->{len(restart_gz)}  "
         f"rebooting {len(reboot_raw)}->{len(reboot_gz)}  "
         f"config {len(config_raw)}->{len(config_gz)}  "
-        f"log {len(log_raw)}->{len(log_gz)}"
+        f"log {len(log_raw)}->{len(log_gz)}  "
+        f"update {len(update_raw)}->{len(update_gz)}"
     )
     return 0
 

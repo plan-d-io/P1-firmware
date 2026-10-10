@@ -17,6 +17,12 @@ void test_route_ap_fallback()
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/anything/else"));
     TEST_ASSERT_EQUAL(p1web::Route::Style,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/style.css"));
+    TEST_ASSERT_EQUAL(p1web::Route::UpdatePage,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/update"));
+    TEST_ASSERT_EQUAL(p1web::Route::UpdateUpload,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/update"));
+    TEST_ASSERT_EQUAL(p1web::Route::UpdateWindow,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/update/window"));
     TEST_ASSERT_EQUAL(p1web::Route::Save,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/save"));
     TEST_ASSERT_EQUAL(p1web::Route::ConfigGet,
@@ -63,6 +69,12 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/update/check"));
     TEST_ASSERT_EQUAL(p1web::Route::OtaInstall,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/update/install"));
+    TEST_ASSERT_EQUAL(p1web::Route::UpdatePage,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/update"));
+    TEST_ASSERT_EQUAL(p1web::Route::UpdateUpload,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/update"));
+    TEST_ASSERT_EQUAL(p1web::Route::UpdateWindow,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/update/window"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/reset/factory"));
     TEST_ASSERT_EQUAL(p1web::Route::Rebooting,
@@ -101,6 +113,11 @@ void test_gzip_blobs()
     TEST_ASSERT_TRUE(p1web::assets::kLogHtmlGzLen > 2);
     TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kLogHtmlGz[0]);
     TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kLogHtmlGz[1]);
+
+    TEST_ASSERT_TRUE(p1web::assets::kUpdateHtmlGzLen > 2);
+    TEST_ASSERT_EQUAL_HEX8(0x1f, p1web::assets::kUpdateHtmlGz[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x8b, p1web::assets::kUpdateHtmlGz[1]);
+    TEST_ASSERT_TRUE(p1web::assets::kUpdateHtmlRawLen > p1web::assets::kUpdateHtmlGzLen);
 }
 
 void test_status_render()
@@ -283,6 +300,82 @@ void test_save_form_and_json()
     TEST_ASSERT_EQUAL_STRING("{\"WIFI_SSID\":\"TestNet\",\"WIFI_PASS\":\"a\\\"b\"}", json);
 }
 
+void test_upload_gates()
+{
+    using p1web::UploadRefuse;
+    const std::size_t max_image = 1966080;
+
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::WindowClosed),
+                      static_cast<int>(p1web::check_upload_start(false, true, false, 0, max_image)));
+    TEST_ASSERT_EQUAL_STRING("Press the button on the dongle first.",
+                             p1web::upload_refuse_reason(UploadRefuse::WindowClosed));
+
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::Busy),
+                      static_cast<int>(p1web::check_upload_start(true, true, false, 0, max_image)));
+    TEST_ASSERT_EQUAL_STRING("An update is already in progress.",
+                             p1web::upload_refuse_reason(UploadRefuse::Busy));
+
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::NoFile),
+                      static_cast<int>(p1web::check_upload_start(true, false, false, 100, max_image)));
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::NoFile),
+                      static_cast<int>(p1web::check_upload_start(true, false, true, 0, max_image)));
+    TEST_ASSERT_EQUAL_STRING("No file received.",
+                             p1web::upload_refuse_reason(UploadRefuse::NoFile));
+
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::TooLarge),
+                      static_cast<int>(p1web::check_upload_start(true, false, true, max_image + 1,
+                                                                max_image)));
+    TEST_ASSERT_EQUAL_STRING("File is too large to be firmware.",
+                             p1web::upload_refuse_reason(UploadRefuse::TooLarge));
+
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::Ok),
+                      static_cast<int>(p1web::check_upload_start(true, false, true, 100, max_image)));
+
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::Ok),
+                      static_cast<int>(p1web::check_firmware_magic(0xE9)));
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::NotFirmware),
+                      static_cast<int>(p1web::check_firmware_magic(0x00)));
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::NotFirmware),
+                      static_cast<int>(p1web::check_firmware_magic(0x89)));
+    TEST_ASSERT_EQUAL(static_cast<int>(UploadRefuse::NotFirmware),
+                      static_cast<int>(p1web::check_firmware_magic(0x7B)));
+    TEST_ASSERT_EQUAL_STRING("Not a firmware image.",
+                             p1web::upload_refuse_reason(UploadRefuse::NotFirmware));
+}
+
+void test_update_window_json_worst()
+{
+    char buf[p1web::kUpdateWindowJsonMax];
+    const std::size_t n =
+        p1web::render_update_window(true, 4294967295u, true, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("{\"open\":true,\"left_s\":4294967295,\"busy\":true}", buf);
+
+    TEST_ASSERT_TRUE(p1web::render_update_window(false, 42, false, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("{\"open\":false,\"left_s\":0,\"busy\":false}", buf);
+}
+
+void test_setup_page_full_size()
+{
+    p1web::ScanCache c{};
+    c.ready = true;
+    c.count = p1web::kMaxScanResults;
+    for (std::size_t i = 0; i < c.count; ++i) {
+        for (std::size_t j = 0; j + 1 < p1web::kSsidMax; ++j) {
+            c.entries[i].ssid[j] = 'A';
+        }
+        c.entries[i].ssid[p1web::kSsidMax - 1] = '\0';
+        c.entries[i].rssi = -128;
+    }
+    char page[p1web::kHtmlBuf];
+    const std::size_t n = p1web::render_setup_page(c, page, sizeof(page));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(page));
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "Firmware upload"));
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "href=\"/update\""));
+}
+
 void test_scan_sort()
 {
     p1web::ScanCache c{};
@@ -315,6 +408,9 @@ int main()
     RUN_TEST(test_format_config_error);
     RUN_TEST(test_provision_machine);
     RUN_TEST(test_save_form_and_json);
+    RUN_TEST(test_upload_gates);
+    RUN_TEST(test_update_window_json_worst);
+    RUN_TEST(test_setup_page_full_size);
     RUN_TEST(test_scan_sort);
     return UNITY_END();
 }
