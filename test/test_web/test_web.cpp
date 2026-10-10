@@ -238,48 +238,167 @@ void test_format_config_error()
     TEST_ASSERT_EQUAL_STRING("Parse", err);
 }
 
-void test_provision_machine()
+static p1web::ProvInput prov_in(bool have_ssid, bool sta, bool seen, std::uint8_t clients,
+                               std::uint32_t now_ms)
+{
+    p1web::ProvInput in{};
+    in.have_ssid = have_ssid;
+    in.sta_connected = sta;
+    in.ssid_seen = seen;
+    in.ap_clients = clients;
+    in.now_ms = now_ms;
+    return in;
+}
+
+void test_provision_never_connects_stays_in_setup()
 {
     p1web::ProvisionMachine m;
-    p1web::ProvInput in{};
+    auto out = m.tick(prov_in(true, false, false, 0, 0));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::Connecting, out.phase);
+    TEST_ASSERT_FALSE(out.want_ap);
+    TEST_ASSERT_TRUE(out.want_sta);
 
-    // No credentials → AP.
-    in.have_ssid = false;
-    in.sta_connected = false;
-    in.now_ms = 0;
-    auto out = m.tick(in);
+    out = m.tick(prov_in(true, false, false, 0, 59999));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::Connecting, out.phase);
+    TEST_ASSERT_FALSE(out.want_ap);
+    TEST_ASSERT_TRUE(out.want_sta);
+
+    out = m.tick(prov_in(true, false, false, 0, 60000));
     TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
     TEST_ASSERT_TRUE(out.want_ap);
     TEST_ASSERT_FALSE(out.want_sta);
 
-    // Credentials, connecting.
-    in.have_ssid = true;
-    in.now_ms = 1000;
-    out = m.tick(in);
-    TEST_ASSERT_EQUAL(p1web::ProvPhase::Connecting, out.phase);
-    TEST_ASSERT_FALSE(out.want_ap);
-    TEST_ASSERT_TRUE(out.want_sta);
+    out = m.tick(prov_in(true, false, false, 0, 60001));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
 
-    // Still within 60 s.
-    in.now_ms = 1000 + p1web::kConnectTimeoutMs - 1;
-    out = m.tick(in);
-    TEST_ASSERT_EQUAL(p1web::ProvPhase::Connecting, out.phase);
-    TEST_ASSERT_FALSE(out.want_ap);
+    out = m.tick(prov_in(true, false, false, 0, 90000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
 
-    // Timeout → AP (while still wanting STA).
-    in.now_ms = 1000 + p1web::kConnectTimeoutMs;
-    out = m.tick(in);
+    out = m.tick(prov_in(true, false, false, 0, 179999));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
+}
+
+void test_provision_idle_while_ssid_not_seen()
+{
+    p1web::ProvisionMachine m;
+    m.tick(prov_in(true, false, false, 0, 0));
+    m.tick(prov_in(true, false, false, 0, 60000));
+    auto out = m.tick(prov_in(true, false, false, 0, 180000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::None, out.event);
+    out = m.tick(prov_in(true, false, false, 0, 360000));
+    TEST_ASSERT_FALSE(out.want_sta);
+}
+
+void test_provision_retry_after_120s_when_ssid_seen()
+{
+    p1web::ProvisionMachine m;
+    m.tick(prov_in(true, false, false, 0, 0));
+    m.tick(prov_in(true, false, true, 0, 60000));
+
+    auto out = m.tick(prov_in(true, false, true, 0, 179999));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
+
+    out = m.tick(prov_in(true, false, true, 0, 180000));
     TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
     TEST_ASSERT_TRUE(out.want_ap);
     TEST_ASSERT_TRUE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::RetryStart, out.event);
+}
 
-    // Connected → station, AP down.
-    in.sta_connected = true;
-    in.now_ms = 1000 + p1web::kConnectTimeoutMs + 5000;
-    out = m.tick(in);
+void test_provision_failed_attempt_then_wait_120s()
+{
+    p1web::ProvisionMachine m;
+    m.tick(prov_in(true, false, false, 0, 0));
+    m.tick(prov_in(true, false, true, 0, 60000));
+    auto out = m.tick(prov_in(true, false, true, 0, 180000));
+    TEST_ASSERT_TRUE(out.want_sta);
+
+    out = m.tick(prov_in(true, false, true, 0, 199999));
+    TEST_ASSERT_TRUE(out.want_sta);
+    TEST_ASSERT_TRUE(out.want_ap);
+
+    out = m.tick(prov_in(true, false, true, 0, 200000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::RetryFailed, out.event);
+
+    out = m.tick(prov_in(true, false, true, 0, 319999));
+    TEST_ASSERT_FALSE(out.want_sta);
+
+    out = m.tick(prov_in(true, false, true, 0, 320000));
+    TEST_ASSERT_TRUE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::RetryStart, out.event);
+}
+
+void test_provision_retry_connects()
+{
+    p1web::ProvisionMachine m;
+    m.tick(prov_in(true, false, false, 0, 0));
+    m.tick(prov_in(true, false, true, 0, 60000));
+    m.tick(prov_in(true, false, true, 0, 180000));
+
+    auto out = m.tick(prov_in(true, true, true, 0, 185000));
     TEST_ASSERT_EQUAL(p1web::ProvPhase::Station, out.phase);
     TEST_ASSERT_FALSE(out.want_ap);
     TEST_ASSERT_TRUE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::Rejoined, out.event);
+}
+
+void test_provision_no_retry_while_client_connected()
+{
+    p1web::ProvisionMachine m;
+    m.tick(prov_in(true, false, false, 0, 0));
+    m.tick(prov_in(true, false, true, 1, 60000));
+    auto out = m.tick(prov_in(true, false, true, 1, 180000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
+    out = m.tick(prov_in(true, false, true, 1, 400000));
+    TEST_ASSERT_FALSE(out.want_sta);
+}
+
+void test_provision_no_ssid_never_attempts()
+{
+    p1web::ProvisionMachine m;
+    auto out = m.tick(prov_in(false, false, false, 0, 0));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
+    out = m.tick(prov_in(false, false, true, 0, 180000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_FALSE(out.want_sta);
+}
+
+void test_provision_drop_retries_then_setup()
+{
+    p1web::ProvisionMachine m;
+    auto out = m.tick(prov_in(true, true, false, 0, 0));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::Station, out.phase);
+
+    out = m.tick(prov_in(true, false, false, 0, 10000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::Connecting, out.phase);
+    TEST_ASSERT_FALSE(out.want_ap);
+    TEST_ASSERT_TRUE(out.want_sta);
+
+    out = m.tick(prov_in(true, false, false, 0, 69999));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::Connecting, out.phase);
+
+    out = m.tick(prov_in(true, false, false, 0, 70000));
+    TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
+    TEST_ASSERT_TRUE(out.want_ap);
+    TEST_ASSERT_FALSE(out.want_sta);
 }
 
 void test_save_form_and_json()
@@ -406,7 +525,14 @@ int main()
     RUN_TEST(test_api_data_json_max);
     RUN_TEST(test_api_fields_json_max);
     RUN_TEST(test_format_config_error);
-    RUN_TEST(test_provision_machine);
+    RUN_TEST(test_provision_never_connects_stays_in_setup);
+    RUN_TEST(test_provision_idle_while_ssid_not_seen);
+    RUN_TEST(test_provision_retry_after_120s_when_ssid_seen);
+    RUN_TEST(test_provision_failed_attempt_then_wait_120s);
+    RUN_TEST(test_provision_retry_connects);
+    RUN_TEST(test_provision_no_retry_while_client_connected);
+    RUN_TEST(test_provision_no_ssid_never_attempts);
+    RUN_TEST(test_provision_drop_retries_then_setup);
     RUN_TEST(test_save_form_and_json);
     RUN_TEST(test_upload_gates);
     RUN_TEST(test_update_window_json_worst);

@@ -91,6 +91,7 @@ static p1web::CaptiveDns g_dns;
 static p1web::ProvisionMachine g_prov;
 static p1web::ScanCache g_scan{};
 static bool g_ap_up = false;
+static bool g_sta_joining = false;
 static bool g_scan_started = false;
 static std::uint32_t g_last_scan_ms = 0;
 static char g_begun_ssid[p1web::kSsidMax]{};
@@ -333,8 +334,12 @@ static void start_sta()
     const bool want_static = g_cfg.values().fip_en && !g_force_dhcp_this_boot;
     if (g_wifi_started && g_using_static_sta == want_static &&
         std::strcmp(g_begun_ssid, g_cfg.values().wifi_ssid) == 0 &&
-        std::strcmp(g_begun_pass, g_cfg.values().wifi_pass) == 0 && !g_ap_up) {
+        std::strcmp(g_begun_pass, g_cfg.values().wifi_pass) == 0) {
         return;
+    }
+    if (g_scan_started) {
+        WiFi.scanDelete();
+        g_scan_started = false;
     }
     if (g_device_id[0] != '\0') {
         WiFi.setHostname(g_device_id);
@@ -391,7 +396,7 @@ static void start_ap()
     if (g_ap_up) {
         return;
     }
-    // AP+STA so a timed-out connect can keep trying in the background.
+    // AP+STA so scans and later join attempts keep the setup network up.
     WiFi.mode(WIFI_AP_STA);
     if (!WiFi.softAP(p1web::kApSsid)) {
         g_log.log(p1log::Level::Error, "SoftAP start failed");
@@ -421,6 +426,22 @@ static void start_ap()
     g_web.set_scan(&g_scan);
     g_last_scan_ms = 0;
     g_scan_started = false;
+}
+
+static void idle_sta()
+{
+    WiFi.setAutoReconnect(false);
+    if (!g_wifi_started) {
+        return;
+    }
+    WiFi.disconnect(false, false);
+    g_wifi_started = false;
+    g_begun_ssid[0] = '\0';
+    g_begun_pass[0] = '\0';
+    g_got_ip = false;
+    g_ntp_started = false;
+    close_gw_sock();
+    g_gw_check = GwCheck::Idle;
 }
 
 static void stop_ap()
@@ -515,7 +536,10 @@ static void poll_wifi_scan()
     if (done == -1) {
         return;  // still scanning
     }
-    // -2 = not started / idle
+    // -2 = not started / idle. Do not scan while a join attempt is in progress.
+    if (g_sta_joining) {
+        return;
+    }
     if (!g_scan_started && (g_last_scan_ms == 0 || millis() - g_last_scan_ms > 15000u)) {
         if (WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING) {
             g_scan_started = true;
@@ -604,13 +628,36 @@ static void handle_web_actions()
     }
 }
 
+static bool scan_has_stored_ssid()
+{
+    if (!g_scan.ready || g_cfg.values().wifi_ssid[0] == '\0') {
+        return false;
+    }
+    for (std::size_t i = 0; i < g_scan.count; ++i) {
+        if (std::strcmp(g_scan.entries[i].ssid, g_cfg.values().wifi_ssid) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void service_provisioning()
 {
     p1web::ProvInput in{};
     in.have_ssid = g_cfg.values().wifi_ssid[0] != '\0';
     in.sta_connected = WiFi.status() == WL_CONNECTED;
+    in.ssid_seen = scan_has_stored_ssid();
+    in.ap_clients = g_ap_up ? WiFi.softAPgetStationNum() : 0;
     in.now_ms = millis();
     const p1web::ProvOutput out = g_prov.tick(in);
+
+    if (out.event == p1web::ProvEvent::RetryStart) {
+        g_log.log(p1log::Level::Info, "Setup mode: stored WiFi seen, trying to join");
+    } else if (out.event == p1web::ProvEvent::RetryFailed) {
+        g_log.log(p1log::Level::Info, "Join attempt failed");
+    } else if (out.event == p1web::ProvEvent::Rejoined) {
+        g_log.log(p1log::Level::Info, "Rejoined stored WiFi");
+    }
 
     if (out.want_ap && !g_ap_up) {
         start_ap();
@@ -620,6 +667,15 @@ static void service_provisioning()
 
     if (out.want_sta) {
         start_sta();
+        g_sta_joining = true;
+    } else {
+        if (g_sta_joining || g_wifi_started) {
+            idle_sta();
+        }
+        g_sta_joining = false;
+    }
+    if (out.phase == p1web::ProvPhase::Station) {
+        WiFi.setAutoReconnect(true);
     }
 
     if (!g_wifi_outcome_seen && (out.phase == p1web::ProvPhase::Station ||

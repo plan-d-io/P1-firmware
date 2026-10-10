@@ -136,7 +136,10 @@ ProvOutput ProvisionMachine::tick(const ProvInput& in)
 
     if (!in.have_ssid) {
         phase_ = ProvPhase::NeedAp;
+        holding_ap_ = true;
+        retrying_ = false;
         timing_ = false;
+        last_attempt_end_ms_ = 0;
         out.phase = phase_;
         out.want_ap = true;
         out.want_sta = false;
@@ -144,27 +147,74 @@ ProvOutput ProvisionMachine::tick(const ProvInput& in)
     }
 
     if (in.sta_connected) {
+        const bool from_setup = (phase_ == ProvPhase::NeedAp && holding_ap_);
         phase_ = ProvPhase::Station;
+        holding_ap_ = false;
+        retrying_ = false;
         timing_ = false;
+        last_attempt_end_ms_ = 0;
         out.phase = phase_;
         out.want_ap = false;
         out.want_sta = true;
+        if (from_setup) {
+            out.event = ProvEvent::Rejoined;
+        }
         return out;
     }
 
-    // Have credentials but not connected.
-    if (phase_ == ProvPhase::Station || phase_ == ProvPhase::NeedAp || !timing_) {
+    if (phase_ == ProvPhase::Station) {
+        holding_ap_ = false;
+        retrying_ = false;
         phase_ = ProvPhase::Connecting;
         connect_started_ms_ = in.now_ms;
         timing_ = true;
     }
 
-    if (timing_ && (in.now_ms - connect_started_ms_) >= kConnectTimeoutMs) {
+    if (holding_ap_ && phase_ == ProvPhase::NeedAp) {
+        out.phase = ProvPhase::NeedAp;
+        out.want_ap = true;
+        if (retrying_) {
+            if ((in.now_ms - retry_started_ms_) >= kRetryAttemptMs) {
+                retrying_ = false;
+                last_attempt_end_ms_ = in.now_ms;
+                out.want_sta = false;
+                out.event = ProvEvent::RetryFailed;
+            } else {
+                out.want_sta = true;
+            }
+            return out;
+        }
+        out.want_sta = false;
+        const std::uint32_t since =
+            last_attempt_end_ms_ != 0 ? last_attempt_end_ms_ : setup_since_ms_;
+        if (in.ssid_seen && in.ap_clients == 0 &&
+            (in.now_ms - since) >= kRetryIntervalMs) {
+            retrying_ = true;
+            retry_started_ms_ = in.now_ms;
+            out.want_sta = true;
+            out.event = ProvEvent::RetryStart;
+        }
+        return out;
+    }
+
+    if (!timing_ || phase_ != ProvPhase::Connecting) {
+        phase_ = ProvPhase::Connecting;
+        connect_started_ms_ = in.now_ms;
+        timing_ = true;
+        holding_ap_ = false;
+        retrying_ = false;
+    }
+
+    if ((in.now_ms - connect_started_ms_) >= kConnectTimeoutMs) {
         phase_ = ProvPhase::NeedAp;
+        holding_ap_ = true;
         timing_ = false;
+        retrying_ = false;
+        setup_since_ms_ = in.now_ms;
+        last_attempt_end_ms_ = 0;
         out.phase = phase_;
         out.want_ap = true;
-        out.want_sta = true;  // keep trying STA in background
+        out.want_sta = false;
         return out;
     }
 

@@ -13,6 +13,8 @@ namespace p1web {
 
 constexpr char kApSsid[] = "p1dongle";
 constexpr std::uint32_t kConnectTimeoutMs = 60000;
+constexpr std::uint32_t kRetryIntervalMs = 120000;
+constexpr std::uint32_t kRetryAttemptMs = 20000;
 constexpr std::size_t kMaxScanResults = 24;
 constexpr std::size_t kSsidMax = 33;
 constexpr std::size_t kPassMax = 64;
@@ -82,9 +84,18 @@ enum class ProvPhase : std::uint8_t {
     Station,      // STA connected, AP down
 };
 
+enum class ProvEvent : std::uint8_t {
+    None = 0,
+    RetryStart,
+    RetryFailed,
+    Rejoined,
+};
+
 struct ProvInput {
     bool have_ssid = false;
     bool sta_connected = false;
+    bool ssid_seen = false;
+    std::uint8_t ap_clients = 0;
     std::uint32_t now_ms = 0;
 };
 
@@ -92,6 +103,7 @@ struct ProvOutput {
     ProvPhase phase = ProvPhase::NeedAp;
     bool want_ap = false;
     bool want_sta = false;
+    ProvEvent event = ProvEvent::None;
 };
 
 class ProvisionMachine {
@@ -104,7 +116,12 @@ public:
 private:
     ProvPhase phase_ = ProvPhase::NeedAp;
     std::uint32_t connect_started_ms_ = 0;
+    std::uint32_t setup_since_ms_ = 0;
+    std::uint32_t retry_started_ms_ = 0;
+    std::uint32_t last_attempt_end_ms_ = 0;
     bool timing_ = false;
+    bool holding_ap_ = false;
+    bool retrying_ = false;
 };
 
 struct ScanEntry {
