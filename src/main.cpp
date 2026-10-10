@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <NetworkClientSecure.h>
+#include <P1Button.h>
 #include <P1Config.h>
 #include <P1DSMR.h>
 #include <P1Led.h>
@@ -24,6 +25,7 @@
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -148,6 +150,9 @@ static std::uint32_t g_mqtt_down_since = 0;
 static p1led::Player g_led_player{};
 static p1led::Condition g_led_logged = p1led::Condition::Busy;
 static bool g_led_logged_have = false;
+static p1btn::Helper g_btn{};
+static std::atomic<bool> g_have_tap{false};
+static std::atomic<std::uint32_t> g_tap_ms{0};
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
@@ -614,41 +619,32 @@ static void service_provisioning()
     handle_web_actions();
 }
 
-// Face button (GPIO 39, active low). Decide on release. Ignore until the pin
-// has been seen high once so a stuck button cannot factory-reset every boot.
-static bool g_btn_seen_up = false;
-static bool g_btn_down = false;
-static std::uint32_t g_btn_down_ms = 0;
+static void open_upload_window()
+{
+    g_tap_ms.store(millis(), std::memory_order_relaxed);
+    g_have_tap.store(true, std::memory_order_release);
+    g_log.log(p1log::Level::Info, "Upload window opened by button");
+}
 
 static void poll_button()
 {
     const bool pressed = digitalRead(kBtn) == LOW;
-    if (!g_btn_seen_up) {
-        if (!pressed) {
-            g_btn_seen_up = true;
-        }
-        return;
-    }
-    if (pressed) {
-        if (!g_btn_down) {
-            g_btn_down = true;
-            g_btn_down_ms = millis();
-        }
-        return;
-    }
-    if (!g_btn_down) {
-        return;
-    }
-    const std::uint32_t held = millis() - g_btn_down_ms;
-    g_btn_down = false;
-    if (held >= 5000u) {
-        g_cfg.factory_reset();
-        g_log.log(p1log::Level::Info, "Factory reset by user");
-        request_reboot("Rebooting for factory reset");
-    } else if (held >= 2000u) {
+    switch (g_btn.update(pressed, millis())) {
+    case p1btn::Event::None:
+        break;
+    case p1btn::Event::Tap:
+        open_upload_window();
+        break;
+    case p1btn::Event::WifiReset:
         g_cfg.reset_wifi();
         g_log.log(p1log::Level::Info, "WiFi credentials reset by user");
         request_reboot("Rebooting for WiFi reset");
+        break;
+    case p1btn::Event::FactoryReset:
+        g_cfg.factory_reset();
+        g_log.log(p1log::Level::Info, "Factory reset by user");
+        request_reboot("Rebooting for factory reset");
+        break;
     }
 }
 
@@ -914,8 +910,10 @@ static void service_status_led()
     } else if (!f.mqtt_en) {
         g_mqtt_down_timing = false;
     }
-    // Upload window input is reserved; nothing sets a press time here.
-    f.have_button_press = false;
+    f.have_button_press = g_have_tap.load(std::memory_order_acquire);
+    if (f.have_button_press) {
+        f.ms_since_button = now - g_tap_ms.load(std::memory_order_relaxed);
+    }
 
     const p1led::Appearance a = p1led::decide(f);
     if (!g_led_logged_have || a.condition != g_led_logged) {
@@ -1740,6 +1738,11 @@ static void handle_line(char* line)
         }
         return;
     }
+    if (std::strcmp(line, "tap") == 0) {
+        open_upload_window();
+        Serial.println("upload window open");
+        return;
+    }
     if (std::memcmp(line, "hold ", 5) == 0) {
         // Desk helper: drop parsed telegrams so the meter indicator can go false
         // without unplugging (DATA_REQUEST is ignored by some sources).
@@ -1825,7 +1828,7 @@ static void handle_line(char* line)
     }
     Serial.println(
         "commands: set <KEY> <value> | get | save | status | field <id> on|off | "
-        "req on|off | hold on|off | syslog");
+        "req on|off | hold on|off | tap | syslog");
 }
 
 static void poll_serial()
