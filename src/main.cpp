@@ -5,6 +5,7 @@
 #include <NetworkClientSecure.h>
 #include <P1Config.h>
 #include <P1DSMR.h>
+#include <P1Led.h>
 #include <P1Mqtt.h>
 #include <P1Ota.h>
 #include <P1Publish.h>
@@ -17,6 +18,7 @@
 #include <esp_mac.h>
 #include <esp_random.h>
 #include <esp_system.h>
+#include <esp32-hal-rgb-led.h>
 #include <fcntl.h>
 #include <fw_version.h>
 #include <lwip/netdb.h>
@@ -39,6 +41,18 @@ static constexpr int kP1Rx = 21;
 static constexpr int kP1Tx = 22;
 static constexpr int kDataRequest = 25;
 static constexpr int kBtn = 39;
+// Single SK6812 on the Atom Lite (archive/P1-LoRa-receiver/ledControl.h).
+static constexpr int kLedPin = 27;
+// ~25% brightness; blue kept at the legacy whitish-looking Atom value.
+struct LedRgb {
+    std::uint8_t r;
+    std::uint8_t g;
+    std::uint8_t b;
+};
+static constexpr LedRgb kLedBlue{0x00, 0x00, 0x40};
+static constexpr LedRgb kLedGreen{0x00, 0x40, 0x00};
+static constexpr LedRgb kLedRed{0x40, 0x00, 0x00};
+static constexpr LedRgb kLedOff{0x00, 0x00, 0x00};
 // Display / integer version: include/fw_version.h — bump both together.
 
 static void request_reboot(const char* reason);
@@ -126,6 +140,14 @@ static bool g_mqtt_started = false;
 static bool g_host_empty_logged = false;
 static bool g_ntp_started = false;
 static bool g_mqtt_was_connected = false;
+static bool g_wifi_outcome_seen = false;
+static bool g_fs_fault = false;
+static bool g_mqtt_https_paused = false;
+static bool g_mqtt_down_timing = false;
+static std::uint32_t g_mqtt_down_since = 0;
+static p1led::Player g_led_player{};
+static p1led::Condition g_led_logged = p1led::Condition::Busy;
+static bool g_led_logged_have = false;
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
@@ -444,7 +466,8 @@ static void refresh_status_view()
     g_status_view.mqtt_err = g_mqtt_err;
     g_status_view.telegrams = g_status_tele;
     g_status_view.wifi = (WiFi.status() == WL_CONNECTED);
-    g_status_view.meter = (g_ok > 0) && (millis() - g_last_telegram_ms < 15000u);
+    g_status_view.meter =
+        (g_ok > 0) && (millis() - g_last_telegram_ms < p1led::kMeterStaleMs);
     g_status_view.ha_en = g_cfg.values().ha_en;
     g_status_view.mqtt_en = g_cfg.values().mqtt_en;
     g_status_view.telegrams_ok = g_ok;
@@ -572,6 +595,10 @@ static void service_provisioning()
         start_sta();
     }
 
+    if (!g_wifi_outcome_seen && (out.phase == p1web::ProvPhase::Station ||
+                                 out.phase == p1web::ProvPhase::NeedAp)) {
+        g_wifi_outcome_seen = true;
+    }
     if (out.phase == p1web::ProvPhase::Station) {
         ensure_web_station();
         refresh_status_view();
@@ -826,8 +853,88 @@ static void publish_diagnostics()
     publish_one_diag("reboot", "Reboot", "\"off\"");
 }
 
+static void led_write(const LedRgb& c)
+{
+    rgbLedWrite(static_cast<std::uint8_t>(kLedPin), c.r, c.g, c.b);
+}
+
+static void led_show_busy_red()
+{
+    led_write(kLedRed);
+    g_log.log(p1log::Level::Debug, "LED busy red steady");
+}
+
+static void led_apply(p1led::Colour colour, bool on)
+{
+    if (!on) {
+        led_write(kLedOff);
+        return;
+    }
+    switch (colour) {
+    case p1led::Colour::Blue:
+        led_write(kLedBlue);
+        break;
+    case p1led::Colour::Green:
+        led_write(kLedGreen);
+        break;
+    case p1led::Colour::Red:
+        led_write(kLedRed);
+        break;
+    }
+}
+
+static void service_status_led()
+{
+    const std::uint32_t now = millis();
+    p1led::Facts f{};
+    f.busy = !g_wifi_outcome_seen;
+    f.ap_up = g_ap_up;
+    f.wifi_ssid_stored = g_cfg.values().wifi_ssid[0] != '\0';
+    f.sta_connected = WiFi.status() == WL_CONNECTED;
+    f.mqtt_en = g_cfg.values().mqtt_en;
+    f.mqtt_connected = g_mqtt.state() == p1mqtt::Mqtt::State::Connected;
+    f.mqtt_https_paused = g_mqtt_https_paused;
+    f.fs_fault = g_fs_fault;
+    if (g_ok == 0) {
+        f.ms_since_meter = now;
+    } else {
+        f.ms_since_meter = now - g_last_telegram_ms;
+    }
+    f.ms_mqtt_down = 0;
+    if (f.mqtt_en && !f.mqtt_https_paused) {
+        if (f.mqtt_connected) {
+            g_mqtt_down_timing = false;
+        } else {
+            if (!g_mqtt_down_timing) {
+                g_mqtt_down_timing = true;
+                g_mqtt_down_since = now;
+            }
+            f.ms_mqtt_down = now - g_mqtt_down_since;
+        }
+    } else if (!f.mqtt_en) {
+        g_mqtt_down_timing = false;
+    }
+    // Upload window input is reserved; nothing sets a press time here.
+    f.have_button_press = false;
+
+    const p1led::Appearance a = p1led::decide(f);
+    if (!g_led_logged_have || a.condition != g_led_logged) {
+        g_led_logged = a.condition;
+        g_led_logged_have = true;
+        char msg[72];
+        std::snprintf(msg, sizeof(msg), "LED %s %s %s", p1led::condition_name(a.condition),
+                      p1led::colour_name(a.colour), p1led::pattern_name(a.pattern));
+        g_log.log(p1log::Level::Debug, msg);
+    }
+    g_led_player.set(a.colour, a.pattern);
+    if (g_led_player.tick(now)) {
+        led_apply(g_led_player.colour(), g_led_player.on());
+    }
+}
+
 static void request_reboot(const char* reason)
 {
+    led_show_busy_red();
     if (reason != nullptr) {
         std::snprintf(g_cfg.values().last_reset, sizeof(g_cfg.values().last_reset), "%s", reason);
     } else {
@@ -1053,10 +1160,14 @@ static void mqtt_pause_for_https()
     g_mqtt.stop();
     g_mqtt_started = false;
     g_log.set_mqtt_ready(false);
+    g_mqtt_https_paused = true;
 }
 
 static void mqtt_resume_after_https()
 {
+    g_mqtt_https_paused = false;
+    // Connection-problem clock starts afresh after the deliberate pause.
+    g_mqtt_down_timing = false;
     try_start_mqtt();
 }
 
@@ -1153,6 +1264,8 @@ static void ota_install_now()
         return;
     }
 
+    // Steady red before the blocking download (loop cannot animate during it).
+    led_show_busy_red();
     mqtt_pause_for_https();
 
     const unsigned heap_at_dl = ESP.getFreeHeap();
@@ -1764,6 +1877,8 @@ static void on_uart_err(hardwareSerial_error_t err)
 void setup()
 {
     Serial.begin(115200);
+    // Busy red before any blocking WiFi / filesystem work.
+    led_show_busy_red();
 
     pinMode(kDataRequest, OUTPUT);
     digitalWrite(kDataRequest, HIGH);
@@ -1790,12 +1905,14 @@ void setup()
     bool formatted = false;
     if (!g_fs.begin(&formatted)) {
         Serial.println("ERROR filesystem mount failed");
+        g_fs_fault = true;
     } else {
         if (formatted) {
             g_log.log(p1log::Level::Error, "Filesystem formatted on mount failure");
         }
         if (!g_fs.self_test()) {
             g_log.log(p1log::Level::Error, "Filesystem self-test failed");
+            g_fs_fault = true;
         } else {
             g_log.log(p1log::Level::Info, "Filesystem mounted");
         }
@@ -1814,6 +1931,7 @@ void setup()
         bool reformatted = false;
         if (!g_fs.begin(&reformatted)) {
             Serial.println("ERROR filesystem remount failed after RINT_SPIFFS");
+            g_fs_fault = true;
         } else {
             g_log.set_log_mark(0);
             g_log.log(p1log::Level::Warn, "Filesystem reinitialised");
@@ -1872,6 +1990,7 @@ void loop()
     poll_button();
     service_provisioning();
     service_gateway_reach_check();
+    service_status_led();
 
     if (WiFi.status() == WL_CONNECTED) {
         if (!g_got_ip) {
