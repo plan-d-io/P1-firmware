@@ -36,6 +36,7 @@ constexpr std::size_t kLastResetMax = 64;
 constexpr std::size_t kIpMax = 16;  // "255.255.255.255" + NUL
 constexpr std::size_t kUuidMax = 20;  // "P1" + 16 hex + NUL
 constexpr std::size_t kRelChanMax = 16;
+constexpr std::size_t kOtaPartMax = 17;  // ESP partition label + NUL
 constexpr std::size_t kEmailMax = 64;
 constexpr std::size_t kEidClaimMax = 32;
 
@@ -282,7 +283,8 @@ public:
     // every other setting alone.
     void reset_wifi();
     // Every catalogue setting back to its table default, including clearing
-    // HA_MIG / HA_SLUG / HA_PFIX which are not settings.
+    // HA_MIG / HA_SLUG / HA_PFIX / OTA_NPART / OTA_NVER / OTA_FAIL which are
+    // not settings.
     void factory_reset();
 
     bool migrated() const { return migrated_; }
@@ -307,6 +309,19 @@ public:
     const char* published_mqtt_pfix() const { return ha_pub_pfix_; }
     void set_published_ha_identity(const char* slug, const char* pfix);
     void clear_published_ha_identity();
+
+    // Pending-update note for rollback detection. Not a user setting.
+    void set_ota_note(const char* part, std::uint32_t ver);
+    bool has_ota_note() const { return ota_note_have_; }
+    const char* ota_note_part() const { return ota_note_part_; }
+    std::uint32_t ota_note_ver() const { return ota_note_ver_; }
+    void clear_ota_note();
+
+    // Remembered failed pull version (0 = uploaded image, no version).
+    void set_ota_failed(std::uint32_t ver);
+    bool has_ota_failed() const { return ota_fail_have_; }
+    std::uint32_t ota_failed_ver() const { return ota_fail_ver_; }
+    void clear_ota_failed();
 
     // On failure, if bad_key is non-null and bad_key_cap > 0, writes the
     // offending setting key (NUL-terminated) when one is known. Cleared to
@@ -341,6 +356,11 @@ private:
     bool ha_pub_have_ = false;
     char ha_pub_slug_[kHaMax]{};
     char ha_pub_pfix_[kPrefixMax]{};
+    bool ota_note_have_ = false;
+    char ota_note_part_[kOtaPartMax]{};
+    std::uint32_t ota_note_ver_ = 0;
+    bool ota_fail_have_ = false;
+    std::uint32_t ota_fail_ver_ = 0;
     bool rel_chan_changed_ = false;
 };
 

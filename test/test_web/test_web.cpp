@@ -167,11 +167,76 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_available\":false"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_found\":0"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_channel\":\"\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_fail\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
     TEST_ASSERT_NULL(std::strstr(buf, "password"));
     TEST_ASSERT_NULL(std::strstr(buf, "secret"));
+}
+
+void test_api_status_json_max()
+{
+    char device_id[p1cfg::kIdMax];
+    char fw_ver[8];
+    char ip[p1cfg::kIpMax];
+    char uptime[24];
+    char heap[16];
+    char rssi[12];
+    char mqtt[16];
+    char mqtt_err[48];
+    char telegrams[48];
+    char upd_channel[p1cfg::kRelChanMax];
+    char upd_fail[64];
+    std::memset(device_id, 'A', sizeof(device_id) - 1);
+    device_id[sizeof(device_id) - 1] = '\0';
+    std::memset(fw_ver, '9', sizeof(fw_ver) - 1);
+    fw_ver[sizeof(fw_ver) - 1] = '\0';
+    std::memset(ip, '1', sizeof(ip) - 1);
+    ip[sizeof(ip) - 1] = '\0';
+    std::memset(uptime, '8', sizeof(uptime) - 1);
+    uptime[sizeof(uptime) - 1] = '\0';
+    std::memset(heap, '7', sizeof(heap) - 1);
+    heap[sizeof(heap) - 1] = '\0';
+    std::memset(rssi, '6', sizeof(rssi) - 1);
+    rssi[sizeof(rssi) - 1] = '\0';
+    std::memset(mqtt, 'C', sizeof(mqtt) - 1);
+    mqtt[sizeof(mqtt) - 1] = '\0';
+    std::memset(mqtt_err, 'E', sizeof(mqtt_err) - 1);
+    mqtt_err[sizeof(mqtt_err) - 1] = '\0';
+    std::memset(telegrams, 'T', sizeof(telegrams) - 1);
+    telegrams[sizeof(telegrams) - 1] = '\0';
+    std::memset(upd_channel, 'm', sizeof(upd_channel) - 1);
+    upd_channel[sizeof(upd_channel) - 1] = '\0';
+    std::memset(upd_fail, 'U', sizeof(upd_fail) - 1);
+    upd_fail[sizeof(upd_fail) - 1] = '\0';
+
+    p1web::StatusView v{};
+    v.device_id = device_id;
+    v.fw_ver = fw_ver;
+    v.ip = ip;
+    v.uptime = uptime;
+    v.heap = heap;
+    v.rssi = rssi;
+    v.mqtt = mqtt;
+    v.mqtt_err = mqtt_err;
+    v.telegrams = telegrams;
+    v.wifi = true;
+    v.meter = true;
+    v.ha_en = true;
+    v.mqtt_en = true;
+    v.telegrams_ok = 4294967295u;
+    v.telegrams_rejected = 4294967295u;
+    v.upd_checked = true;
+    v.upd_available = true;
+    v.upd_found = 4294967295u;
+    v.upd_channel = upd_channel;
+    v.upd_fail = upd_fail;
+
+    char buf[p1web::kApiStatusMax];
+    const std::size_t n = p1web::render_api_status(v, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(n < sizeof(buf));
 }
 
 void test_api_data_json_max()
@@ -522,6 +587,7 @@ int main()
     RUN_TEST(test_gzip_blobs);
     RUN_TEST(test_status_render);
     RUN_TEST(test_api_status_json);
+    RUN_TEST(test_api_status_json_max);
     RUN_TEST(test_api_data_json_max);
     RUN_TEST(test_api_fields_json_max);
     RUN_TEST(test_format_config_error);

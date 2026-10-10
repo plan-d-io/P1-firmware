@@ -36,6 +36,12 @@
 #include <span>
 #include <string_view>
 
+// Match the C-linkage weak hook in cores/esp32/esp32-hal-misc.c.
+extern "C" bool verifyRollbackLater()
+{
+    return true;
+}
+
 // Pins from archive/P1-dongle/P1-dongle.ino:
 //   HWSERIAL.begin(115200, SERIAL_8N1, 21, 22);
 //   TRIGGER 25, HIGH for continuous telegrams.
@@ -64,6 +70,9 @@ static void restart_mqtt();
 static bool ota_check_now();
 static void ota_install_now();
 static void ota_on_schedule();
+static bool ota_auto_should_install(unsigned found);
+static void remember_ota_dest();
+static void write_ota_note(unsigned ver);
 
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
@@ -113,6 +122,13 @@ static bool g_upd_checked = false;
 static bool g_upd_available = false;
 static unsigned g_upd_found = 0;
 static char g_upd_channel[p1cfg::kRelChanMax]{};
+static char g_upd_fail_msg[64]{};
+static char g_ota_dest_label[p1cfg::kOtaPartMax]{};
+static bool g_on_trial = false;
+static bool g_trial_confirmed = false;
+static bool g_trial_reach_seen = false;
+static std::uint32_t g_trial_reach_ms = 0;
+static constexpr std::uint32_t kTrialConfirmMs = 60000;
 
 static void clear_ota_check_result()
 {
@@ -507,6 +523,7 @@ static void refresh_status_view()
     g_status_view.upd_available = g_upd_available;
     g_status_view.upd_found = g_upd_found;
     g_status_view.upd_channel = g_upd_channel;
+    g_status_view.upd_fail = g_upd_fail_msg;
 }
 
 static void poll_wifi_scan()
@@ -601,7 +618,7 @@ static void handle_web_actions()
         const bool newer = ota_check_now();
         g_last_ota_check_ms = millis();
         g_ota_boot_check_done = true;
-        if (newer && g_cfg.values().upd_auto) {
+        if (newer && g_cfg.values().upd_auto && ota_auto_should_install(g_upd_found)) {
             ota_install_now();
         }
     }
@@ -623,6 +640,7 @@ static void handle_web_actions()
     if (act->fw_upload_complete) {
         act->fw_upload_complete = false;
         g_log.log(p1log::Level::Info, "Firmware upload complete");
+        write_ota_note(0);
         g_lan_reboot_at = millis() + 1000u;
         g_lan_reboot_armed = true;
     }
@@ -732,6 +750,7 @@ static p1web::UploadWindow fw_window()
 
 static bool fw_begin(std::size_t nbytes)
 {
+    remember_ota_dest();
     return Update.begin(nbytes);
 }
 
@@ -1298,6 +1317,126 @@ static void mqtt_resume_after_https()
     try_start_mqtt();
 }
 
+static void remember_ota_dest()
+{
+    g_ota_dest_label[0] = '\0';
+    const esp_partition_t* dest = esp_ota_get_next_update_partition(nullptr);
+    if (dest != nullptr && dest->label[0] != '\0') {
+        std::snprintf(g_ota_dest_label, sizeof(g_ota_dest_label), "%s", dest->label);
+    }
+}
+
+static void write_ota_note(unsigned ver)
+{
+    if (g_ota_dest_label[0] == '\0') {
+        remember_ota_dest();
+    }
+    g_cfg.set_ota_note(g_ota_dest_label, ver);
+}
+
+static void fill_ota_fail_msg()
+{
+    g_upd_fail_msg[0] = '\0';
+    if (!g_cfg.has_ota_failed()) {
+        return;
+    }
+    const unsigned ver = g_cfg.ota_failed_ver();
+    if (ver == 0) {
+        std::snprintf(g_upd_fail_msg, sizeof(g_upd_fail_msg),
+                      "Uploaded firmware failed to start and was undone.");
+        return;
+    }
+    char disp[16];
+    p1ota::format_version(ver, disp, sizeof(disp));
+    std::snprintf(g_upd_fail_msg, sizeof(g_upd_fail_msg),
+                  "Update to %s failed to start and was undone.", disp);
+}
+
+static bool ota_auto_should_install(unsigned found)
+{
+    const unsigned failed = g_cfg.has_ota_failed() ? g_cfg.ota_failed_ver() : 0;
+    if (p1ota::should_install(found, p1fw::kFwVerNum, failed, true)) {
+        return true;
+    }
+    if (failed != 0 && found == failed) {
+        char disp[16];
+        p1ota::format_version(found, disp, sizeof(disp));
+        char msg[80];
+        std::snprintf(msg, sizeof(msg), "Skipping automatic install of %s: it failed before",
+                      disp);
+        g_log.log(p1log::Level::Info, msg);
+    }
+    return false;
+}
+
+static bool reachable_for_trial()
+{
+    if (g_ap_up) {
+        return true;
+    }
+    return WiFi.status() == WL_CONNECTED && g_web.running();
+}
+
+static void service_trial()
+{
+    if (!g_on_trial || g_trial_confirmed) {
+        return;
+    }
+    if (!reachable_for_trial()) {
+        return;
+    }
+    if (!g_trial_reach_seen) {
+        g_trial_reach_seen = true;
+        g_trial_reach_ms = millis();
+        return;
+    }
+    if (millis() - g_trial_reach_ms < kTrialConfirmMs) {
+        return;
+    }
+    esp_ota_mark_app_valid_cancel_rollback();
+    g_trial_confirmed = true;
+    g_on_trial = false;
+    g_cfg.clear_ota_note();
+    g_cfg.clear_ota_failed();
+    g_upd_fail_msg[0] = '\0';
+    g_log.log(p1log::Level::Info, "New firmware confirmed");
+}
+
+static void apply_ota_note_at_boot(const char* running_label)
+{
+    g_on_trial = false;
+#if defined(CONFIG_APP_ROLLBACK_ENABLE)
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    if (running != nullptr && esp_ota_get_state_partition(running, &st) == ESP_OK) {
+        g_on_trial = (st == ESP_OTA_IMG_PENDING_VERIFY);
+    }
+#endif
+    if (g_on_trial) {
+        g_log.log(p1log::Level::Info, "New firmware on trial");
+    }
+
+    if (!g_cfg.has_ota_note()) {
+        fill_ota_fail_msg();
+        return;
+    }
+    const char* target = g_cfg.ota_note_part();
+    const bool same = running_label != nullptr && target != nullptr &&
+                      std::strcmp(running_label, target) == 0;
+    if (!same) {
+        const unsigned ver = g_cfg.ota_note_ver();
+        g_cfg.set_ota_failed(ver);
+        g_cfg.clear_ota_note();
+        fill_ota_fail_msg();
+        g_log.log(p1log::Level::Warn, g_upd_fail_msg);
+        return;
+    }
+    if (!g_on_trial) {
+        g_cfg.clear_ota_note();
+    }
+    fill_ota_fail_msg();
+}
+
 // Fetch version file. Returns true if a newer version is available.
 static bool ota_check_now()
 {
@@ -1437,6 +1576,7 @@ static void ota_install_now()
         return;
     }
 
+    remember_ota_dest();
     if (!Update.begin(static_cast<size_t>(content_len))) {
         std::snprintf(msg, sizeof(msg), "OTA install: Update.begin failed err=%u len=%d",
                       static_cast<unsigned>(Update.getError()), content_len);
@@ -1471,6 +1611,7 @@ static void ota_install_now()
     }
 
     https.end();
+    write_ota_note(g_upd_found);
     g_log.log(p1log::Level::Info, "OTA install complete, rebooting");
     // Do not restore MQTT — we are about to reboot.
     request_reboot("Firmware update installed");
@@ -1495,7 +1636,7 @@ static void ota_on_schedule()
     }
 
     const bool newer = ota_check_now();
-    if (newer && g_cfg.values().upd_auto) {
+    if (newer && g_cfg.values().upd_auto && ota_auto_should_install(g_upd_found)) {
         ota_install_now();
     }
 }
@@ -2118,6 +2259,7 @@ void setup()
     std::snprintf(reasons, sizeof(reasons), "Reset hw=%s fw=%s", g_hw_reset_reason,
                   g_fw_reset_reason[0] != '\0' ? g_fw_reset_reason : "(none)");
     g_log.log(p1log::Level::Info, reasons);
+    apply_ota_note_at_boot(part);
 
     g_upload_io.window = &fw_window;
     g_upload_io.claim_busy = &claim_fw_busy;
@@ -2149,6 +2291,7 @@ void loop()
         return;
     }
     service_provisioning();
+    service_trial();
     service_gateway_reach_check();
     service_status_led();
 
@@ -2264,6 +2407,19 @@ void loop()
             }
         }
     }
+
+#ifdef P1_TEST_CRASH_AT_MS
+    if (millis() >= static_cast<std::uint32_t>(P1_TEST_CRASH_AT_MS)) {
+        abort();
+    }
+#endif
+#ifdef P1_TEST_HANG_AT_MS
+    if (millis() >= static_cast<std::uint32_t>(P1_TEST_HANG_AT_MS)) {
+        for (;;) {
+            delay(1000);
+        }
+    }
+#endif
 
     yield();
 }

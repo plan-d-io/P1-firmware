@@ -173,4 +173,15 @@ bool parse_display_version(std::string_view s, unsigned& out)
     return true;
 }
 
+bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic)
+{
+    if (found <= running) {
+        return false;
+    }
+    if (automatic && failed != 0 && found == failed) {
+        return false;
+    }
+    return true;
+}
+
 }  // namespace p1ota

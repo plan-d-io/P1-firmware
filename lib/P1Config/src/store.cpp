@@ -555,6 +555,15 @@ void Store::load()
         backend_.get_str("HA_SLUG", ha_pub_slug_, sizeof(ha_pub_slug_), "");
         backend_.get_str("HA_PFIX", ha_pub_pfix_, sizeof(ha_pub_pfix_), "");
     }
+    ota_note_have_ = backend_.has("OTA_NPART");
+    ota_note_part_[0] = '\0';
+    ota_note_ver_ = 0;
+    if (ota_note_have_) {
+        backend_.get_str("OTA_NPART", ota_note_part_, sizeof(ota_note_part_), "");
+        ota_note_ver_ = backend_.get_u32("OTA_NVER", 0);
+    }
+    ota_fail_have_ = backend_.has("OTA_FAIL");
+    ota_fail_ver_ = ota_fail_have_ ? backend_.get_u32("OTA_FAIL", 0) : 0;
     const std::uint32_t ver = ver_present ? v_.cfg_ver : 0;
     backend_.end();
 
@@ -605,6 +614,8 @@ void Store::factory_reset()
     save();
     ha_mig_ = false;
     clear_published_ha_identity();
+    clear_ota_note();
+    clear_ota_failed();
     backend_.begin(false);
     backend_.remove("HA_MIG");
     backend_.end();
@@ -726,6 +737,54 @@ void Store::clear_published_ha_identity()
     backend_.begin(false);
     backend_.remove("HA_SLUG");
     backend_.remove("HA_PFIX");
+    backend_.end();
+}
+
+void Store::set_ota_note(const char* part, std::uint32_t ver)
+{
+    ota_note_part_[0] = '\0';
+    if (part != nullptr) {
+        std::size_t n = 0;
+        while (part[n] != '\0' && n + 1 < sizeof(ota_note_part_)) {
+            ota_note_part_[n] = part[n];
+            ++n;
+        }
+        ota_note_part_[n] = '\0';
+    }
+    ota_note_ver_ = ver;
+    ota_note_have_ = true;
+    backend_.begin(false);
+    backend_.put_str("OTA_NPART", ota_note_part_);
+    backend_.put_u32("OTA_NVER", ota_note_ver_);
+    backend_.end();
+}
+
+void Store::clear_ota_note()
+{
+    ota_note_have_ = false;
+    ota_note_part_[0] = '\0';
+    ota_note_ver_ = 0;
+    backend_.begin(false);
+    backend_.remove("OTA_NPART");
+    backend_.remove("OTA_NVER");
+    backend_.end();
+}
+
+void Store::set_ota_failed(std::uint32_t ver)
+{
+    ota_fail_have_ = true;
+    ota_fail_ver_ = ver;
+    backend_.begin(false);
+    backend_.put_u32("OTA_FAIL", ota_fail_ver_);
+    backend_.end();
+}
+
+void Store::clear_ota_failed()
+{
+    ota_fail_have_ = false;
+    ota_fail_ver_ = 0;
+    backend_.begin(false);
+    backend_.remove("OTA_FAIL");
     backend_.end();
 }
 

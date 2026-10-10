@@ -790,11 +790,17 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     s.save();
     s.set_ha_migrated();
     s.set_published_ha_identity("example_meter", "data/devices/example_meter/");
+    s.set_ota_note("app1", 301);
+    s.set_ota_failed(301);
     TEST_ASSERT_TRUE(s.ha_migrated());
     TEST_ASSERT_TRUE(s.has_published_ha_identity());
+    TEST_ASSERT_TRUE(s.has_ota_note());
+    TEST_ASSERT_TRUE(s.has_ota_failed());
     TEST_ASSERT_TRUE(mem.has("HA_MIG"));
     TEST_ASSERT_TRUE(mem.has("HA_SLUG"));
     TEST_ASSERT_TRUE(mem.has("HA_PFIX"));
+    TEST_ASSERT_TRUE(mem.has("OTA_NPART"));
+    TEST_ASSERT_TRUE(mem.has("OTA_FAIL"));
 
     s.factory_reset();
 
@@ -823,6 +829,11 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     TEST_ASSERT_FALSE(mem.has("HA_MIG"));
     TEST_ASSERT_FALSE(mem.has("HA_SLUG"));
     TEST_ASSERT_FALSE(mem.has("HA_PFIX"));
+    TEST_ASSERT_FALSE(s.has_ota_note());
+    TEST_ASSERT_FALSE(s.has_ota_failed());
+    TEST_ASSERT_FALSE(mem.has("OTA_NPART"));
+    TEST_ASSERT_FALSE(mem.has("OTA_NVER"));
+    TEST_ASSERT_FALSE(mem.has("OTA_FAIL"));
 }
 
 void test_selectable_field_count()

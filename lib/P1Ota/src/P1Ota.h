@@ -30,4 +30,8 @@ std::size_t format_version(unsigned num, char* out, std::size_t cap);
 // Used by the host test that locks kFwVer to kFwVerNum.
 bool parse_display_version(std::string_view s, unsigned& out);
 
+// Automatic install skips exactly `failed` (0 = none). Manual install does not.
+// Also requires found > running.
+bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic);
+
 }  // namespace p1ota

@@ -75,6 +75,17 @@ void test_channel_urls()
     TEST_ASSERT_EQUAL_STRING("V2-0", p1ota::channel_path("V2"));
 }
 
+void test_should_install()
+{
+    TEST_ASSERT_TRUE(p1ota::should_install(301, 300, 0, true));
+    TEST_ASSERT_FALSE(p1ota::should_install(301, 300, 301, true));
+    TEST_ASSERT_TRUE(p1ota::should_install(301, 300, 301, false));
+    TEST_ASSERT_TRUE(p1ota::should_install(302, 300, 301, true));
+    TEST_ASSERT_FALSE(p1ota::should_install(300, 300, 0, true));
+    TEST_ASSERT_FALSE(p1ota::should_install(223, 300, 0, true));
+    TEST_ASSERT_FALSE(p1ota::should_install(301, 301, 0, false));
+}
+
 void test_format_version()
 {
     char buf[16];
@@ -96,5 +107,6 @@ int main(int argc, char** argv)
     RUN_TEST(test_parse_version_file);
     RUN_TEST(test_channel_urls);
     RUN_TEST(test_format_version);
+    RUN_TEST(test_should_install);
     return UNITY_END();
 }

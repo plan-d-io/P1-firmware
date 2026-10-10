@@ -27,7 +27,7 @@ constexpr std::size_t kUploadChunk = 4096;
 constexpr char kCacheControl[] = "public, max-age=300";
 constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
-constexpr std::size_t kApiStatusMax = 768;
+constexpr std::size_t kApiStatusMax = 896;
 constexpr std::size_t kApiDataMax = 6144;
 // Worst case: every catalogue slot selectable, id at kMaxFieldId, label at
 // kFieldLabelMax, region "common", on false.
@@ -155,6 +155,7 @@ struct StatusView {
     bool upd_available = false;
     unsigned upd_found = 0;
     const char* upd_channel = "";
+    const char* upd_fail = "";
 };
 
 struct FieldReading {

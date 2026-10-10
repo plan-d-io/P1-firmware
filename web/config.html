@@ -581,7 +581,14 @@
         text += " — up to date on " + chan;
       }
     }
-    line.textContent = text;
+    while (line.firstChild) {
+      line.removeChild(line.firstChild);
+    }
+    line.appendChild(document.createTextNode(text));
+    if (s.upd_fail) {
+      line.appendChild(document.createElement("br"));
+      line.appendChild(document.createTextNode(s.upd_fail));
+    }
     var autoOn = !!(document.getElementById("UPD_AUTO") && document.getElementById("UPD_AUTO").checked);
     if (inst) {
       inst.style.display = (s.upd_available && !autoOn) ? "" : "none";
