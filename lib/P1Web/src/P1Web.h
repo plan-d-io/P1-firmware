@@ -26,8 +26,9 @@ constexpr std::size_t kUploadChunk = 4096;
 constexpr char kCacheControl[] = "public, max-age=300";
 constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
-// Previous 896 plus `"net_pending":false` (20). Headroom for escaping.
-constexpr std::size_t kApiStatusMax = 1024;
+// Previous 1024 plus `"wifi_fail":"<kWifiFailMax escaped>"`. Headroom for escaping.
+constexpr std::size_t kWifiFailMax = 128;
+constexpr std::size_t kApiStatusMax = 1280;
 // 24 entries, 32-char SSIDs fully escaped (64), rssi int32 min:
 // {"ssid":"<64>","rssi":-2147483648} = 93; 24*93 + 23 commas +
 // {"scanning":false,"networks":[]} (33) = 2288. 2560 is headroom.
@@ -92,6 +93,7 @@ enum class ProvEvent : std::uint8_t {
     RetryStart,
     RetryFailed,
     Rejoined,
+    ConnectFailed,  // 60 s boot / drop attempt ended without a connection
 };
 
 struct ProvInput {
@@ -161,6 +163,7 @@ struct StatusView {
     const char* upd_channel = "";
     const char* upd_fail = "";
     bool net_pending = false;
+    const char* wifi_fail = "";
 };
 
 struct FieldReading {
@@ -228,6 +231,18 @@ void sort_scan_strongest_first(ScanCache& cache);
 
 std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap);
 std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap);
+
+// wifi_err_reason_t values from esp_wifi_types_generic.h (ESP-IDF 5.5 /
+// pioarduino 55.03.37). Kept numeric so native tests do not need the SDK.
+enum class WifiJoinFail : std::uint8_t { Password, NotFound, Other };
+
+WifiJoinFail classify_wifi_reason(int reason);
+std::size_t format_wifi_join_log(const char* ssid, int reason, char* out, std::size_t cap);
+std::size_t format_wifi_join_page(const char* ssid, int reason, char* out, std::size_t cap);
+
+// Configuration-page save contract: an empty selection (placeholder) is never
+// sent; only a user-chosen SSID that differs from the loaded value is.
+bool wifi_ssid_in_save(std::string_view loaded, std::string_view selected);
 std::size_t render_api_data(const ReadingsView& r, char* out, std::size_t cap);
 std::size_t render_api_fields(const p1cfg::Store& store, char* out, std::size_t cap);
 std::size_t render_api_networks(const ScanCache& cache, char* out, std::size_t cap);

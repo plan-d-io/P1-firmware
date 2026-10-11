@@ -188,6 +188,7 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_channel\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"upd_fail\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"net_pending\":false"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi_fail\":\"\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
@@ -208,6 +209,7 @@ void test_api_status_json_max()
     char telegrams[48];
     char upd_channel[p1cfg::kRelChanMax];
     char upd_fail[64];
+    char wifi_fail[p1web::kWifiFailMax];
     std::memset(device_id, 'A', sizeof(device_id) - 1);
     device_id[sizeof(device_id) - 1] = '\0';
     std::memset(fw_ver, '9', sizeof(fw_ver) - 1);
@@ -230,6 +232,8 @@ void test_api_status_json_max()
     upd_channel[sizeof(upd_channel) - 1] = '\0';
     std::memset(upd_fail, 'U', sizeof(upd_fail) - 1);
     upd_fail[sizeof(upd_fail) - 1] = '\0';
+    std::memset(wifi_fail, 'W', sizeof(wifi_fail) - 1);
+    wifi_fail[sizeof(wifi_fail) - 1] = '\0';
 
     p1web::StatusView v{};
     v.device_id = device_id;
@@ -253,6 +257,7 @@ void test_api_status_json_max()
     v.upd_channel = upd_channel;
     v.upd_fail = upd_fail;
     v.net_pending = true;
+    v.wifi_fail = wifi_fail;
 
     char buf[p1web::kApiStatusMax];
     const std::size_t n = p1web::render_api_status(v, buf, sizeof(buf));
@@ -353,6 +358,7 @@ void test_provision_never_connects_stays_in_setup()
     TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
     TEST_ASSERT_TRUE(out.want_ap);
     TEST_ASSERT_FALSE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::ConnectFailed, out.event);
 
     out = m.tick(prov_in(true, false, false, 0, 60001));
     TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
@@ -485,6 +491,7 @@ void test_provision_drop_retries_then_setup()
     TEST_ASSERT_EQUAL(p1web::ProvPhase::NeedAp, out.phase);
     TEST_ASSERT_TRUE(out.want_ap);
     TEST_ASSERT_FALSE(out.want_sta);
+    TEST_ASSERT_EQUAL(p1web::ProvEvent::ConnectFailed, out.event);
 }
 
 void test_api_networks_json_max()
@@ -602,6 +609,45 @@ void test_update_window_json_worst()
     TEST_ASSERT_EQUAL_STRING("{\"open\":false,\"left_s\":0,\"busy\":false}", buf);
 }
 
+void test_wifi_ssid_in_save()
+{
+    // Loaded SSID empty, user leaves the placeholder: MQTT_HOST-only save
+    // must not include WIFI_SSID (or a blank WIFI_PASS for a network change).
+    TEST_ASSERT_FALSE(p1web::wifi_ssid_in_save("", ""));
+    TEST_ASSERT_FALSE(p1web::wifi_ssid_in_save("TestNet", "TestNet"));
+    TEST_ASSERT_TRUE(p1web::wifi_ssid_in_save("", "TestNet"));
+    TEST_ASSERT_TRUE(p1web::wifi_ssid_in_save("TestNet", "OtherNet"));
+}
+
+void test_wifi_join_reason_text()
+{
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Password, p1web::classify_wifi_reason(202));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Password, p1web::classify_wifi_reason(15));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Password, p1web::classify_wifi_reason(204));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Password, p1web::classify_wifi_reason(23));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Password, p1web::classify_wifi_reason(2));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::NotFound, p1web::classify_wifi_reason(201));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::NotFound, p1web::classify_wifi_reason(210));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::NotFound, p1web::classify_wifi_reason(211));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Other, p1web::classify_wifi_reason(205));
+    TEST_ASSERT_EQUAL(p1web::WifiJoinFail::Other, p1web::classify_wifi_reason(1));
+
+    char buf[160];
+    TEST_ASSERT_TRUE(p1web::format_wifi_join_log("TestNet", 202, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("WiFi join failed for TestNet: password not accepted", buf);
+    TEST_ASSERT_TRUE(p1web::format_wifi_join_log("TestNet", 201, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("WiFi join failed for TestNet: network not found", buf);
+    TEST_ASSERT_TRUE(p1web::format_wifi_join_log("TestNet", 205, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("WiFi join failed for TestNet: no response from the network [205]", buf);
+
+    TEST_ASSERT_TRUE(p1web::format_wifi_join_page("TestNet", 202, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("Could not join \"TestNet\": the password was not accepted.", buf);
+    TEST_ASSERT_TRUE(p1web::format_wifi_join_page("TestNet", 201, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("Could not join \"TestNet\": the network was not found.", buf);
+    TEST_ASSERT_TRUE(p1web::format_wifi_join_page("TestNet", 205, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("Could not join \"TestNet\": no response from the network.", buf);
+}
+
 void test_scan_sort()
 {
     p1web::ScanCache c{};
@@ -646,5 +692,7 @@ int main()
     RUN_TEST(test_upload_gates);
     RUN_TEST(test_update_window_json_worst);
     RUN_TEST(test_scan_sort);
+    RUN_TEST(test_wifi_ssid_in_save);
+    RUN_TEST(test_wifi_join_reason_text);
     return UNITY_END();
 }

@@ -152,6 +152,8 @@ static volatile unsigned g_ovf = 0;
 static volatile unsigned g_full = 0;
 static volatile unsigned g_frm = 0;
 static volatile bool g_got_ip = false;
+static std::atomic<int> g_disc_reason{0};
+static char g_wifi_fail[p1web::kWifiFailMax]{};
 
 static bool g_wifi_started = false;
 static bool g_mdns_started = false;
@@ -535,6 +537,7 @@ static void refresh_status_view()
     g_status_view.upd_channel = g_upd_channel;
     g_status_view.upd_fail = g_upd_fail_msg;
     g_status_view.net_pending = g_cfg.network_pending();
+    g_status_view.wifi_fail = g_wifi_fail;
 }
 
 static void poll_wifi_scan()
@@ -682,10 +685,20 @@ static void service_provisioning()
 
     if (out.event == p1web::ProvEvent::RetryStart) {
         g_log.log(p1log::Level::Info, "Setup mode: stored WiFi seen, trying to join");
-    } else if (out.event == p1web::ProvEvent::RetryFailed) {
-        g_log.log(p1log::Level::Info, "Join attempt failed");
+    } else if (out.event == p1web::ProvEvent::RetryFailed ||
+               out.event == p1web::ProvEvent::ConnectFailed) {
+        const int reason = g_disc_reason.load(std::memory_order_relaxed);
+        char line[160];
+        if (p1web::format_wifi_join_log(net_in_use().wifi_ssid, reason, line, sizeof(line)) > 0) {
+            g_log.log(p1log::Level::Warn, line);
+        }
+        p1web::format_wifi_join_page(net_in_use().wifi_ssid, reason, g_wifi_fail,
+                                     sizeof(g_wifi_fail));
     } else if (out.event == p1web::ProvEvent::Rejoined) {
         g_log.log(p1log::Level::Info, "Rejoined stored WiFi");
+    }
+    if (out.phase == p1web::ProvPhase::Station) {
+        g_wifi_fail[0] = '\0';
     }
 
     if (out.want_ap && !g_ap_up) {
@@ -2148,12 +2161,14 @@ static void poll_serial()
     }
 }
 
-static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t /*info*/)
+static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info)
 {
     if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
         g_got_ip = true;
     } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
         g_got_ip = false;
+        g_disc_reason.store(static_cast<int>(info.wifi_sta_disconnected.reason),
+                            std::memory_order_relaxed);
     }
 }
 

@@ -196,6 +196,7 @@ ProvOutput ProvisionMachine::tick(const ProvInput& in)
         out.phase = phase_;
         out.want_ap = true;
         out.want_sta = false;
+        out.event = ProvEvent::ConnectFailed;
         return out;
     }
 
@@ -392,7 +393,8 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put_u("upd_found", v.upd_found) || !put(",") ||
         !put_str("upd_channel", v.upd_channel) || !put(",") ||
         !put_str("upd_fail", v.upd_fail) || !put(",") ||
-        !put_bool("net_pending", v.net_pending) || !put("}")) {
+        !put_bool("net_pending", v.net_pending) || !put(",") ||
+        !put_str("wifi_fail", v.wifi_fail) || !put("}")) {
         return 0;
     }
     out[n] = '\0';
@@ -591,6 +593,89 @@ std::size_t render_api_networks(const ScanCache& cache, char* out, std::size_t c
     }
     out[n] = '\0';
     return n;
+}
+
+WifiJoinFail classify_wifi_reason(int reason)
+{
+    // wifi_err_reason_t in esp_wifi_types_generic.h. NO_AP_FOUND* first so
+    // NO_AP_FOUND_IN_AUTHMODE_THRESHOLD (211) is "not found", not password.
+    switch (reason) {
+    case 201:  // WIFI_REASON_NO_AP_FOUND
+    case 210:  // WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY
+    case 211:  // WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD
+    case 212:  // WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD
+        return WifiJoinFail::NotFound;
+    case 2:    // WIFI_REASON_AUTH_EXPIRE
+    case 3:    // WIFI_REASON_AUTH_LEAVE
+    case 6:    // WIFI_REASON_NOT_AUTHED / CLASS2_FRAME_FROM_NONAUTH_STA
+    case 9:    // WIFI_REASON_ASSOC_NOT_AUTHED
+    case 15:   // WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT
+    case 23:   // WIFI_REASON_802_1X_AUTH_FAILED
+    case 202:  // WIFI_REASON_AUTH_FAIL
+    case 204:  // WIFI_REASON_HANDSHAKE_TIMEOUT
+        return WifiJoinFail::Password;
+    default:
+        return WifiJoinFail::Other;
+    }
+}
+
+std::size_t format_wifi_join_log(const char* ssid, int reason, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    const char* name = (ssid != nullptr && ssid[0] != '\0') ? ssid : "(none)";
+    int n = 0;
+    switch (classify_wifi_reason(reason)) {
+    case WifiJoinFail::Password:
+        n = std::snprintf(out, cap, "WiFi join failed for %s: password not accepted", name);
+        break;
+    case WifiJoinFail::NotFound:
+        n = std::snprintf(out, cap, "WiFi join failed for %s: network not found", name);
+        break;
+    case WifiJoinFail::Other:
+        n = std::snprintf(out, cap, "WiFi join failed for %s: no response from the network [%d]",
+                          name, reason);
+        break;
+    }
+    if (n <= 0 || static_cast<std::size_t>(n) >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return static_cast<std::size_t>(n);
+}
+
+std::size_t format_wifi_join_page(const char* ssid, int reason, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    const char* name = (ssid != nullptr && ssid[0] != '\0') ? ssid : "(none)";
+    int n = 0;
+    switch (classify_wifi_reason(reason)) {
+    case WifiJoinFail::Password:
+        n = std::snprintf(out, cap, "Could not join \"%s\": the password was not accepted.", name);
+        break;
+    case WifiJoinFail::NotFound:
+        n = std::snprintf(out, cap, "Could not join \"%s\": the network was not found.", name);
+        break;
+    case WifiJoinFail::Other:
+        n = std::snprintf(out, cap, "Could not join \"%s\": no response from the network.", name);
+        break;
+    }
+    if (n <= 0 || static_cast<std::size_t>(n) >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return static_cast<std::size_t>(n);
+}
+
+bool wifi_ssid_in_save(std::string_view loaded, std::string_view selected)
+{
+    if (selected.empty()) {
+        return false;
+    }
+    return selected != loaded;
 }
 
 }  // namespace p1web

@@ -11,6 +11,7 @@
   <noscript>Enable JavaScript to configure this dongle. A read-only status page is at <a href="/status">/status</a>.</noscript>
   <h2>Digital meter dongle</h2>
   <h2 id="hostnameHeader"></h2>
+  <p class="msg" id="wifiFailBanner" style="display:none;color:#e0a86a"></p>
   <p class="msg" id="infoMessage"></p>
   <p class="msg" id="netPendingBanner" style="display:none;color:#5aaf6f"></p>
   <p class="field-hint" id="netPendingHint" style="display:none">After the reboot, the dongle joins your network. You can find it at http://p1dongle.local, or as 'p1dongle' in your router's list of devices.</p>
@@ -172,9 +173,14 @@
     wrap.appendChild(el("label", {for: key, text: label}));
     var input;
     if (kind === "wifi") {
-      wrap.appendChild(el("label", {for: key, text: label}));
       input = el("select", {id: key, name: key});
       wrap.appendChild(input);
+      var otherLab = el("label", {
+        for: "WIFI_SSID_OTHER",
+        id: "WIFI_SSID_OTHER_LAB",
+        text: "Network name",
+        style: "display:none"
+      });
       var other = el("input", {
         type: "text",
         id: "WIFI_SSID_OTHER",
@@ -183,11 +189,16 @@
         style: "display:none",
         autocomplete: "off"
       });
+      wrap.appendChild(otherLab);
       wrap.appendChild(other);
       wrap.appendChild(el("div", {class: "field-error", id: key + "_err"}));
+      function showOther(on) {
+        other.style.display = on ? "" : "none";
+        otherLab.style.display = on ? "" : "none";
+      }
       input.addEventListener("change", function () {
         wifiUserChoice = input.value;
-        other.style.display = input.value === "__other__" ? "" : "none";
+        showOther(input.value === "__other__");
         updateWifiPassHint();
       });
       other.addEventListener("input", updateWifiPassHint);
@@ -266,11 +277,11 @@
         inst.style.display = "none";
         actions.appendChild(inst);
         host.appendChild(actions);
+        host.appendChild(el("p", {class: "field-hint", id: "updSetupHint", text: "Available once the dongle is on your network.", style: "display:none"}));
         host.appendChild(el("p", {class: "field-hint"}, [
           el("a", {href: "/update", text: "Upload firmware file"})
         ]));
         host.appendChild(el("p", {class: "field-hint", id: "updDirtyHint", text: "Save your changes before checking.", style: "display:none"}));
-        host.appendChild(el("p", {class: "field-hint", id: "updSetupHint", text: "Available once the dongle is on your network.", style: "display:none"}));
       }
     });
   }
@@ -348,9 +359,12 @@
   function fillNetworks(list) {
     var sel = document.getElementById("WIFI_SSID");
     if (!sel) return;
-    var keep = wifiUserChoice !== null ? wifiUserChoice : (storedSsid || sel.value);
+    var keep = wifiUserChoice !== null ? wifiUserChoice : storedSsid;
     sel.innerHTML = "";
     var seen = {};
+    if (!storedSsid) {
+      sel.appendChild(el("option", {value: "", text: "— Choose a network —"}));
+    }
     (list || []).forEach(function (n) {
       if (!n || !n.ssid || seen[n.ssid]) return;
       seen[n.ssid] = true;
@@ -367,9 +381,14 @@
       sel.value = keep;
     } else if (storedSsid) {
       sel.value = storedSsid;
+    } else {
+      sel.value = "";
     }
     var other = document.getElementById("WIFI_SSID_OTHER");
-    if (other) other.style.display = sel.value === "__other__" ? "" : "none";
+    var otherLab = document.getElementById("WIFI_SSID_OTHER_LAB");
+    var show = sel.value === "__other__";
+    if (other) other.style.display = show ? "" : "none";
+    if (otherLab) otherLab.style.display = show ? "" : "none";
     updateWifiPassHint();
   }
 
@@ -380,17 +399,39 @@
     }).catch(function () {});
   }
 
-  function applyNetPending(s) {
+  var pendingAfterSave = false;
+
+  function applyWifiFail(s) {
+    var box = document.getElementById("wifiFailBanner");
+    if (!box) return;
+    if (!s.wifi && s.wifi_fail) {
+      box.style.display = "";
+      box.textContent = s.wifi_fail;
+    } else {
+      box.style.display = "none";
+      box.textContent = "";
+    }
+  }
+
+  function applyNetPending(s, afterSave) {
     var banner = document.getElementById("netPendingBanner");
     var hint = document.getElementById("netPendingHint");
+    var info = document.getElementById("infoMessage");
     if (!banner) return;
     if (s.net_pending) {
       banner.style.display = "";
-      banner.textContent = "Saved. Reboot the dongle to apply the new network settings.";
+      banner.textContent = afterSave
+        ? "Saved. Reboot the dongle to apply the new network settings."
+        : "Reboot the dongle to apply the new network settings.";
       if (hint) hint.style.display = s.wifi ? "none" : "";
+      if (afterSave && info) info.textContent = "";
     } else {
       banner.style.display = "none";
       if (hint) hint.style.display = "none";
+      if (afterSave && info) {
+        info.style.color = "#5aaf6f";
+        info.textContent = "Saved.";
+      }
     }
   }
 
@@ -459,11 +500,12 @@
         if (!input) return;
         if (kind === "wifi") {
           var ssid = currentWifiSsid();
-          if (ssid !== initial[key]) { body[key] = ssid; any = true; }
+          if (ssid !== "" && ssid !== initial[key]) { body[key] = ssid; any = true; }
           return;
         }
         if (kind === "password") {
-          if (key === "WIFI_PASS" && currentWifiSsid() !== (initial.WIFI_SSID || "")) {
+          var chosen = currentWifiSsid();
+          if (key === "WIFI_PASS" && chosen !== "" && chosen !== (initial.WIFI_SSID || "")) {
             body[key] = input.value;
             any = true;
             return;
@@ -547,7 +589,10 @@
   function refreshStatus() {
     fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
       lastStatus = s;
-      applyNetPending(s);
+      var afterSave = pendingAfterSave;
+      pendingAfterSave = false;
+      applyNetPending(s, afterSave);
+      applyWifiFail(s);
       document.getElementById("hostnameHeader").textContent = s.device_id || "";
       setIcon("ind-wifi", s.wifi ? wifiIcon(s.rssi) : "wifi-strength-outline");
       setIcon("ind-meter", s.meter ? "counter" : "numeric-off");
@@ -638,8 +683,7 @@
       });
     }
     function finishOk() {
-      document.getElementById("infoMessage").style.color = "#5aaf6f";
-      document.getElementById("infoMessage").textContent = "Saved.";
+      pendingAfterSave = true;
       refreshStatus();
       syncUpdActionAvailability();
     }
