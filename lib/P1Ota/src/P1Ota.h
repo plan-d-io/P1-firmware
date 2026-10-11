@@ -9,8 +9,8 @@ namespace p1ota {
 // Max URL length for the version / firmware endpoints.
 constexpr std::size_t kUrlMax = 160;
 
-// Channel setting → GitHub path segment. V2 maps to "V2-0" (legacy).
-// Returns nullptr if channel is not one of main / alpha / develop / V2.
+// Channel setting → GitHub path segment.
+// Returns nullptr if channel is not main or develop.
 const char* channel_path(std::string_view channel);
 
 // Build the version-file or firmware-binary URL for a channel.

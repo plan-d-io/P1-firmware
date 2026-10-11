@@ -48,13 +48,6 @@ void test_channel_urls()
     TEST_ASSERT_EQUAL_STRING(
         "https://raw.githubusercontent.com/plan-d-io/P1-dongle/main/p1-dongle.bin", url);
 
-    TEST_ASSERT_TRUE(p1ota::version_url("alpha", url, sizeof(url)) > 0);
-    TEST_ASSERT_EQUAL_STRING(
-        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/alpha/version", url);
-    TEST_ASSERT_TRUE(p1ota::firmware_url("alpha", url, sizeof(url)) > 0);
-    TEST_ASSERT_EQUAL_STRING(
-        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/alpha/p1-dongle.bin", url);
-
     TEST_ASSERT_TRUE(p1ota::version_url("develop", url, sizeof(url)) > 0);
     TEST_ASSERT_EQUAL_STRING(
         "https://raw.githubusercontent.com/plan-d-io/P1-dongle/develop/version", url);
@@ -62,17 +55,15 @@ void test_channel_urls()
     TEST_ASSERT_EQUAL_STRING(
         "https://raw.githubusercontent.com/plan-d-io/P1-dongle/develop/p1-dongle.bin", url);
 
-    TEST_ASSERT_TRUE(p1ota::version_url("V2", url, sizeof(url)) > 0);
-    TEST_ASSERT_EQUAL_STRING(
-        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/V2-0/version", url);
-    TEST_ASSERT_TRUE(p1ota::firmware_url("V2", url, sizeof(url)) > 0);
-    TEST_ASSERT_EQUAL_STRING(
-        "https://raw.githubusercontent.com/plan-d-io/P1-dongle/V2-0/p1-dongle.bin", url);
-
+    TEST_ASSERT_EQUAL_UINT(0, p1ota::version_url("alpha", url, sizeof(url)));
+    TEST_ASSERT_EQUAL_UINT(0, p1ota::firmware_url("alpha", url, sizeof(url)));
+    TEST_ASSERT_EQUAL_UINT(0, p1ota::version_url("V2", url, sizeof(url)));
+    TEST_ASSERT_EQUAL_UINT(0, p1ota::firmware_url("V2", url, sizeof(url)));
     TEST_ASSERT_EQUAL_UINT(0, p1ota::version_url("beta", url, sizeof(url)));
     TEST_ASSERT_EQUAL_UINT(0, p1ota::firmware_url("nope", url, sizeof(url)));
+    TEST_ASSERT_NULL(p1ota::channel_path("alpha"));
+    TEST_ASSERT_NULL(p1ota::channel_path("V2"));
     TEST_ASSERT_NULL(p1ota::channel_path("beta"));
-    TEST_ASSERT_EQUAL_STRING("V2-0", p1ota::channel_path("V2"));
 }
 
 void test_should_install()

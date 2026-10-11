@@ -22,7 +22,7 @@ constexpr CfgFlags CFG_SECRET = 2;
 constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
 
-constexpr std::uint32_t kSchemaVersion = 6;
+constexpr std::uint32_t kSchemaVersion = 7;
 
 constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;

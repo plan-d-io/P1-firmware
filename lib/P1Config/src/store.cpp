@@ -157,8 +157,7 @@ bool static_ip_consistent(const char* ip_s, const char* mask_s, const char* gw_s
 
 bool rel_chan_ok(const char* s)
 {
-    return s != nullptr && (std::strcmp(s, "main") == 0 || std::strcmp(s, "alpha") == 0 ||
-                            std::strcmp(s, "develop") == 0 || std::strcmp(s, "V2") == 0);
+    return s != nullptr && (std::strcmp(s, "main") == 0 || std::strcmp(s, "develop") == 0);
 }
 
 bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8)
@@ -615,6 +614,10 @@ void Store::migrate()
         if (!backend_.has(e.key)) {
             save_one(e);
         }
+    }
+    if (std::strcmp(v_.rel_chan, "alpha") == 0 || std::strcmp(v_.rel_chan, "V2") == 0) {
+        std::snprintf(v_.rel_chan, sizeof(v_.rel_chan), "develop");
+        backend_.put_str("REL_CHAN", v_.rel_chan);
     }
     v_.cfg_ver = kSchemaVersion;
     backend_.put_u32("CFG_VER", kSchemaVersion);

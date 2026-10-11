@@ -519,7 +519,7 @@ void test_schema6_migrates_new_keys()
     Store s(mem);
     s.load();
     TEST_ASSERT_TRUE(s.migrated());
-    TEST_ASSERT_EQUAL_UINT32(6, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
     TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_UINT32(7, s.values().reboots);
     TEST_ASSERT_FALSE(s.values().fip_en);
@@ -550,12 +550,37 @@ void test_ip_and_rel_chan_validation()
     TEST_ASSERT_FALSE(s.values().fip_en);
     TEST_ASSERT_EQUAL_STRING("not.an.ip", s.values().fipaddr);
 
-    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"alpha"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"REL_CHAN":"alpha"})"));
     TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"develop"})"));
-    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"V2"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"REL_CHAN":"V2"})"));
     TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"REL_CHAN":"main"})"));
     TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"REL_CHAN":"beta"})"));
     TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+}
+
+void test_rel_chan_alpha_v2_migrate_to_develop()
+{
+    MemoryBackend mem;
+    mem.begin(false);
+    mem.put_u32("CFG_VER", 6);
+    mem.put_str("REL_CHAN", "alpha");
+    mem.end();
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_TRUE(s.migrated());
+    TEST_ASSERT_EQUAL_STRING("develop", s.values().rel_chan);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
+
+    MemoryBackend mem2;
+    mem2.begin(false);
+    mem2.put_u32("CFG_VER", 6);
+    mem2.put_str("REL_CHAN", "V2");
+    mem2.end();
+    Store s2(mem2);
+    s2.load();
+    TEST_ASSERT_TRUE(s2.migrated());
+    TEST_ASSERT_EQUAL_STRING("develop", s2.values().rel_chan);
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s2.values().cfg_ver);
 }
 
 void test_rel_chan_change_flag()
@@ -948,6 +973,7 @@ int main()
     RUN_TEST(test_fixture_region_tags_unchanged);
     RUN_TEST(test_schema6_migrates_new_keys);
     RUN_TEST(test_ip_and_rel_chan_validation);
+    RUN_TEST(test_rel_chan_alpha_v2_migrate_to_develop);
     RUN_TEST(test_rel_chan_change_flag);
     RUN_TEST(test_cfg_reboot_changed);
     RUN_TEST(test_static_ip_subnet_rules);

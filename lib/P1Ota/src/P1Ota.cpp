@@ -30,14 +30,8 @@ const char* channel_path(std::string_view channel)
     if (channel == "main") {
         return "main";
     }
-    if (channel == "alpha") {
-        return "alpha";
-    }
     if (channel == "develop") {
         return "develop";
-    }
-    if (channel == "V2") {
-        return "V2-0";
     }
     return nullptr;
 }
