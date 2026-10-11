@@ -2286,7 +2286,10 @@ void setup()
             g_log.log(p1log::Level::Error, "Filesystem self-test failed");
             g_fs_fault = true;
         } else {
-            g_log.log(p1log::Level::Info, "Filesystem mounted");
+            char fsmsg[64];
+            std::snprintf(fsmsg, sizeof(fsmsg), "Filesystem mounted %u bytes",
+                          static_cast<unsigned>(LittleFS.totalBytes()));
+            g_log.log(p1log::Level::Info, fsmsg);
         }
     }
 
