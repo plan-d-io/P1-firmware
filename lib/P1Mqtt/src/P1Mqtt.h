@@ -115,6 +115,7 @@ public:
 
     bool publish(std::string_view topic, std::string_view payload, bool retain);
     bool subscribe(std::string_view topic);
+    int outbox_size() const;
 
     unsigned connects() const { return connects_.load(std::memory_order_relaxed); }
     unsigned disconnects() const { return disconnects_.load(std::memory_order_relaxed); }

@@ -792,6 +792,15 @@ bool Mqtt::publish(std::string_view topic, std::string_view payload, bool retain
     return true;
 }
 
+int Mqtt::outbox_size() const
+{
+    auto* client = static_cast<esp_mqtt_client_handle_t>(client_);
+    if (client == nullptr) {
+        return 0;
+    }
+    return esp_mqtt_client_get_outbox_size(client);
+}
+
 bool Mqtt::subscribe(std::string_view topic)
 {
     auto* client = static_cast<esp_mqtt_client_handle_t>(client_);

@@ -65,6 +65,7 @@ static constexpr LedRgb kLedOff{0x00, 0x00, 0x00};
 // Display / integer version: include/fw_version.h — bump both together.
 
 static void request_reboot(const char* reason);
+static void perform_factory_reset();
 static void publish_config_snapshot();
 static void restart_mqtt();
 static bool ota_check_now();
@@ -613,9 +614,7 @@ static void handle_web_actions()
     }
     if (act->reset_factory) {
         act->reset_factory = false;
-        g_cfg.factory_reset();
-        g_log.log(p1log::Level::Info, "Factory reset by user");
-        request_reboot("Rebooting for factory reset");
+        perform_factory_reset();
         return;
     }
     if (act->reboot) {
@@ -814,9 +813,7 @@ static void poll_button()
         request_reboot("Rebooting for WiFi reset");
         break;
     case p1btn::Event::FactoryReset:
-        g_cfg.factory_reset();
-        g_log.log(p1log::Level::Info, "Factory reset by user");
-        request_reboot("Rebooting for factory reset");
+        perform_factory_reset();
         break;
     }
 }
@@ -1244,6 +1241,40 @@ static void ha_clear_topic(std::string_view topic, void* /*ctx*/)
     char msg[96];
     std::snprintf(msg, sizeof(msg), "HA clear %.*s", static_cast<int>(topic.size()), topic.data());
     g_log.log(p1log::Level::Info, msg);
+}
+
+static bool mqtt_outbox_drained(std::uint32_t limit_ms)
+{
+    const std::uint32_t start = millis();
+    while (g_mqtt.outbox_size() > 0) {
+        if (millis() - start >= limit_ms) {
+            return false;
+        }
+        delay(10);
+    }
+    return true;
+}
+
+static void perform_factory_reset()
+{
+    const bool have = g_cfg.has_published_ha_identity();
+    const bool mqtt_ok = g_mqtt.state() == p1mqtt::Mqtt::State::Connected;
+    if (have && mqtt_ok) {
+        char slug[p1cfg::kHaMax];
+        std::snprintf(slug, sizeof(slug), "%s", g_cfg.published_ha_slug());
+        p1pub::withdraw_ha_discovery(slug, g_device_id, &ha_clear_topic, nullptr);
+        if (mqtt_outbox_drained(3000)) {
+            g_log.log(p1log::Level::Info, "Home Assistant device withdrawn before factory reset");
+        } else {
+            g_log.log(p1log::Level::Info,
+                      "Home Assistant device not withdrawn: MQTT not connected");
+        }
+    } else if (have) {
+        g_log.log(p1log::Level::Info, "Home Assistant device not withdrawn: MQTT not connected");
+    }
+    g_cfg.factory_reset();
+    g_log.log(p1log::Level::Info, "Factory reset by user");
+    request_reboot("Rebooting for factory reset");
 }
 
 // Standing reconcile: ha_en off with a published identity still on record →
@@ -1989,6 +2020,11 @@ static void handle_line(char* line)
         request_reboot("Reboot requested from serial");
         return;
     }
+    if (std::strcmp(line, "factory") == 0) {
+        Serial.println("factory reset");
+        perform_factory_reset();
+        return;
+    }
     if (std::strcmp(line, "status") == 0) {
         cmd_status();
         return;
@@ -2138,7 +2174,7 @@ static void handle_line(char* line)
         return;
     }
     Serial.println(
-        "commands: set <KEY> <value> | get | save | reboot | status | field <id> on|off | "
+        "commands: set <KEY> <value> | get | save | reboot | factory | status | field <id> on|off | "
         "req on|off | hold on|off | tap | syslog");
 }
 
