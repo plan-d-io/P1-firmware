@@ -167,12 +167,16 @@ bool field_in_region(const Field& f, RegionTag filter);
 // Storage — one interface, two implementations, nothing further.
 // ---------------------------------------------------------------------------
 
+enum class StoredType : std::uint8_t { Absent, Bool, I32, U32, Str, Other };
+
 class StoreBackend {
 public:
     virtual ~StoreBackend() = default;
     virtual bool begin(bool read_only) = 0;
     virtual void end() = 0;
     virtual bool has(const char* key) const = 0;
+    virtual StoredType stored_type(const char* key) const = 0;
+    virtual std::size_t str_len(const char* key) const = 0;
     virtual bool get_bool(const char* key, bool def) const = 0;
     virtual std::int32_t get_i32(const char* key, std::int32_t def) const = 0;
     virtual std::uint32_t get_u32(const char* key, std::uint32_t def) const = 0;
@@ -183,6 +187,7 @@ public:
     virtual void put_u32(const char* key, std::uint32_t v) = 0;
     virtual void put_str(const char* key, const char* v) = 0;
     virtual void remove(const char* key) = 0;
+    virtual void clear() = 0;
 };
 
 #if !defined(ARDUINO)
@@ -191,6 +196,8 @@ public:
     bool begin(bool read_only) override;
     void end() override;
     bool has(const char* key) const override;
+    StoredType stored_type(const char* key) const override;
+    std::size_t str_len(const char* key) const override;
     bool get_bool(const char* key, bool def) const override;
     std::int32_t get_i32(const char* key, std::int32_t def) const override;
     std::uint32_t get_u32(const char* key, std::uint32_t def) const override;
@@ -201,8 +208,10 @@ public:
     void put_u32(const char* key, std::uint32_t v) override;
     void put_str(const char* key, const char* v) override;
     void remove(const char* key) override;
+    void clear() override;
 
     std::size_t write_count() const { return writes_; }
+    std::size_t key_count() const { return n_; }
 
 private:
     struct Slot {
@@ -214,7 +223,7 @@ private:
         char s[kOverrideBufCap]{};  // largest stored string is FLD_OVR
     };
 
-    static constexpr std::size_t kCap = 48;
+    static constexpr std::size_t kCap = 56;
     struct Pair {
         char key[16]{};
         Slot slot;
@@ -223,6 +232,7 @@ private:
     std::size_t n_ = 0;
     std::size_t writes_ = 0;
     bool open_ = false;
+    bool readonly_ = false;
 
     Slot* find(const char* key);
     const Slot* find(const char* key) const;
@@ -233,9 +243,12 @@ private:
 #if defined(ARDUINO)
 class NvsBackend final : public StoreBackend {
 public:
+    explicit NvsBackend(const char* ns = "p1cfg");
     bool begin(bool read_only) override;
     void end() override;
     bool has(const char* key) const override;
+    StoredType stored_type(const char* key) const override;
+    std::size_t str_len(const char* key) const override;
     bool get_bool(const char* key, bool def) const override;
     std::int32_t get_i32(const char* key, std::int32_t def) const override;
     std::uint32_t get_u32(const char* key, std::uint32_t def) const override;
@@ -246,8 +259,10 @@ public:
     void put_u32(const char* key, std::uint32_t v) override;
     void put_str(const char* key, const char* v) override;
     void remove(const char* key) override;
+    void clear() override;
 
 private:
+    const char* ns_;
     mutable Preferences prefs_;
     bool open_ = false;
 };
@@ -264,6 +279,10 @@ const char* json_status_name(JsonStatus s);
 // True if s is a dotted-quad (0–255 each). Empty string is not valid.
 bool ip_ok(const char* s);
 bool rel_chan_ok(const char* s);
+
+// Arduino IPAddress uint32 (first octet in the lowest byte) → dotted text.
+// 0 writes an empty string. Returns false if cap is too small for a dotted-quad.
+bool format_arduino_ipv4(std::uint32_t v, char* out, std::size_t cap);
 
 // Parse dotted-quad into host-order uint32. Returns false if not ip_ok.
 bool parse_ipv4(const char* s, std::uint32_t& host_order);
@@ -285,12 +304,17 @@ constexpr std::size_t kToJsonBufMin = 4096;
 class Store {
 public:
     static constexpr std::size_t kSettingCount = 37;
+    static constexpr std::size_t kLegacySkipMax = 16;
 
-    explicit Store(StoreBackend& backend);
+    explicit Store(StoreBackend& backend, StoreBackend* legacy = nullptr);
 
     void apply_defaults();
     void load();
     void save();
+    bool legacy_import_ran() const { return legacy_import_ran_; }
+    std::size_t legacy_imported() const { return legacy_imported_; }
+    std::size_t legacy_skip_count() const { return legacy_skip_n_; }
+    const char* legacy_skip_key(std::size_t i) const;
 
     // Clear WiFi credentials and disable fixed IP; leave static IP fields and
     // every other setting alone.
@@ -367,8 +391,11 @@ private:
     void migrate();
     void load_overrides();
     void save_overrides();
+    void import_from(StoreBackend& legacy);
+    void skip_legacy(const char* key);
 
     StoreBackend& backend_;
+    StoreBackend* legacy_;
     Settings v_{};
     CfgEntry table_[kSettingCount]{};
     std::uint8_t field_over_[kMaxFields]{};  // 0 = default, 1 = on, 2 = off
@@ -385,6 +412,10 @@ private:
     bool rel_chan_changed_ = false;
     bool reboot_needed_ = false;
     NetworkSettings boot_net_{};
+    bool legacy_import_ran_ = false;
+    std::size_t legacy_imported_ = 0;
+    std::size_t legacy_skip_n_ = 0;
+    char legacy_skip_[kLegacySkipMax][16]{};
 };
 
 }  // namespace p1cfg

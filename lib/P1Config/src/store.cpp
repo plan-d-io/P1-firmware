@@ -160,6 +160,22 @@ bool rel_chan_ok(const char* s)
     return s != nullptr && (std::strcmp(s, "main") == 0 || std::strcmp(s, "develop") == 0);
 }
 
+bool format_arduino_ipv4(std::uint32_t v, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return false;
+    }
+    if (v == 0) {
+        out[0] = '\0';
+        return true;
+    }
+    const int n = std::snprintf(out, cap, "%u.%u.%u.%u", static_cast<unsigned>(v & 0xffu),
+                                static_cast<unsigned>((v >> 8) & 0xffu),
+                                static_cast<unsigned>((v >> 16) & 0xffu),
+                                static_cast<unsigned>((v >> 24) & 0xffu));
+    return n > 0 && static_cast<std::size_t>(n) < cap;
+}
+
 bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8)
 {
     if (out == nullptr || rnd8 == nullptr || cap < 19) {
@@ -399,7 +415,7 @@ bool parse_u32(Cur& c, std::uint32_t& v)
 
 }  // namespace
 
-Store::Store(StoreBackend& backend) : backend_(backend)
+Store::Store(StoreBackend& backend, StoreBackend* legacy) : backend_(backend), legacy_(legacy)
 {
     apply_defaults();
     bind_table();
@@ -569,11 +585,28 @@ void Store::save_one(const CfgEntry& e)
 void Store::load()
 {
     migrated_ = false;
+    legacy_import_ran_ = false;
+    legacy_imported_ = 0;
+    legacy_skip_n_ = 0;
     apply_defaults();
     bind_table();
 
     backend_.begin(true);
     const bool ver_present = backend_.has("CFG_VER");
+    backend_.end();
+
+    if (!ver_present && legacy_ != nullptr) {
+        legacy_->begin(true);
+        const bool have = legacy_->stored_type("WIFI_SSID") == StoredType::Str ||
+                          legacy_->stored_type("MQTT_HOST") == StoredType::Str;
+        if (have) {
+            import_from(*legacy_);
+            legacy_import_ran_ = true;
+        }
+        legacy_->end();
+    }
+
+    backend_.begin(true);
     for (std::size_t i = 0; i < kSettingCount; ++i) {
         load_one(table_[i]);
     }
@@ -654,6 +687,25 @@ void Store::factory_reset()
     backend_.begin(false);
     backend_.remove("HA_MIG");
     backend_.end();
+    if (legacy_ != nullptr) {
+        legacy_->begin(false);
+        legacy_->clear();
+        legacy_->end();
+    }
+}
+
+const char* Store::legacy_skip_key(std::size_t i) const
+{
+    return i < legacy_skip_n_ ? legacy_skip_[i] : "";
+}
+
+void Store::skip_legacy(const char* key)
+{
+    if (key == nullptr || legacy_skip_n_ >= kLegacySkipMax) {
+        return;
+    }
+    std::snprintf(legacy_skip_[legacy_skip_n_], sizeof(legacy_skip_[0]), "%s", key);
+    ++legacy_skip_n_;
 }
 
 void Store::load_overrides()

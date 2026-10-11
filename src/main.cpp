@@ -20,6 +20,8 @@
 #include <esp_ota_ops.h>
 #include <esp_random.h>
 #include <esp_system.h>
+#include <nvs.h>
+#include <nvs_flash.h>
 #include <esp32-hal-rgb-led.h>
 #include <fcntl.h>
 #include <fw_version.h>
@@ -79,7 +81,8 @@ static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
 static p1mqtt::Mqtt g_mqtt;
 static p1cfg::NvsBackend g_nvs;
-static p1cfg::Store g_cfg{g_nvs};
+static p1cfg::NvsBackend g_legacy_nvs{"cofy-config"};
+static p1cfg::Store g_cfg{g_nvs, &g_legacy_nvs};
 static p1log::LittleFsStore g_fs;
 static bool g_syslog_publish(std::string_view topic, std::string_view payload, void* /*ctx*/)
 {
@@ -2034,6 +2037,27 @@ static void handle_line(char* line)
         cmd_status();
         return;
     }
+    if (std::strcmp(line, "nvs") == 0) {
+        nvs_stats_t st{};
+        if (nvs_get_stats(NVS_DEFAULT_PART_NAME, &st) != ESP_OK) {
+            Serial.println("nvs stats failed");
+            return;
+        }
+        Serial.printf("nvs used=%u free=%u namespaces=%u total=%u\n",
+                      static_cast<unsigned>(st.used_entries),
+                      static_cast<unsigned>(st.free_entries),
+                      static_cast<unsigned>(st.namespace_count),
+                      static_cast<unsigned>(st.total_entries));
+        return;
+    }
+    if (std::strcmp(line, "legacy") == 0) {
+        g_legacy_nvs.begin(true);
+        Serial.printf("legacy WIFI_SSID=%d MQTT_HOST=%d\n",
+                      g_legacy_nvs.has("WIFI_SSID") ? 1 : 0,
+                      g_legacy_nvs.has("MQTT_HOST") ? 1 : 0);
+        g_legacy_nvs.end();
+        return;
+    }
     if (std::memcmp(line, "set ", 4) == 0) {
         cmd_set(line + 4);
         return;
@@ -2294,6 +2318,28 @@ void setup()
     }
 
     g_cfg.load();
+    if (g_cfg.legacy_import_ran()) {
+        for (std::size_t i = 0; i < g_cfg.legacy_skip_count(); ++i) {
+            char w[48];
+            std::snprintf(w, sizeof(w), "Legacy import skipped %s", g_cfg.legacy_skip_key(i));
+            g_log.log(p1log::Level::Warn, w);
+        }
+        char msg[72];
+        std::snprintf(msg, sizeof(msg), "Settings imported from legacy firmware (%u settings)",
+                      static_cast<unsigned>(g_cfg.legacy_imported()));
+        g_log.log(p1log::Level::Info, msg);
+    }
+    {
+        nvs_stats_t st{};
+        if (nvs_get_stats(NVS_DEFAULT_PART_NAME, &st) == ESP_OK) {
+            char msg[80];
+            std::snprintf(msg, sizeof(msg), "NVS used=%u free=%u namespaces=%u",
+                          static_cast<unsigned>(st.used_entries),
+                          static_cast<unsigned>(st.free_entries),
+                          static_cast<unsigned>(st.namespace_count));
+            g_log.log(p1log::Level::Info, msg);
+        }
+    }
     g_cfg.capture_boot_network();
     g_log.set_mark_persist(&g_persist_log_mark, nullptr);
     g_log.set_log_mark(g_cfg.values().log_mark);

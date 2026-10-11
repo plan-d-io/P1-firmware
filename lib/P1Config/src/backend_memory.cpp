@@ -65,21 +65,52 @@ MemoryBackend::Slot* MemoryBackend::insert(const char* key)
     return &slots_[n_++].slot;
 }
 
-bool MemoryBackend::begin(bool /*read_only*/)
+bool MemoryBackend::begin(bool read_only)
 {
     open_ = true;
+    readonly_ = read_only;
     return true;
 }
 
 void MemoryBackend::end()
 {
     open_ = false;
+    readonly_ = false;
 }
 
 bool MemoryBackend::has(const char* key) const
 {
     const Slot* s = find(key);
     return s != nullptr && s->tag != Slot::Tag::Empty;
+}
+
+StoredType MemoryBackend::stored_type(const char* key) const
+{
+    const Slot* s = find(key);
+    if (s == nullptr || s->tag == Slot::Tag::Empty) {
+        return StoredType::Absent;
+    }
+    switch (s->tag) {
+    case Slot::Tag::Bool:
+        return StoredType::Bool;
+    case Slot::Tag::I32:
+        return StoredType::I32;
+    case Slot::Tag::U32:
+        return StoredType::U32;
+    case Slot::Tag::Str:
+        return StoredType::Str;
+    default:
+        return StoredType::Other;
+    }
+}
+
+std::size_t MemoryBackend::str_len(const char* key) const
+{
+    const Slot* s = find(key);
+    if (s == nullptr || s->tag != Slot::Tag::Str) {
+        return 0;
+    }
+    return std::strlen(s->s);
 }
 
 bool MemoryBackend::get_bool(const char* key, bool def) const
@@ -122,6 +153,9 @@ void MemoryBackend::get_str(const char* key, char* out, std::size_t cap,
 
 void MemoryBackend::put_bool(const char* key, bool v)
 {
+    if (open_ && readonly_) {
+        return;
+    }
     if (Slot* s = insert(key)) {
         s->tag = Slot::Tag::Bool;
         s->b = v;
@@ -131,6 +165,9 @@ void MemoryBackend::put_bool(const char* key, bool v)
 
 void MemoryBackend::put_i32(const char* key, std::int32_t v)
 {
+    if (open_ && readonly_) {
+        return;
+    }
     if (Slot* s = insert(key)) {
         s->tag = Slot::Tag::I32;
         s->i = v;
@@ -140,6 +177,9 @@ void MemoryBackend::put_i32(const char* key, std::int32_t v)
 
 void MemoryBackend::put_u32(const char* key, std::uint32_t v)
 {
+    if (open_ && readonly_) {
+        return;
+    }
     if (Slot* s = insert(key)) {
         s->tag = Slot::Tag::U32;
         s->u = v;
@@ -149,6 +189,9 @@ void MemoryBackend::put_u32(const char* key, std::uint32_t v)
 
 void MemoryBackend::put_str(const char* key, const char* v)
 {
+    if (open_ && readonly_) {
+        return;
+    }
     if (v == nullptr) {
         v = "";
     }
@@ -165,6 +208,9 @@ void MemoryBackend::put_str(const char* key, const char* v)
 
 void MemoryBackend::remove(const char* key)
 {
+    if (open_ && readonly_) {
+        return;
+    }
     for (std::size_t i = 0; i < n_; ++i) {
         if (key_eq(slots_[i].key, key)) {
             slots_[i] = slots_[n_ - 1];
@@ -174,6 +220,18 @@ void MemoryBackend::remove(const char* key)
             return;
         }
     }
+}
+
+void MemoryBackend::clear()
+{
+    if (open_ && readonly_) {
+        return;
+    }
+    for (std::size_t i = 0; i < n_; ++i) {
+        slots_[i] = Pair{};
+    }
+    n_ = 0;
+    ++writes_;
 }
 
 }  // namespace p1cfg

@@ -1,12 +1,16 @@
 #include "P1Config.h"
 
+#include <cstring>
+
 #if defined(ARDUINO)
 
 namespace p1cfg {
 
+NvsBackend::NvsBackend(const char* ns) : ns_(ns != nullptr ? ns : "p1cfg") {}
+
 bool NvsBackend::begin(bool read_only)
 {
-    open_ = prefs_.begin("p1cfg", read_only);
+    open_ = prefs_.begin(ns_, read_only);
     return open_;
 }
 
@@ -21,6 +25,40 @@ void NvsBackend::end()
 bool NvsBackend::has(const char* key) const
 {
     return prefs_.isKey(key);
+}
+
+StoredType NvsBackend::stored_type(const char* key) const
+{
+    if (!prefs_.isKey(key)) {
+        return StoredType::Absent;
+    }
+    switch (prefs_.getType(key)) {
+    case PT_U8:
+        return StoredType::Bool;
+    case PT_I32:
+        return StoredType::I32;
+    case PT_U32:
+        return StoredType::U32;
+    case PT_STR:
+        return StoredType::Str;
+    default:
+        return StoredType::Other;
+    }
+}
+
+std::size_t NvsBackend::str_len(const char* key) const
+{
+    if (prefs_.getType(key) != PT_STR) {
+        return 0;
+    }
+    char tmp[128];
+    const std::size_t n = prefs_.getString(key, tmp, sizeof(tmp));
+    if (n == 0) {
+        return 0;
+    }
+    // getString writes a NUL; n is the stored length including NUL on some
+    // cores and excluding it on others. Prefer strlen of what we got.
+    return std::strlen(tmp);
 }
 
 bool NvsBackend::get_bool(const char* key, bool def) const
@@ -78,6 +116,11 @@ void NvsBackend::put_str(const char* key, const char* v)
 void NvsBackend::remove(const char* key)
 {
     prefs_.remove(key);
+}
+
+void NvsBackend::clear()
+{
+    prefs_.clear();
 }
 
 }  // namespace p1cfg

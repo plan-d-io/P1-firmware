@@ -944,6 +944,248 @@ void test_apply_fields_json()
     TEST_ASSERT_TRUE(s.field_on("1-0:1.8.2"));
 }
 
+void fill_full_2x(MemoryBackend& L, bool beta, bool alpha, bool v2)
+{
+    L.begin(false);
+    L.put_str("WIFI_SSID", "TestNet");
+    L.put_str("WIFI_PASSWD", "testpass1");
+    L.put_bool("FIP_EN", true);
+    L.put_u32("FIPADDR", 0x1E0200C0);
+    L.put_u32("FSUBN", 0x00FFFFFF);
+    L.put_u32("FDEFGTW", 0x010200C0);
+    L.put_u32("FDNS1", 0x010200C0);
+    L.put_u32("FDNS2", 0);
+    L.put_bool("MQTT_EN", true);
+    L.put_bool("MQTT_TLS", false);
+    L.put_bool("MQTT_AUTH", false);
+    L.put_u32("MQTT_PORT", 1883);
+    L.put_str("MQTT_HOST", "192.0.2.20");
+    L.put_str("MQTT_ID", "P1AABBCC");
+    L.put_str("MQTT_USER", "");
+    L.put_str("MQTT_PFIX", "data/devices/example_meter/");
+    L.put_str("MQTT_PASS", "secret");
+    L.put_bool("HA_EN", true);
+    L.put_str("HA_DEVICE", "Example meter");
+    L.put_i32("FRMT_PYLD", 3);
+    L.put_u32("UPL_THROTTLE", 10);
+    L.put_bool("PUSH_FULL", false);
+    L.put_bool("UPD_AUTO", false);
+    L.put_bool("UPD_AUTOCHK", false);
+    L.put_bool("EID_EN", false);
+    L.put_str("EIDCLAIM", "claim");
+    L.put_str("EID_PROVKEY", "pkey");
+    L.put_str("EID_PROVSEC", "psec");
+    L.put_str("UUID", "P16512d5689ff6529d");
+    L.put_str("EMAIL", "desk@example.com");
+    L.put_u32("reboots", 42);
+    L.put_bool("BETA_FLT", beta);
+    L.put_bool("ALPHA_FLT", alpha);
+    L.put_bool("V2_FLT", v2);
+    L.end();
+}
+
+void test_format_arduino_ipv4()
+{
+    char buf[16];
+    TEST_ASSERT_TRUE(p1cfg::format_arduino_ipv4(0x1E0200C0, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("192.0.2.30", buf);
+    TEST_ASSERT_TRUE(p1cfg::format_arduino_ipv4(0x00FFFFFF, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", buf);
+    TEST_ASSERT_TRUE(p1cfg::format_arduino_ipv4(0, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("", buf);
+}
+
+void test_legacy_import_full_2x()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    const std::size_t writes = legacy.write_count();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_TRUE(s.legacy_imported() > 0);
+    TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("testpass1", s.values().wifi_pass);
+    TEST_ASSERT_TRUE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.30", s.values().fipaddr);
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", s.values().fsubn);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.1", s.values().fdefgtw);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.1", s.values().fdns1);
+    TEST_ASSERT_EQUAL_STRING("", s.values().fdns2);
+    TEST_ASSERT_TRUE(s.values().mqtt_en);
+    TEST_ASSERT_EQUAL_UINT32(1883, s.values().mqtt_port);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.20", s.values().mqtt_host);
+    TEST_ASSERT_EQUAL_STRING("data/devices/example_meter/", s.values().mqtt_pfix);
+    TEST_ASSERT_EQUAL_STRING("secret", s.values().mqtt_pass);
+    TEST_ASSERT_TRUE(s.values().ha_en);
+    TEST_ASSERT_EQUAL_STRING("Example meter", s.values().ha_device);
+    TEST_ASSERT_EQUAL_UINT32(42, s.values().reboots);
+    TEST_ASSERT_EQUAL_STRING("develop", s.values().rel_chan);
+    TEST_ASSERT_FALSE(s.values().upd_auto);
+    TEST_ASSERT_EQUAL_STRING("desk@example.com", s.values().email);
+    TEST_ASSERT_EQUAL(writes, legacy.write_count());
+}
+
+void test_legacy_import_channel_flags()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, false, false, false);
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+
+    MemoryBackend ours_a;
+    MemoryBackend legacy_a;
+    fill_full_2x(legacy_a, false, true, false);
+    Store sa(ours_a, &legacy_a);
+    sa.load();
+    TEST_ASSERT_EQUAL_STRING("develop", sa.values().rel_chan);
+
+    MemoryBackend ours_v;
+    MemoryBackend legacy_v;
+    fill_full_2x(legacy_v, false, false, true);
+    Store sv(ours_v, &legacy_v);
+    sv.load();
+    TEST_ASSERT_EQUAL_STRING("develop", sv.values().rel_chan);
+}
+
+void test_legacy_import_1x_keeps_defaults()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    legacy.begin(false);
+    legacy.put_str("WIFI_SSID", "TestNet");
+    legacy.put_str("WIFI_PASSWD", "testpass1");
+    legacy.put_bool("MQTT_EN", true);
+    legacy.put_str("MQTT_HOST", "192.0.2.20");
+    legacy.put_u32("MQTT_PORT", 1883);
+    legacy.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("testpass1", s.values().wifi_pass);
+    TEST_ASSERT_TRUE(s.values().mqtt_en);
+    TEST_ASSERT_EQUAL_STRING("192.0.2.20", s.values().mqtt_host);
+    TEST_ASSERT_EQUAL_STRING("data/devices/utility_meter/", s.values().mqtt_pfix);
+    TEST_ASSERT_EQUAL_STRING("Utility meter", s.values().ha_device);
+    TEST_ASSERT_FALSE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("", s.values().fipaddr);
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+}
+
+void test_legacy_import_wrong_type_skipped()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    legacy.begin(false);
+    legacy.put_i32("MQTT_PORT", 1883);
+    legacy.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_EQUAL_UINT32(1883, s.values().mqtt_port);
+    TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
+    bool saw_port = false;
+    for (std::size_t i = 0; i < s.legacy_skip_count(); ++i) {
+        if (std::strcmp(s.legacy_skip_key(i), "MQTT_PORT") == 0) {
+            saw_port = true;
+        }
+    }
+    TEST_ASSERT_TRUE(saw_port);
+}
+
+void test_legacy_import_overlong_host_skipped()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    char long_host[80];
+    std::memset(long_host, 'x', 70);
+    long_host[70] = '\0';
+    legacy.begin(false);
+    legacy.put_str("MQTT_HOST", long_host);
+    legacy.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_EQUAL_STRING("", s.values().mqtt_host);
+    TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
+    bool saw = false;
+    for (std::size_t i = 0; i < s.legacy_skip_count(); ++i) {
+        if (std::strcmp(s.legacy_skip_key(i), "MQTT_HOST") == 0) {
+            saw = true;
+        }
+    }
+    TEST_ASSERT_TRUE(saw);
+}
+
+void test_legacy_import_fip_en_without_address()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, false, false, false);
+    legacy.begin(false);
+    legacy.put_u32("FIPADDR", 0);
+    legacy.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_FALSE(s.values().fip_en);
+    TEST_ASSERT_EQUAL_STRING("", s.values().fipaddr);
+}
+
+void test_legacy_import_skipped_when_cfg_ver_present()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    ours.begin(false);
+    ours.put_u32("CFG_VER", p1cfg::kSchemaVersion);
+    ours.put_str("WIFI_SSID", "Already");
+    ours.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_FALSE(s.legacy_import_ran());
+    TEST_ASSERT_EQUAL_STRING("Already", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
+}
+
+void test_legacy_namespace_unchanged_after_import()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    const std::size_t writes = legacy.write_count();
+    const std::size_t keys = legacy.key_count();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_EQUAL(writes, legacy.write_count());
+    TEST_ASSERT_EQUAL(keys, legacy.key_count());
+    TEST_ASSERT_TRUE(legacy.has("WIFI_PASSWD"));
+    TEST_ASSERT_TRUE(legacy.has("BETA_FLT"));
+}
+
+void test_factory_reset_clears_legacy_namespace()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_TRUE(legacy.has("WIFI_SSID"));
+    s.factory_reset();
+    TEST_ASSERT_EQUAL_UINT(0, legacy.key_count());
+    TEST_ASSERT_FALSE(legacy.has("WIFI_SSID"));
+
+    Store s2(ours, &legacy);
+    s2.load();
+    TEST_ASSERT_FALSE(s2.legacy_import_ran());
+    TEST_ASSERT_EQUAL_STRING("", s2.values().wifi_ssid);
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -985,5 +1227,15 @@ int main()
     RUN_TEST(test_factory_reset_defaults_and_clears_ha_keys);
     RUN_TEST(test_selectable_field_count);
     RUN_TEST(test_apply_fields_json);
+    RUN_TEST(test_format_arduino_ipv4);
+    RUN_TEST(test_legacy_import_full_2x);
+    RUN_TEST(test_legacy_import_channel_flags);
+    RUN_TEST(test_legacy_import_1x_keeps_defaults);
+    RUN_TEST(test_legacy_import_wrong_type_skipped);
+    RUN_TEST(test_legacy_import_overlong_host_skipped);
+    RUN_TEST(test_legacy_import_fip_en_without_address);
+    RUN_TEST(test_legacy_import_skipped_when_cfg_ver_present);
+    RUN_TEST(test_legacy_namespace_unchanged_after_import);
+    RUN_TEST(test_factory_reset_clears_legacy_namespace);
     return UNITY_END();
 }
