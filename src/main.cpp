@@ -402,6 +402,7 @@ static void start_sta()
                     IPAddress((std::uint32_t)0));
     }
 
+    g_disc_reason.store(0, std::memory_order_relaxed);
     WiFi.begin(net.wifi_ssid, net.wifi_pass);
     g_wifi_started = true;
     close_gw_sock();
@@ -686,7 +687,11 @@ static void service_provisioning()
         g_log.log(p1log::Level::Info, "Setup mode: stored WiFi seen, trying to join");
     } else if (out.event == p1web::ProvEvent::RetryFailed ||
                out.event == p1web::ProvEvent::ConnectFailed) {
-        const int reason = g_disc_reason.load(std::memory_order_relaxed);
+        int reason = g_disc_reason.load(std::memory_order_relaxed);
+        if (p1web::classify_wifi_reason(reason) == p1web::WifiJoinFail::Other &&
+            WiFi.status() == WL_NO_SSID_AVAIL) {
+            reason = 201;  // WIFI_REASON_NO_AP_FOUND
+        }
         char line[160];
         if (p1web::format_wifi_join_log(net_in_use().wifi_ssid, reason, line, sizeof(line)) > 0) {
             g_log.log(p1log::Level::Warn, line);
@@ -2203,8 +2208,23 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info)
         g_got_ip = true;
     } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
         g_got_ip = false;
-        g_disc_reason.store(static_cast<int>(info.wifi_sta_disconnected.reason),
-                            std::memory_order_relaxed);
+        const int reason = static_cast<int>(info.wifi_sta_disconnected.reason);
+        // STA_LEAVING / ASSOC_LEAVE / ROAMING are our own disconnect or a roam,
+        // not the join failure. Keep an earlier AUTH / NO_AP_FOUND reason.
+        if (reason == 8 || reason == 36 || reason == 207) {
+            return;
+        }
+        const int prev = g_disc_reason.load(std::memory_order_relaxed);
+        const auto prev_kind = p1web::classify_wifi_reason(prev);
+        const auto next_kind = p1web::classify_wifi_reason(reason);
+        if (prev_kind == p1web::WifiJoinFail::Password) {
+            return;
+        }
+        if (prev_kind == p1web::WifiJoinFail::NotFound &&
+            next_kind != p1web::WifiJoinFail::Password) {
+            return;
+        }
+        g_disc_reason.store(reason, std::memory_order_relaxed);
     }
 }
 
