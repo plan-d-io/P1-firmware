@@ -21,6 +21,7 @@ constexpr CfgFlags CFG_IN_API = 1;
 constexpr CfgFlags CFG_SECRET = 2;
 constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
+constexpr CfgFlags CFG_READONLY = 16;
 
 constexpr std::uint32_t kSchemaVersion = 8;
 
@@ -34,7 +35,7 @@ constexpr std::size_t kRegionMax = 8;
 constexpr std::size_t kSsidMax = 33;  // IEEE 802.11 SSID is 32 octets + NUL
 constexpr std::size_t kLastResetMax = 64;
 constexpr std::size_t kIpMax = 16;  // "255.255.255.255" + NUL
-constexpr std::size_t kUuidMax = 20;  // "P1" + 16 hex + NUL
+constexpr std::size_t kUuidMax = 20;  // "P1" + up to 16 hex + NUL (imported 16-hex IDs)
 constexpr std::size_t kRelChanMax = 16;
 constexpr std::size_t kOtaPartMax = 17;  // ESP partition label + NUL
 constexpr std::size_t kEmailMax = 64;
@@ -291,10 +292,12 @@ bool mask_contiguous(std::uint32_t mask_host);
 // When FIP_EN is on: same subnet, contiguous mask, IP/GW not network or broadcast.
 bool static_ip_consistent(const char* ip, const char* mask, const char* gateway);
 
-// Write "P1" + 16 hex from eight random bytes. Returns false if cap too small.
-bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8);
+// Write "P1" + 8 hex from four random bytes. Returns false if cap too small.
+bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd4);
 // If uuid is empty, fill it. Returns true when a new value was written.
-bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd8);
+bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd4);
+// If claim is empty and uuid is "P1" plus hex, copy the hex. Existing IDs kept.
+bool ensure_claim_code(const char* uuid, char* claim, std::size_t cap);
 
 // Comfortable bound for Store::to_json with every API string at capacity.
 constexpr std::size_t kToJsonBufMin = 4096;

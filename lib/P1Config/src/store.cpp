@@ -176,28 +176,40 @@ bool format_arduino_ipv4(std::uint32_t v, char* out, std::size_t cap)
     return n > 0 && static_cast<std::size_t>(n) < cap;
 }
 
-bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd8)
+bool format_uuid(char* out, std::size_t cap, const std::uint8_t* rnd4)
 {
-    if (out == nullptr || rnd8 == nullptr || cap < 19) {
+    if (out == nullptr || rnd4 == nullptr || cap < 11) {
         return false;
     }
     static constexpr char kHex[] = "0123456789abcdef";
     out[0] = 'P';
     out[1] = '1';
-    for (std::size_t i = 0; i < 8; ++i) {
-        out[2 + i * 2] = kHex[(rnd8[i] >> 4) & 0xf];
-        out[3 + i * 2] = kHex[rnd8[i] & 0xf];
+    for (std::size_t i = 0; i < 4; ++i) {
+        out[2 + i * 2] = kHex[(rnd4[i] >> 4) & 0xf];
+        out[3 + i * 2] = kHex[rnd4[i] & 0xf];
     }
-    out[18] = '\0';
+    out[10] = '\0';
     return true;
 }
 
-bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd8)
+bool ensure_uuid(char* uuid, std::size_t cap, const std::uint8_t* rnd4)
 {
     if (uuid == nullptr || uuid[0] != '\0') {
         return false;
     }
-    return format_uuid(uuid, cap, rnd8);
+    return format_uuid(uuid, cap, rnd4);
+}
+
+bool ensure_claim_code(const char* uuid, char* claim, std::size_t cap)
+{
+    if (claim == nullptr || cap == 0 || claim[0] != '\0') {
+        return false;
+    }
+    if (uuid == nullptr || uuid[0] != 'P' || uuid[1] != '1' || uuid[2] == '\0') {
+        return false;
+    }
+    copy_str(claim, cap, uuid + 2);
+    return true;
 }
 
 const char* json_status_name(JsonStatus s)
@@ -516,8 +528,9 @@ void Store::bind_table()
     add_str("FDNS1", "Primary DNS", CFG_IN_API | CFG_REBOOT, v_.fdns1, sizeof(v_.fdns1), "");
     add_str("FDNS2", "Secondary DNS", CFG_IN_API | CFG_REBOOT, v_.fdns2, sizeof(v_.fdns2), "");
     add_bool("EID_EN", "EnergieID enabled", CFG_IN_API, &v_.eid_en, false);
-    add_str("EIDCLAIM", "EnergieID claim code", CFG_IN_API, v_.eidclaim, sizeof(v_.eidclaim), "");
-    add_str("UUID", "Device UUID", CFG_IN_API, v_.uuid, sizeof(v_.uuid), "");
+    add_str("EIDCLAIM", "EnergieID claim code", CFG_IN_API | CFG_READONLY, v_.eidclaim,
+            sizeof(v_.eidclaim), "");
+    add_str("UUID", "Device UUID", CFG_IN_API | CFG_READONLY, v_.uuid, sizeof(v_.uuid), "");
     add_str("REL_CHAN", "Release channel", CFG_IN_API, v_.rel_chan, sizeof(v_.rel_chan), "main");
     add_bool("UPD_AUTO", "Automatic updates", CFG_IN_API, &v_.upd_auto, true);
     add_bool("UPD_AUTOCHK", "Check for updates", CFG_IN_API, &v_.upd_autochk, true);
@@ -978,6 +991,9 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
         const CfgEntry* e = find_setting(key);
         if (e == nullptr || (e->flags & CFG_IN_API) == 0) {
             return fail(JsonStatus::UnknownKey, key);
+        }
+        if ((e->flags & CFG_READONLY) != 0) {
+            return fail(JsonStatus::Invalid, key);
         }
         switch (e->type) {
         case CfgType::Bool: {

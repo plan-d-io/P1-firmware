@@ -705,13 +705,50 @@ void test_static_ip_subnet_rules()
 
 void test_uuid_generated_once()
 {
-    const std::uint8_t rnd_a[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
-    const std::uint8_t rnd_b[8] = {0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88};
+    const std::uint8_t rnd_a[4] = {0x23, 0x11, 0x1d, 0x41};
+    const std::uint8_t rnd_b[4] = {0xff, 0xee, 0xdd, 0xcc};
     char uuid[p1cfg::kUuidMax]{};
     TEST_ASSERT_TRUE(p1cfg::ensure_uuid(uuid, sizeof(uuid), rnd_a));
-    TEST_ASSERT_EQUAL_STRING("P10123456789abcdef", uuid);
+    TEST_ASSERT_EQUAL_STRING("P123111d41", uuid);
     TEST_ASSERT_FALSE(p1cfg::ensure_uuid(uuid, sizeof(uuid), rnd_b));
-    TEST_ASSERT_EQUAL_STRING("P10123456789abcdef", uuid);
+    TEST_ASSERT_EQUAL_STRING("P123111d41", uuid);
+}
+
+void test_device_id_and_claim_code()
+{
+    const std::uint8_t rnd[4] = {0x23, 0x11, 0x1d, 0x41};
+    char uuid[p1cfg::kUuidMax]{};
+    char claim[p1cfg::kEidClaimMax]{};
+    TEST_ASSERT_TRUE(p1cfg::ensure_uuid(uuid, sizeof(uuid), rnd));
+    TEST_ASSERT_TRUE(p1cfg::ensure_claim_code(uuid, claim, sizeof(claim)));
+    TEST_ASSERT_EQUAL_STRING("P123111d41", uuid);
+    TEST_ASSERT_EQUAL_STRING("23111d41", claim);
+    TEST_ASSERT_FALSE(p1cfg::ensure_claim_code(uuid, claim, sizeof(claim)));
+
+    char kept_uuid[p1cfg::kUuidMax]{};
+    char kept_claim[p1cfg::kEidClaimMax]{};
+    std::strcpy(kept_uuid, "P123111d41");
+    std::strcpy(kept_claim, "23111d41");
+    TEST_ASSERT_FALSE(p1cfg::ensure_uuid(kept_uuid, sizeof(kept_uuid), rnd));
+    TEST_ASSERT_FALSE(p1cfg::ensure_claim_code(kept_uuid, kept_claim, sizeof(kept_claim)));
+    TEST_ASSERT_EQUAL_STRING("P123111d41", kept_uuid);
+    TEST_ASSERT_EQUAL_STRING("23111d41", kept_claim);
+
+    char long_uuid[p1cfg::kUuidMax]{};
+    char derived[p1cfg::kEidClaimMax]{};
+    std::strcpy(long_uuid, "P16512d5689ff6529d");
+    TEST_ASSERT_TRUE(p1cfg::ensure_claim_code(long_uuid, derived, sizeof(derived)));
+    TEST_ASSERT_EQUAL_STRING("6512d5689ff6529d", derived);
+
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    std::strcpy(s.values().uuid, "P123111d41");
+    std::strcpy(s.values().eidclaim, "23111d41");
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"UUID":"P1deadbeef"})"));
+    TEST_ASSERT_EQUAL_STRING("P123111d41", s.values().uuid);
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"EIDCLAIM":"other"})"));
+    TEST_ASSERT_EQUAL_STRING("23111d41", s.values().eidclaim);
 }
 
 void test_to_json_fits_max_strings()
@@ -1292,6 +1329,7 @@ int main()
     RUN_TEST(test_cfg_reboot_changed);
     RUN_TEST(test_static_ip_subnet_rules);
     RUN_TEST(test_uuid_generated_once);
+    RUN_TEST(test_device_id_and_claim_code);
     RUN_TEST(test_to_json_fits_max_strings);
     RUN_TEST(test_config_api_apply_semantics);
     RUN_TEST(test_apply_json_reports_bad_key);

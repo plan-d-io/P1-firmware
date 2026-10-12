@@ -1929,6 +1929,10 @@ static void cmd_set(char* rest)
         Serial.printf("unknown key %s\n", key);
         return;
     }
+    if ((e->flags & p1cfg::CFG_READONLY) != 0) {
+        Serial.printf("%s is read-only\n", key);
+        return;
+    }
 
     char prev_rel_chan[p1cfg::kRelChanMax]{};
     const bool tracking_rel =
@@ -2397,13 +2401,18 @@ void setup()
     }
 
     {
-        std::uint8_t rnd[8];
+        std::uint8_t rnd[4];
         esp_fill_random(rnd, sizeof(rnd));
-        if (p1cfg::ensure_uuid(g_cfg.values().uuid, sizeof(g_cfg.values().uuid), rnd)) {
+        bool id_new = p1cfg::ensure_uuid(g_cfg.values().uuid, sizeof(g_cfg.values().uuid), rnd);
+        bool claim_new = p1cfg::ensure_claim_code(g_cfg.values().uuid, g_cfg.values().eidclaim,
+                                                 sizeof(g_cfg.values().eidclaim));
+        if (id_new || claim_new) {
             g_cfg.save();
-            char msg[48];
-            std::snprintf(msg, sizeof(msg), "UUID generated %s", g_cfg.values().uuid);
-            g_log.log(p1log::Level::Info, msg);
+            if (id_new) {
+                char msg[48];
+                std::snprintf(msg, sizeof(msg), "UUID generated %s", g_cfg.values().uuid);
+                g_log.log(p1log::Level::Info, msg);
+            }
         }
     }
 
