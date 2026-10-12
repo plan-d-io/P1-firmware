@@ -35,7 +35,7 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
-    TEST_ASSERT_EQUAL_UINT(37, s.setting_count());
+    TEST_ASSERT_EQUAL_UINT(35, s.setting_count());
     TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
     TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
     TEST_ASSERT_EQUAL_UINT32(0, s.values().log_mark);
@@ -135,14 +135,8 @@ void test_secrets_never_serialised()
     s.to_json(buf, sizeof(buf));
     TEST_ASSERT_FALSE(json_has(buf, "not-in-json"));
     TEST_ASSERT_TRUE(json_has(buf, "\"WIFI_PASS\""));
-
-    std::strcpy(s.values().eid_provkey, "eid-key-secret");
-    std::strcpy(s.values().eid_provsec, "eid-sec-secret");
-    s.to_json(buf, sizeof(buf));
-    TEST_ASSERT_FALSE(json_has(buf, "eid-key-secret"));
-    TEST_ASSERT_FALSE(json_has(buf, "eid-sec-secret"));
-    TEST_ASSERT_TRUE(json_has(buf, "\"EID_PROVKEY\""));
-    TEST_ASSERT_TRUE(json_has(buf, "\"EID_PROVSEC\""));
+    TEST_ASSERT_FALSE(json_has(buf, "\"EID_PROVKEY\""));
+    TEST_ASSERT_FALSE(json_has(buf, "\"EID_PROVSEC\""));
 }
 
 void test_json_in_atomic()
@@ -530,6 +524,32 @@ void test_schema6_migrates_new_keys()
     TEST_ASSERT_TRUE(mem.has("REL_CHAN"));
     TEST_ASSERT_TRUE(mem.has("PUSH_FULL"));
     TEST_ASSERT_TRUE(mem.has("UUID"));
+}
+
+void test_eid_provisioning_keys_removed()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_NULL(s.find_setting("EID_PROVKEY"));
+    TEST_ASSERT_NULL(s.find_setting("EID_PROVSEC"));
+    TEST_ASSERT_EQUAL(JsonStatus::UnknownKey, s.apply_json(R"({"EID_PROVKEY":"x"})"));
+    TEST_ASSERT_EQUAL(JsonStatus::UnknownKey, s.apply_json(R"({"EID_PROVSEC":"x"})"));
+
+    MemoryBackend old;
+    old.begin(false);
+    old.put_u32("CFG_VER", 7);
+    old.put_str("EID_PROVKEY", "old-key");
+    old.put_str("EID_PROVSEC", "old-sec");
+    old.put_str("WIFI_SSID", "TestNet");
+    old.end();
+    Store s2(old);
+    s2.load();
+    TEST_ASSERT_TRUE(s2.migrated());
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s2.values().cfg_ver);
+    TEST_ASSERT_FALSE(old.has("EID_PROVKEY"));
+    TEST_ASSERT_FALSE(old.has("EID_PROVSEC"));
+    TEST_ASSERT_EQUAL_STRING("TestNet", s2.values().wifi_ssid);
 }
 
 void test_ip_and_rel_chan_validation()
@@ -1026,6 +1046,10 @@ void test_legacy_import_full_2x()
     TEST_ASSERT_EQUAL_STRING("develop", s.values().rel_chan);
     TEST_ASSERT_FALSE(s.values().upd_auto);
     TEST_ASSERT_EQUAL_STRING("desk@example.com", s.values().email);
+    TEST_ASSERT_EQUAL_STRING("claim", s.values().eidclaim);
+    TEST_ASSERT_EQUAL_STRING("P16512d5689ff6529d", s.values().uuid);
+    TEST_ASSERT_FALSE(ours.has("EID_PROVKEY"));
+    TEST_ASSERT_FALSE(ours.has("EID_PROVSEC"));
     TEST_ASSERT_EQUAL(writes, legacy.write_count());
 }
 
@@ -1261,6 +1285,7 @@ int main()
     RUN_TEST(test_water_equipment_id_not_catalogued);
     RUN_TEST(test_fixture_region_tags_unchanged);
     RUN_TEST(test_schema6_migrates_new_keys);
+    RUN_TEST(test_eid_provisioning_keys_removed);
     RUN_TEST(test_ip_and_rel_chan_validation);
     RUN_TEST(test_rel_chan_alpha_v2_migrate_to_develop);
     RUN_TEST(test_rel_chan_change_flag);

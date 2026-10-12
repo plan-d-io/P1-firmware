@@ -22,7 +22,7 @@ constexpr CfgFlags CFG_SECRET = 2;
 constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
 
-constexpr std::uint32_t kSchemaVersion = 7;
+constexpr std::uint32_t kSchemaVersion = 8;
 
 constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;
@@ -102,8 +102,6 @@ struct Settings {
     char fdns2[kIpMax]{};
     bool eid_en = false;
     char eidclaim[kEidClaimMax]{};
-    char eid_provkey[kPassMax]{};
-    char eid_provsec[kPassMax]{};
     char uuid[kUuidMax]{};
     char rel_chan[kRelChanMax]{};
     bool upd_auto = true;
@@ -303,7 +301,7 @@ constexpr std::size_t kToJsonBufMin = 4096;
 
 class Store {
 public:
-    static constexpr std::size_t kSettingCount = 37;
+    static constexpr std::size_t kSettingCount = 35;
     static constexpr std::size_t kLegacySkipMax = 16;
 
     explicit Store(StoreBackend& backend, StoreBackend* legacy = nullptr);

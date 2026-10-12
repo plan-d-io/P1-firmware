@@ -517,10 +517,6 @@ void Store::bind_table()
     add_str("FDNS2", "Secondary DNS", CFG_IN_API | CFG_REBOOT, v_.fdns2, sizeof(v_.fdns2), "");
     add_bool("EID_EN", "EnergieID enabled", CFG_IN_API, &v_.eid_en, false);
     add_str("EIDCLAIM", "EnergieID claim code", CFG_IN_API, v_.eidclaim, sizeof(v_.eidclaim), "");
-    add_str("EID_PROVKEY", "EnergieID key", CFG_IN_API | CFG_SECRET, v_.eid_provkey,
-            sizeof(v_.eid_provkey), "");
-    add_str("EID_PROVSEC", "EnergieID secret", CFG_IN_API | CFG_SECRET, v_.eid_provsec,
-            sizeof(v_.eid_provsec), "");
     add_str("UUID", "Device UUID", CFG_IN_API, v_.uuid, sizeof(v_.uuid), "");
     add_str("REL_CHAN", "Release channel", CFG_IN_API, v_.rel_chan, sizeof(v_.rel_chan), "main");
     add_bool("UPD_AUTO", "Automatic updates", CFG_IN_API, &v_.upd_auto, true);
@@ -677,6 +673,8 @@ void Store::migrate()
         std::snprintf(v_.rel_chan, sizeof(v_.rel_chan), "develop");
         backend_.put_str("REL_CHAN", v_.rel_chan);
     }
+    backend_.remove("EID_PROVKEY");
+    backend_.remove("EID_PROVSEC");
     v_.cfg_ver = kSchemaVersion;
     backend_.put_u32("CFG_VER", kSchemaVersion);
     backend_.end();

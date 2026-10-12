@@ -133,8 +133,6 @@ void Store::import_from(StoreBackend& legacy)
     take_bool("UPD_AUTOCHK", &v_.upd_autochk);
     take_bool("EID_EN", &v_.eid_en);
     take_str("EIDCLAIM", v_.eidclaim, sizeof(v_.eidclaim));
-    take_str("EID_PROVKEY", v_.eid_provkey, sizeof(v_.eid_provkey));
-    take_str("EID_PROVSEC", v_.eid_provsec, sizeof(v_.eid_provsec));
     take_str("UUID", v_.uuid, sizeof(v_.uuid));
     take_str("EMAIL", v_.email, sizeof(v_.email));
     take_u32("reboots", &v_.reboots, false);
