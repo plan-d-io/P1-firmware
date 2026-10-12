@@ -47,6 +47,9 @@
     <button type="button" class="collapsible">Updates</button>
     <div class="content" data-section="upd"></div>
 
+    <button type="button" class="collapsible">EnergieID</button>
+    <div class="content" data-section="eid"></div>
+
     <button type="button" class="collapsible">Advanced settings</button>
     <div class="content" data-section="dongle"></div>
 
@@ -143,6 +146,9 @@
       ]],
       ["UPD_AUTO", "Automatic updates", "checkbox"],
       ["UPD_AUTOCHK", "Check for updates", "checkbox"]
+    ],
+    eid: [
+      ["EID_EN", "Use EnergieID", "checkbox"]
     ],
     dongle: [
       ["RINT_SPIFFS", "Reinitialise filesystem", "checkbox"]
@@ -268,6 +274,12 @@
           "The list of all meter readings supported by the dongle. If a meter reading is not present in the meter telegram, it will not be pushed."}));
         box.appendChild(el("div", {id: "fieldChecks"}));
         host.appendChild(box);
+      }
+      if (sec === "eid") {
+        host.appendChild(el("p", {class: "eid-claim", id: "eidClaimCode", text: ""}));
+        host.appendChild(el("p", {class: "lede", text:
+          "Enter this code in your EnergieID account (Plan-D service) to link this dongle."}));
+        host.appendChild(el("p", {class: "field-hint", id: "eidStatusLine", text: ""}));
       }
       if (sec === "upd") {
         host.appendChild(el("p", {class: "field-hint", id: "updStatusLine", text: ""}));
@@ -586,6 +598,64 @@
     return ICON_LABELS["lan-pending"];
   }
 
+  function eidIntervalText(sec) {
+    var n = parseInt(sec, 10);
+    if (!n) return "";
+    if (n % 3600 === 0) {
+      var h = n / 3600;
+      return h === 1 ? "every hour" : ("every " + h + " hours");
+    }
+    if (n % 60 === 0) {
+      var m = n / 60;
+      return m === 1 ? "every minute" : ("every " + m + " minutes");
+    }
+    return "every " + n + " seconds";
+  }
+
+  function lastUploadText(unix) {
+    var t = parseInt(unix, 10);
+    if (!t) return "";
+    var d = new Date(t * 1000);
+    var hh = String(d.getHours()).padStart(2, "0");
+    var mm = String(d.getMinutes()).padStart(2, "0");
+    return hh + ":" + mm;
+  }
+
+  function refreshEidStatus(s) {
+    var code = document.getElementById("eidClaimCode");
+    if (code) code.textContent = s.eid_claim || "";
+    var line = document.getElementById("eidStatusLine");
+    if (!line) return;
+    var st = String(s.eid || "off");
+    if (st === "no_keys") {
+      line.textContent = "Not available in this firmware";
+      return;
+    }
+    if (st === "off") {
+      line.textContent = "Off";
+      return;
+    }
+    if (st === "waiting") {
+      line.textContent = "Waiting for the code to be entered in EnergieID";
+      return;
+    }
+    if (st === "linked") {
+      var rec = s.eid_record || "";
+      var msg = rec ? ("Linked to \"" + rec + "\"") : "Linked";
+      var every = eidIntervalText(s.eid_interval);
+      if (every) msg += ", uploading " + every;
+      var last = lastUploadText(s.eid_last_upload);
+      if (last) msg += ", last upload " + last;
+      line.textContent = msg;
+      return;
+    }
+    if (st === "error") {
+      line.textContent = s.eid_error || "Error";
+      return;
+    }
+    line.textContent = st;
+  }
+
   function refreshStatus() {
     fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
       lastStatus = s;
@@ -608,6 +678,7 @@
         footer.textContent = "Digital meter dongle V" + s.fw_ver + " by plan-d.io";
       }
       refreshUpdStatus(s);
+      refreshEidStatus(s);
     }).catch(function () {});
   }
 

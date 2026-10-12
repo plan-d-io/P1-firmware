@@ -394,7 +394,12 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put_str("upd_channel", v.upd_channel) || !put(",") ||
         !put_str("upd_fail", v.upd_fail) || !put(",") ||
         !put_bool("net_pending", v.net_pending) || !put(",") ||
-        !put_str("wifi_fail", v.wifi_fail) || !put("}")) {
+        !put_str("wifi_fail", v.wifi_fail) || !put(",") ||
+        !put_str("eid", v.eid) || !put(",") || !put_str("eid_claim", v.eid_claim) ||
+        !put(",") || !put_str("eid_record", v.eid_record) || !put(",") ||
+        !put_u("eid_interval", v.eid_interval) || !put(",") ||
+        !put_u("eid_last_upload", v.eid_last_upload) || !put(",") ||
+        !put_str("eid_error", v.eid_error) || !put("}")) {
         return 0;
     }
     out[n] = '\0';

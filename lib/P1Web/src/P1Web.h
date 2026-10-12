@@ -28,7 +28,9 @@ constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
 // Previous 1024 plus `"wifi_fail":"<kWifiFailMax escaped>"`. Headroom for escaping.
 constexpr std::size_t kWifiFailMax = 128;
-constexpr std::size_t kApiStatusMax = 1280;
+// Previous 1280 plus eid (8), claim (32 escaped), record (64 escaped),
+// interval, last_upload unix, error (64 escaped). 2048 is headroom.
+constexpr std::size_t kApiStatusMax = 2048;
 // 24 entries, 32-char SSIDs fully escaped (64), rssi int32 min:
 // {"ssid":"<64>","rssi":-2147483648} = 93; 24*93 + 23 commas +
 // {"scanning":false,"networks":[]} (33) = 2288. 2560 is headroom.
@@ -164,6 +166,12 @@ struct StatusView {
     const char* upd_fail = "";
     bool net_pending = false;
     const char* wifi_fail = "";
+    const char* eid = "off";
+    const char* eid_claim = "";
+    const char* eid_record = "";
+    unsigned eid_interval = 0;
+    unsigned eid_last_upload = 0;
+    const char* eid_error = "";
 };
 
 struct FieldReading {

@@ -6,6 +6,7 @@
 #include <P1Button.h>
 #include <P1Config.h>
 #include <P1DSMR.h>
+#include <P1Eid.h>
 #include <P1Led.h>
 #include <P1Mqtt.h>
 #include <P1Ota.h>
@@ -24,10 +25,12 @@
 #include <nvs_flash.h>
 #include <esp32-hal-rgb-led.h>
 #include <fcntl.h>
+#include <eid_keys_gen.h>
 #include <fw_version.h>
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -147,6 +150,34 @@ static constexpr std::uint32_t kOtaIntervalMs = 24UL * 60UL * 60UL * 1000UL;
 static p1web::StatusView g_status_view{};
 static p1web::FieldReading g_last_readings[p1cfg::kMaxFields]{};
 static p1web::ReadingsView g_readings_view{g_last_readings, 0};
+
+static constexpr unsigned kEidHeapMin = 24u * 1024u;
+static constexpr unsigned kEidBlockMin = 16u * 1024u;
+static constexpr std::uint32_t kEidFirstHelloMs = 60u * 1000u;
+static constexpr std::uint32_t kEidUnclaimedFastMs = 5u * 60u * 1000u;
+static constexpr std::uint32_t kEidUnclaimedHourMs = 60u * 60u * 1000u;
+static constexpr std::uint32_t kEidClaimedHelloMs = 24u * 60u * 60u * 1000u;
+static constexpr std::uint32_t kEidRetryMs = 5u * 60u * 1000u;
+static constexpr std::uint32_t kEidFreshTelegramMs = 60u * 1000u;
+
+struct EidRuntime {
+    bool en_was = false;
+    bool claimed = false;
+    bool hello_now = false;
+    unsigned net_fails = 0;
+    std::uint32_t wifi_ms = 0;
+    std::uint32_t on_ms = 0;
+    std::uint32_t next_hello_ms = 0;
+    std::uint32_t next_upload_ms = 0;
+    unsigned last_upload_unix = 0;
+    char state[12] = "off";
+    char error[p1eid::kErrorMax]{};
+    p1eid::HelloReply hello{};
+    char batch[p1eid::kBatchMax]{};
+    std::size_t batch_n = 0;
+    std::uint32_t batch_ms = 0;
+};
+static EidRuntime g_eid{};
 
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
@@ -543,6 +574,12 @@ static void refresh_status_view()
     g_status_view.upd_fail = g_upd_fail_msg;
     g_status_view.net_pending = g_cfg.network_pending();
     g_status_view.wifi_fail = g_wifi_fail;
+    g_status_view.eid = g_eid.state;
+    g_status_view.eid_claim = g_cfg.values().eidclaim;
+    g_status_view.eid_record = g_eid.hello.record_name;
+    g_status_view.eid_interval = g_eid.claimed ? g_eid.hello.interval_s : 0;
+    g_status_view.eid_last_upload = g_eid.last_upload_unix;
+    g_status_view.eid_error = g_eid.error;
 }
 
 static void poll_wifi_scan()
@@ -1380,6 +1417,341 @@ static void mqtt_resume_after_https()
     try_start_mqtt();
 }
 
+static void eid_forget()
+{
+    g_eid.claimed = false;
+    g_eid.hello = p1eid::HelloReply{};
+    g_eid.hello_now = false;
+    g_eid.net_fails = 0;
+    g_eid.next_upload_ms = 0;
+    g_eid.error[0] = '\0';
+}
+
+static void eid_set_state(const char* st)
+{
+    std::snprintf(g_eid.state, sizeof(g_eid.state), "%s", st != nullptr ? st : "off");
+}
+
+static void eid_set_error(const char* text)
+{
+    std::snprintf(g_eid.error, sizeof(g_eid.error), "%s", text != nullptr ? text : "");
+    eid_set_state("error");
+}
+
+static bool eid_heap_ok(unsigned* free_heap, unsigned* max_block)
+{
+    const unsigned heap = static_cast<unsigned>(ESP.getFreeHeap());
+    const unsigned block = static_cast<unsigned>(ESP.getMaxAllocHeap());
+    if (free_heap != nullptr) {
+        *free_heap = heap;
+    }
+    if (max_block != nullptr) {
+        *max_block = block;
+    }
+    return heap >= kEidHeapMin && block >= kEidBlockMin;
+}
+
+static std::size_t eid_read_body(HTTPClient& https, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap < 2) {
+        return 0;
+    }
+    NetworkClient* stream = https.getStreamPtr();
+    if (stream == nullptr) {
+        out[0] = '\0';
+        return 0;
+    }
+    std::size_t got = 0;
+    const int announced = https.getSize();
+    const unsigned long t0 = millis();
+    while (got + 1 < cap && static_cast<std::int32_t>(millis() - t0) < 8000) {
+        const int avail = stream->available();
+        if (avail <= 0) {
+            if (!https.connected() && (announced < 0 || static_cast<int>(got) >= announced)) {
+                break;
+            }
+            delay(10);
+            continue;
+        }
+        const std::size_t want = std::min(static_cast<std::size_t>(avail), cap - 1 - got);
+        const int n = stream->readBytes(out + got, want);
+        if (n <= 0) {
+            break;
+        }
+        got += static_cast<std::size_t>(n);
+        if (announced > 0 && static_cast<int>(got) >= announced) {
+            break;
+        }
+    }
+    out[got] = '\0';
+    return got;
+}
+
+static int eid_https_post(const char* url, const char* body, std::size_t body_n,
+                          const char* hdr_a_name, const char* hdr_a_val, const char* hdr_b_name,
+                          const char* hdr_b_val, char* reply, std::size_t reply_cap,
+                          unsigned* heap_during, unsigned* block_during)
+{
+    unsigned heap = 0;
+    unsigned block = 0;
+    if (!eid_heap_ok(&heap, &block)) {
+        char msg[80];
+        std::snprintf(msg, sizeof(msg), "EnergieID: skipped, low memory heap=%u maxblock=%u", heap,
+                      block);
+        g_log.log(p1log::Level::Warn, msg);
+        return -1;
+    }
+    char before[80];
+    std::snprintf(before, sizeof(before), "EnergieID: https heap=%u maxblock=%u", heap, block);
+    g_log.log(p1log::Level::Info, before);
+
+    BundleClient client;
+    client.setTimeout(15000);
+    client.use_framework_bundle();
+    HTTPClient https;
+    https.setTimeout(15000);
+    if (!https.begin(client, url)) {
+        https.end();
+        client.stop();
+        eid_set_error("HTTPS begin failed");
+        g_log.log(p1log::Level::Warn, "EnergieID: HTTPS begin failed");
+        return -2;
+    }
+    https.addHeader("Content-Type", "application/json");
+    if (hdr_a_name != nullptr && hdr_a_val != nullptr) {
+        https.addHeader(hdr_a_name, hdr_a_val);
+    }
+    if (hdr_b_name != nullptr && hdr_b_val != nullptr) {
+        https.addHeader(hdr_b_name, hdr_b_val);
+    }
+    if (heap_during != nullptr) {
+        *heap_during = static_cast<unsigned>(ESP.getFreeHeap());
+    }
+    if (block_during != nullptr) {
+        *block_during = static_cast<unsigned>(ESP.getMaxAllocHeap());
+    }
+    const int code = https.POST(reinterpret_cast<std::uint8_t*>(const_cast<char*>(body)),
+                                static_cast<std::size_t>(body_n));
+    if (reply != nullptr && reply_cap > 0) {
+        eid_read_body(https, reply, reply_cap);
+    }
+    https.end();
+    client.stop();
+    return code;
+}
+
+static void eid_schedule_hello(std::uint32_t from_ms, std::uint32_t delay_ms)
+{
+    g_eid.next_hello_ms = from_ms + delay_ms;
+}
+
+static std::uint32_t eid_unclaimed_delay(std::uint32_t now)
+{
+    const std::uint32_t start = g_eid.on_ms != 0 ? g_eid.on_ms : now;
+    if (now - start < kEidUnclaimedHourMs) {
+        return kEidUnclaimedFastMs;
+    }
+    return kEidUnclaimedHourMs;
+}
+
+static void eid_do_hello()
+{
+#if !P1_EID_KEYS
+    eid_set_state("no_keys");
+    return;
+#else
+    char body[p1eid::kHelloBodyMax];
+    const IPAddress ip = WiFi.localIP();
+    char ip_text[16];
+    std::snprintf(ip_text, sizeof(ip_text), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    const std::size_t n = p1eid::hello_body(body, sizeof(body), g_cfg.values().eidclaim,
+                                            g_cfg.values().uuid, p1fw::kFwVer, ip_text);
+    if (n == 0) {
+        eid_set_error("hello body overflow");
+        g_log.log(p1log::Level::Warn, "EnergieID: hello body overflow");
+        return;
+    }
+    char reply[p1eid::kReplyMax]{};
+    unsigned heap_d = 0;
+    unsigned block_d = 0;
+    const int code =
+        eid_https_post(p1eid::kHelloUrl, body, n, "X-Provisioning-Key", p1eidkeys::kKey,
+                       "X-Provisioning-Secret", p1eidkeys::kSecret, reply, sizeof(reply), &heap_d,
+                       &block_d);
+    char after[96];
+    std::snprintf(after, sizeof(after), "EnergieID: hello HTTP %d heap=%u maxblock=%u", code, heap_d,
+                  block_d);
+    g_log.log(p1log::Level::Info, after);
+    const std::uint32_t now = millis();
+    if (code < 0) {
+        g_eid.net_fails += 1;
+        eid_set_error("hello failed");
+        eid_schedule_hello(now, g_eid.net_fails <= 1 ? kEidRetryMs : kEidUnclaimedHourMs);
+        return;
+    }
+    if (code == 401 || code == 403) {
+        char err[32];
+        std::snprintf(err, sizeof(err), "hello HTTP %d", code);
+        eid_set_error(err);
+        g_log.log(p1log::Level::Warn, err);
+        eid_schedule_hello(now, kEidRetryMs);
+        return;
+    }
+    if (code != 200 && code != 201) {
+        char err[32];
+        std::snprintf(err, sizeof(err), "hello HTTP %d", code);
+        eid_set_error(err);
+        g_log.log(p1log::Level::Warn, err);
+        g_eid.net_fails += 1;
+        eid_schedule_hello(now, g_eid.net_fails <= 1 ? kEidRetryMs : kEidUnclaimedHourMs);
+        return;
+    }
+    p1eid::HelloReply parsed{};
+    if (!p1eid::parse_hello_reply(std::string_view(reply), parsed)) {
+        eid_set_error("hello reply bad");
+        g_log.log(p1log::Level::Warn, "EnergieID: hello reply bad");
+        eid_schedule_hello(now, kEidRetryMs);
+        return;
+    }
+    g_eid.net_fails = 0;
+    g_eid.error[0] = '\0';
+    if (parsed.kind == p1eid::ReplyKind::Claimed) {
+        const bool was = g_eid.claimed;
+        g_eid.hello = parsed;
+        g_eid.claimed = true;
+        eid_set_state("linked");
+        if (!was) {
+            char msg[96];
+            std::snprintf(msg, sizeof(msg), "EnergieID: linked to %.64s",
+                          parsed.record_name[0] != '\0' ? parsed.record_name : "EnergieID");
+            g_log.log(p1log::Level::Info, msg);
+            std::snprintf(msg, sizeof(msg), "EnergieID: upload interval %u s",
+                          static_cast<unsigned>(parsed.interval_s));
+            g_log.log(p1log::Level::Info, msg);
+        }
+        g_eid.next_upload_ms = now + parsed.interval_s * 1000u;
+        eid_schedule_hello(now, kEidClaimedHelloMs);
+        return;
+    }
+    g_eid.claimed = false;
+    g_eid.hello = parsed;
+    eid_set_state("waiting");
+    if (parsed.claim_code[0] != '\0' &&
+        std::strcmp(g_cfg.values().eidclaim, parsed.claim_code) != 0) {
+        std::snprintf(g_cfg.values().eidclaim, sizeof(g_cfg.values().eidclaim), "%s",
+                      parsed.claim_code);
+        g_cfg.save();
+    }
+    char wait[72];
+    std::snprintf(wait, sizeof(wait), "EnergieID: waiting for claim code %s",
+                  g_cfg.values().eidclaim);
+    g_log.log(p1log::Level::Info, wait);
+    eid_schedule_hello(now, eid_unclaimed_delay(now));
+#endif
+}
+
+static void eid_do_upload()
+{
+    if (!g_eid.claimed || g_eid.hello.webhook_url[0] == '\0') {
+        return;
+    }
+    const std::uint32_t now = millis();
+    if (g_eid.batch_n == 0 || now - g_eid.batch_ms > kEidFreshTelegramMs) {
+        return;
+    }
+    unsigned heap_d = 0;
+    unsigned block_d = 0;
+    const int code = eid_https_post(g_eid.hello.webhook_url, g_eid.batch, g_eid.batch_n,
+                                    "Authorization", g_eid.hello.authorization, "x-twin-id",
+                                    g_eid.hello.twin_id, nullptr, 0, &heap_d, &block_d);
+    char after[96];
+    std::snprintf(after, sizeof(after), "EnergieID: upload HTTP %d heap=%u maxblock=%u", code,
+                  heap_d, block_d);
+    if (code == 200 || code == 201) {
+        g_log.log(p1log::Level::Debug, after);
+        g_eid.last_upload_unix = static_cast<unsigned>(time(nullptr));
+        g_eid.next_upload_ms = now + g_eid.hello.interval_s * 1000u;
+        g_eid.error[0] = '\0';
+        eid_set_state("linked");
+        return;
+    }
+    g_log.log(p1log::Level::Warn, after);
+    if (code == 401 || code == 403) {
+        char err[32];
+        std::snprintf(err, sizeof(err), "upload HTTP %d", code);
+        eid_set_error(err);
+        g_eid.hello_now = true;
+        return;
+    }
+    char err[32];
+    std::snprintf(err, sizeof(err), "upload HTTP %d", code);
+    eid_set_error(err);
+    g_eid.net_fails += 1;
+    g_eid.next_upload_ms = now + (g_eid.net_fails <= 1 ? kEidRetryMs : kEidUnclaimedHourMs);
+}
+
+static void service_eid()
+{
+    const bool en = g_cfg.values().eid_en;
+    if (!en) {
+        if (g_eid.en_was) {
+            eid_forget();
+            eid_set_state("off");
+        }
+        g_eid.en_was = false;
+        eid_set_state("off");
+        return;
+    }
+    if (!g_eid.en_was) {
+        g_eid.on_ms = millis();
+        g_eid.hello_now = false;
+        g_eid.net_fails = 0;
+        g_eid.next_hello_ms = 0;
+        g_eid.next_upload_ms = 0;
+        if (!g_eid.claimed) {
+            eid_set_state("waiting");
+        }
+    }
+    g_eid.en_was = true;
+
+#if !P1_EID_KEYS
+    eid_set_state("no_keys");
+    return;
+#endif
+    if (g_ap_up) {
+        if (!g_eid.claimed) {
+            eid_set_state("waiting");
+        }
+        return;
+    }
+    if (!on_station_network()) {
+        return;
+    }
+    const std::uint32_t now = millis();
+    if (g_eid.wifi_ms == 0) {
+        g_eid.wifi_ms = now;
+        if (g_eid.next_hello_ms == 0) {
+            eid_schedule_hello(now, kEidFirstHelloMs);
+        }
+    }
+    if (g_eid.claimed && g_eid.hello.token_expiry > 0) {
+        const std::time_t wall = time(nullptr);
+        if (wall > 1600000000 && static_cast<std::int64_t>(wall) >= g_eid.hello.token_expiry) {
+            g_eid.hello_now = true;
+        }
+    }
+    if (g_eid.hello_now || (g_eid.next_hello_ms != 0 &&
+                            static_cast<std::int32_t>(now - g_eid.next_hello_ms) >= 0)) {
+        g_eid.hello_now = false;
+        eid_do_hello();
+        return;
+    }
+    if (g_eid.claimed && g_eid.next_upload_ms != 0 &&
+        static_cast<std::int32_t>(now - g_eid.next_upload_ms) >= 0) {
+        eid_do_upload();
+    }
+}
+
 static void remember_ota_dest()
 {
     g_ota_dest_label[0] = '\0';
@@ -1826,6 +2198,8 @@ static void snapshot_readings(const p1dsmr::Data& data)
                             sizeof(g_last_readings[i].unit));
     }
     g_readings_view.count = nf;
+    g_eid.batch_n = p1eid::upload_batch(data, g_eid.batch, sizeof(g_eid.batch));
+    g_eid.batch_ms = millis();
 }
 
 static void on_telegram(const p1dsmr::Data& data)
@@ -2138,6 +2512,11 @@ static void handle_line(char* line)
         }
         return;
     }
+    if (std::strcmp(line, "eid badtoken") == 0) {
+        std::snprintf(g_eid.hello.authorization, sizeof(g_eid.hello.authorization), "bad");
+        Serial.println("eid token spoiled");
+        return;
+    }
     if (std::strcmp(line, "tap") == 0) {
         open_upload_window();
         Serial.println("upload window open");
@@ -2227,7 +2606,7 @@ static void handle_line(char* line)
     }
     Serial.println(
         "commands: set <KEY> <value> | get | save | reboot | factory | status | field <id> on|off | "
-        "req on|off | hold on|off | tap | syslog");
+        "req on|off | hold on|off | tap | syslog | eid badtoken");
 }
 
 static void poll_serial()
@@ -2555,6 +2934,7 @@ void loop()
     reconcile_ha_discovery();
 
     ota_on_schedule();
+    service_eid();
 
     if (mqtt_up) {
         g_log.replay_undelivered();

@@ -258,6 +258,22 @@ void test_api_status_json_max()
     v.upd_fail = upd_fail;
     v.net_pending = true;
     v.wifi_fail = wifi_fail;
+    char eid[] = "waiting";
+    char eid_claim[p1cfg::kEidClaimMax];
+    char eid_record[64];
+    char eid_error[64];
+    std::memset(eid_claim, 'C', sizeof(eid_claim) - 1);
+    eid_claim[sizeof(eid_claim) - 1] = '\0';
+    std::memset(eid_record, 'R', sizeof(eid_record) - 1);
+    eid_record[sizeof(eid_record) - 1] = '\0';
+    std::memset(eid_error, 'E', sizeof(eid_error) - 1);
+    eid_error[sizeof(eid_error) - 1] = '\0';
+    v.eid = eid;
+    v.eid_claim = eid_claim;
+    v.eid_record = eid_record;
+    v.eid_interval = 4294967295u;
+    v.eid_last_upload = 4294967295u;
+    v.eid_error = eid_error;
 
     char buf[p1web::kApiStatusMax];
     const std::size_t n = p1web::render_api_status(v, buf, sizeof(buf));
