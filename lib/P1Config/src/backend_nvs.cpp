@@ -115,6 +115,9 @@ void NvsBackend::put_str(const char* key, const char* v)
 
 void NvsBackend::remove(const char* key)
 {
+    if (!has(key)) {
+        return;
+    }
     prefs_.remove(key);
 }
 
