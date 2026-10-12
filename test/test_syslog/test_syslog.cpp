@@ -103,104 +103,34 @@ void test_pre_clock_uptime_stamp()
     TEST_ASSERT_EQUAL_STRING("1970-01-01T00:00:08Z INFO Mounting filesystem", line);
 }
 
-void test_repeats_collapse()
+void test_identical_lines_each_written()
 {
     reset_sinks();
     p1log::MemoryFileStore fs;
     p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
     p1log::set_clock(&fake_unix, &fake_uptime);
-    g_fake_unix = 1789914725ull;
     log.set_device_id("P1AABBCC");
     log.set_mqtt_ready(true);
 
-    log.log(p1log::Level::Warn, "same");
-    log.log(p1log::Level::Warn, "same");
-    log.log(p1log::Level::Warn, "same");
-    log.log(p1log::Level::Warn, "other");
+    g_fake_unix = 1577836801ull;
+    log.log(p1log::Level::Info, "A");
+    g_fake_unix = 1577836805ull;
+    log.log(p1log::Level::Info, "A");
+    g_fake_unix = 1577836807ull;
+    log.log(p1log::Level::Info, "A");
+    g_fake_unix = 1577836809ull;
+    log.log(p1log::Level::Info, "B");
 
-    TEST_ASSERT_TRUE(g_serial.size() >= 3);
-    TEST_ASSERT_TRUE(std::strstr(g_serial[0].c_str(), "WARN same") != nullptr);
-    bool saw_repeat = false;
-    bool saw_other = false;
-    for (const auto& s : g_serial) {
-        if (s.find("Previous message repeated 2 times") != std::string::npos) {
-            saw_repeat = true;
-            TEST_ASSERT_TRUE(s.find("WARN ") != std::string::npos);
-        }
-        if (s.find("WARN other") != std::string::npos) {
-            saw_other = true;
-        }
-    }
-    TEST_ASSERT_TRUE(saw_repeat);
-    TEST_ASSERT_TRUE(saw_other);
-}
-
-void test_repeat_once_wording()
-{
-    reset_sinks();
-    p1log::MemoryFileStore fs;
-    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
-    p1log::set_clock(&fake_unix, &fake_uptime);
-    g_fake_unix = 1789914725ull;
-    log.set_device_id("P1AABBCC");
-    log.set_mqtt_ready(true);
-
-    log.log(p1log::Level::Info, "same");
-    log.log(p1log::Level::Info, "same");
-    log.log(p1log::Level::Info, "other");
-
-    bool saw_once = false;
-    for (const auto& s : g_serial) {
-        if (s.find("Previous message repeated once") != std::string::npos) {
-            saw_once = true;
-            TEST_ASSERT_TRUE(s.find("INFO ") != std::string::npos);
-            TEST_ASSERT_TRUE(s.find("WARN ") == std::string::npos);
-        }
-    }
-    TEST_ASSERT_TRUE(saw_once);
-}
-
-void test_repeat_info_summary_level()
-{
-    reset_sinks();
-    p1log::MemoryFileStore fs;
-    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
-    p1log::set_clock(&fake_unix, &fake_uptime);
-    g_fake_unix = 1789914725ull;
-    log.set_device_id("P1AABBCC");
-    log.set_mqtt_ready(true);
-
-    log.log(p1log::Level::Info, "same");
-    log.log(p1log::Level::Info, "same");
-    log.log(p1log::Level::Info, "same");
-    log.log(p1log::Level::Info, "other");
-
-    bool saw_repeat = false;
-    for (const auto& s : g_serial) {
-        if (s.find("Previous message repeated 2 times") != std::string::npos) {
-            saw_repeat = true;
-            TEST_ASSERT_TRUE(s.find("INFO ") != std::string::npos);
-            TEST_ASSERT_TRUE(s.find("WARN ") == std::string::npos);
-        }
-    }
-    TEST_ASSERT_TRUE(saw_repeat);
-}
-
-void test_differing_level_not_repeat()
-{
-    reset_sinks();
-    p1log::MemoryFileStore fs;
-    p1log::Logger log(fs, &on_publish, nullptr, &on_serial, nullptr);
-    p1log::set_clock(&fake_unix, &fake_uptime);
-    g_fake_unix = 1789914725ull;
-    log.set_device_id("P1AABBCC");
-    log.set_mqtt_ready(true);
-
-    log.log(p1log::Level::Info, "same");
-    log.log(p1log::Level::Warn, "same");
-    TEST_ASSERT_EQUAL_UINT(2, g_serial.size());
-    TEST_ASSERT_TRUE(g_serial[0].find("INFO same") != std::string::npos);
-    TEST_ASSERT_TRUE(g_serial[1].find("WARN same") != std::string::npos);
+    TEST_ASSERT_EQUAL_UINT(4, g_serial.size());
+    TEST_ASSERT_EQUAL_STRING("2020-01-01T00:00:01Z INFO A", g_serial[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("2020-01-01T00:00:05Z INFO A", g_serial[1].c_str());
+    TEST_ASSERT_EQUAL_STRING("2020-01-01T00:00:07Z INFO A", g_serial[2].c_str());
+    TEST_ASSERT_EQUAL_STRING("2020-01-01T00:00:09Z INFO B", g_serial[3].c_str());
+    TEST_ASSERT_EQUAL_STRING("2020-01-01T00:00:01Z INFO A\n"
+                             "2020-01-01T00:00:05Z INFO A\n"
+                             "2020-01-01T00:00:07Z INFO A\n"
+                             "2020-01-01T00:00:09Z INFO B\n",
+                             fs.contents(p1log::kActivePath));
 }
 
 void test_rotation_resets_watermark()
@@ -491,10 +421,7 @@ int main()
     UNITY_BEGIN();
     RUN_TEST(test_line_format_each_level);
     RUN_TEST(test_pre_clock_uptime_stamp);
-    RUN_TEST(test_repeats_collapse);
-    RUN_TEST(test_repeat_once_wording);
-    RUN_TEST(test_repeat_info_summary_level);
-    RUN_TEST(test_differing_level_not_repeat);
+    RUN_TEST(test_identical_lines_each_written);
     RUN_TEST(test_rotation_resets_watermark);
     RUN_TEST(test_watermark_advances_and_persists);
     RUN_TEST(test_restart_resumes_watermark);

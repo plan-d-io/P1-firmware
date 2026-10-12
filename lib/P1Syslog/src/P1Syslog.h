@@ -115,8 +115,6 @@ public:
     void set_mark_persist(PersistMarkFn fn, void* ctx);
 
     void log(Level level, std::string_view msg);
-    // Flush a pending repeat count without a new message (timer / shutdown).
-    void flush_repeat();
 
     // Publish at most one undelivered line (or the cap skip line) per call.
     // Call once per loop while MQTT is up. Returns 1 if something was sent, 0 if idle.
@@ -128,7 +126,7 @@ public:
     std::size_t active_size() const;
 
 private:
-    void emit_line(Level level, std::string_view msg, bool count_as_content);
+    void emit_line(Level level, std::string_view msg);
     bool write_record(std::string_view human);
     void rotate_if_needed(std::size_t incoming);
     bool mqtt_publish_human(std::string_view human);
@@ -149,11 +147,6 @@ private:
     bool mqtt_ready_ = false;
     std::uint32_t mark_ = 0;
     std::size_t session_sent_ = 0;
-
-    Level last_level_ = Level::Debug;
-    char last_msg_[kMsgMax]{};
-    std::uint32_t repeat_ = 0;
-    bool have_last_ = false;
     std::size_t rotations_ = 0;
 };
 

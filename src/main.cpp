@@ -1120,7 +1120,6 @@ static void request_reboot(const char* reason)
     char msg[96];
     std::snprintf(msg, sizeof(msg), "Reboot requested: %s", reason != nullptr ? reason : "");
     g_log.log(p1log::Level::Info, msg);
-    g_log.flush_repeat();
     esp_restart();
 }
 
@@ -2213,7 +2212,6 @@ static void handle_line(char* line)
                 std::snprintf(msg, sizeof(msg), "fill line %u for rotation test", i);
                 g_log.log(p1log::Level::Info, msg);
             }
-            g_log.flush_repeat();
             Serial.printf("syslog fill done rotations=%u active=%u prev=%u\n",
                           static_cast<unsigned>(g_log.rotations()),
                           static_cast<unsigned>(g_fs.size(p1log::kActivePath)),

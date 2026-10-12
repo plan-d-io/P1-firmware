@@ -250,41 +250,15 @@ bool Logger::replay_pending() const
     return static_cast<std::size_t>(mark_) < total;
 }
 
-void Logger::flush_repeat()
-{
-    if (!have_last_ || repeat_ == 0) {
-        return;
-    }
-    char msg[48];
-    if (repeat_ == 1) {
-        std::snprintf(msg, sizeof(msg), "Previous message repeated once");
-    } else {
-        std::snprintf(msg, sizeof(msg), "Previous message repeated %lu times",
-                      static_cast<unsigned long>(repeat_));
-    }
-    const Level summary_level = last_level_;
-    repeat_ = 0;
-    // Do not fold the summary into another repeat of itself.
-    have_last_ = false;
-    emit_line(summary_level, msg, false);
-}
-
 void Logger::log(Level level, std::string_view msg)
 {
     if (msg.size() > kMsgMax) {
         msg = msg.substr(0, kMsgMax);
     }
-    if (have_last_ && level == last_level_ && msg == std::string_view(last_msg_)) {
-        ++repeat_;
-        return;
-    }
-    if (have_last_ && repeat_ > 0) {
-        flush_repeat();
-    }
-    emit_line(level, msg, true);
+    emit_line(level, msg);
 }
 
-void Logger::emit_line(Level level, std::string_view msg, bool count_as_content)
+void Logger::emit_line(Level level, std::string_view msg)
 {
     char human[kLineMax];
     if (format_human_line(level, msg, unix_now(), human, sizeof(human)) == 0) {
@@ -304,20 +278,6 @@ void Logger::emit_line(Level level, std::string_view msg, bool count_as_content)
                 persist_mark();
             }
         }
-    }
-
-    if (count_as_content) {
-        last_level_ = level;
-        std::size_t n = 0;
-        for (char c : msg) {
-            if (n + 1 >= sizeof(last_msg_)) {
-                break;
-            }
-            last_msg_[n++] = c;
-        }
-        last_msg_[n] = '\0';
-        have_last_ = true;
-        repeat_ = 0;
     }
 }
 
