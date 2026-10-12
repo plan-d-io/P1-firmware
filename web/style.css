@@ -404,13 +404,79 @@ header, main {
     color: #b0b0b0;
 }
 
-.eid-claim {
-    font-size: 2rem;
-    letter-spacing: 0.15em;
+.eid-claim-box {
+    background: #3a3a3a;
+    color: #ffffff;
     font-weight: 700;
-    color: #1fa3ec;
-    margin: 0.75rem 0 0.4rem;
+    font-size: 1.35rem;
+    letter-spacing: 0.12em;
+    font-family: Consolas, Menlo, monospace;
+    padding: 10px 12px;
+    border-radius: 4px;
+    margin: 4px 0 8px;
     word-break: break-all;
+}
+
+.status-box {
+    background: #3a3a3a;
+    border-left: 4px solid #8a8a8a;
+    padding: 9px 12px;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+.status-box.ok {
+    border-left-color: #47c266;
+}
+
+.status-box.attention {
+    border-left-color: #f0a030;
+}
+
+.status-box.error {
+    border-left-color: #e05a5a;
+}
+
+.status-box.neutral {
+    border-left-color: #8a8a8a;
+}
+
+.status-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #eaeaea;
+}
+
+.status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #8a8a8a;
+    flex-shrink: 0;
+}
+
+.status-box.ok .status-dot {
+    background: #47c266;
+}
+
+.status-box.attention .status-dot {
+    background: #f0a030;
+}
+
+.status-box.error .status-dot {
+    background: #e05a5a;
+}
+
+.status-box.neutral .status-dot {
+    background: #8a8a8a;
+}
+
+.status-sub {
+    color: #b0b0b0;
+    font-size: 0.9em;
+    margin-top: 4px;
+    padding-left: 17px;
 }
 
 fieldset {

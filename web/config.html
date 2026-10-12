@@ -173,6 +173,28 @@
     return n;
   }
 
+  function statusBox(id) {
+    return el("div", {class: "status-box neutral", id: id}, [
+      el("div", {class: "status-main"}, [
+        el("span", {class: "status-dot"}),
+        el("span", {class: "status-text"})
+      ]),
+      el("div", {class: "status-sub"})
+    ]);
+  }
+
+  function setStatusBox(box, colour, main, sub) {
+    if (!box) return;
+    box.className = "status-box " + colour;
+    var mainEl = box.querySelector(".status-text");
+    var subEl = box.querySelector(".status-sub");
+    if (mainEl) mainEl.textContent = main || "";
+    if (subEl) {
+      subEl.textContent = sub || "";
+      subEl.style.display = sub ? "" : "none";
+    }
+  }
+
   function buildField(spec) {
     var key = spec[0], label = spec[1], kind = spec[2], opts = spec[3], hint = spec[4];
     var wrap = el("div", {"data-key": key});
@@ -276,20 +298,20 @@
         host.appendChild(box);
       }
       if (sec === "eid") {
-        host.appendChild(el("p", {class: "eid-claim", id: "eidClaimCode", text: ""}));
+        host.appendChild(el("label", {text: "Claim code"}));
+        host.appendChild(el("div", {class: "eid-claim-box", id: "eidClaimCode"}));
         host.appendChild(el("p", {class: "lede", text:
           "Enter this code in your EnergieID account (Plan-D service) to link this dongle."}));
-        host.appendChild(el("p", {class: "field-hint", id: "eidStatusLine", text: ""}));
+        host.appendChild(statusBox("eidStatusBox"));
       }
       if (sec === "upd") {
-        host.appendChild(el("p", {class: "field-hint", id: "updStatusLine", text: ""}));
+        host.appendChild(statusBox("updStatusBox"));
         var actions = el("div", {class: "upd-actions"});
         actions.appendChild(el("button", {type: "button", class: "submit", id: "updCheckBtn", text: "Check now"}));
         var inst = el("button", {type: "button", class: "reboot", id: "updInstallBtn", text: "Install"});
         inst.style.display = "none";
         actions.appendChild(inst);
         host.appendChild(actions);
-        host.appendChild(el("p", {class: "field-hint", id: "updSetupHint", text: "Available once the dongle is on your network.", style: "display:none"}));
         host.appendChild(el("p", {class: "field-hint"}, [
           el("a", {href: "/update", text: "Upload firmware file"})
         ]));
@@ -555,15 +577,12 @@
     var check = document.getElementById("updCheckBtn");
     var inst = document.getElementById("updInstallBtn");
     var hint = document.getElementById("updDirtyHint");
-    var setupHint = document.getElementById("updSetupHint");
     if (!onNet) {
       if (check) check.disabled = true;
       if (inst) inst.disabled = true;
       if (hint) hint.style.display = "none";
-      if (setupHint) setupHint.style.display = "";
       return;
     }
-    if (setupHint) setupHint.style.display = "none";
     if (check) check.disabled = dirty;
     if (inst) inst.disabled = dirty;
     if (hint) hint.style.display = dirty ? "" : "none";
@@ -624,36 +643,43 @@
   function refreshEidStatus(s) {
     var code = document.getElementById("eidClaimCode");
     if (code) code.textContent = s.eid_claim || "";
-    var line = document.getElementById("eidStatusLine");
-    if (!line) return;
+    var box = document.getElementById("eidStatusBox");
+    if (!box) return;
     var st = String(s.eid || "off");
     if (st === "no_keys") {
-      line.textContent = "Not available in this firmware";
+      setStatusBox(box, "neutral", "Not available in this firmware", "");
       return;
     }
     if (st === "off") {
-      line.textContent = "Off";
+      setStatusBox(box, "neutral", "Off", "");
       return;
     }
     if (st === "waiting") {
-      line.textContent = "Waiting for the code to be entered in EnergieID";
+      setStatusBox(box, "attention", "Waiting for the code", "Enter it in your EnergieID account");
       return;
     }
     if (st === "linked") {
       var rec = s.eid_record || "";
-      var msg = rec ? ("Linked to \"" + rec + "\"") : "Linked";
+      var main = rec ? ("Linked to \"" + rec + "\"") : "Linked";
       var every = eidIntervalText(s.eid_interval);
-      if (every) msg += ", uploading " + every;
       var last = lastUploadText(s.eid_last_upload);
-      if (last) msg += ", last upload " + last;
-      line.textContent = msg;
+      var sub = "";
+      if (every) {
+        sub = "Uploading " + every;
+        sub += last ? (", last upload " + last) : ", no upload yet";
+      } else if (last) {
+        sub = "Last upload " + last;
+      } else {
+        sub = "no upload yet";
+      }
+      setStatusBox(box, "ok", main, sub);
       return;
     }
     if (st === "error") {
-      line.textContent = s.eid_error || "Error";
+      setStatusBox(box, "error", "EnergieID problem", s.eid_error || "");
       return;
     }
-    line.textContent = st;
+    setStatusBox(box, "neutral", st, "");
   }
 
   function refreshStatus() {
@@ -814,27 +840,30 @@
     return major + "." + (frac < 10 ? "0" : "") + frac;
   }
 
-  function refreshUpdStatus(s) {
-    var line = document.getElementById("updStatusLine");
-    var inst = document.getElementById("updInstallBtn");
-    if (!line) return;
+  function runningOnLine(s) {
     var run = s.fw_ver || "";
-    var text = "Running firmware " + run;
     var chan = s.upd_channel || "";
-    if (s.upd_checked && chan) {
-      if (s.upd_available && s.upd_found) {
-        text += " — update " + formatUpdVer(s.upd_found) + " available on " + chan;
+    if (!run) return chan ? ("on " + chan) : "";
+    return chan ? ("Running " + run + " on " + chan) : ("Running " + run);
+  }
+
+  function refreshUpdStatus(s) {
+    var box = document.getElementById("updStatusBox");
+    var inst = document.getElementById("updInstallBtn");
+    if (box) {
+      if (!s.wifi) {
+        setStatusBox(box, "neutral", "Not on a network yet",
+                     "Updates are available once the dongle is on your network.");
+      } else if (s.upd_fail) {
+        setStatusBox(box, "error", "Update failed", s.upd_fail);
+      } else if (s.upd_checked && s.upd_available && s.upd_found) {
+        setStatusBox(box, "attention", "Update " + formatUpdVer(s.upd_found) + " available",
+                     runningOnLine(s));
+      } else if (s.upd_checked) {
+        setStatusBox(box, "ok", "Up to date", runningOnLine(s));
       } else {
-        text += " — up to date on " + chan;
+        setStatusBox(box, "neutral", "Not checked yet", s.fw_ver ? ("Running " + s.fw_ver) : "");
       }
-    }
-    while (line.firstChild) {
-      line.removeChild(line.firstChild);
-    }
-    line.appendChild(document.createTextNode(text));
-    if (s.upd_fail) {
-      line.appendChild(document.createElement("br"));
-      line.appendChild(document.createTextNode(s.upd_fail));
     }
     var autoOn = !!(document.getElementById("UPD_AUTO") && document.getElementById("UPD_AUTO").checked);
     if (inst) {
