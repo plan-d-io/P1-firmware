@@ -84,9 +84,10 @@ private:
 #if defined(ARDUINO)
 class LittleFsStore final : public FileStore {
 public:
-    // Mount with format-on-failure. Returns false if still unusable.
-    // *formatted is set when the partition was erased.
-    bool begin(bool* formatted = nullptr);
+    // Mount. format_on_failure formats once if the first mount fails.
+    // Returns false if still unusable. *formatted is set when the partition
+    // was erased.
+    bool begin(bool* formatted = nullptr, bool format_on_failure = true);
     bool self_test();
 
     bool append(const char* path, std::string_view data) override;

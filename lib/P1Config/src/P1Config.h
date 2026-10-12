@@ -311,6 +311,10 @@ public:
     void apply_defaults();
     void load();
     void save();
+    // Open our namespace read/write, write a probe key, read it back, remove
+    // it. False if the namespace cannot be opened or the probe does not stick.
+    // Does not load or import settings.
+    bool settings_storage_ok();
     bool legacy_import_ran() const { return legacy_import_ran_; }
     std::size_t legacy_imported() const { return legacy_imported_; }
     std::size_t legacy_skip_count() const { return legacy_skip_n_; }

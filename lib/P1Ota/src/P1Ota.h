@@ -34,4 +34,10 @@ bool parse_display_version(std::string_view s, unsigned& out);
 // Also requires found > running.
 bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic);
 
+// Storage guard while a new image is on trial (pending-verify).
+// Rollback if on trial and filesystem or settings storage failed.
+// Format-on-mount-failure is allowed only off trial.
+bool storage_on_trial_should_rollback(bool on_trial, bool filesystem_ok, bool settings_ok);
+bool storage_format_allowed(bool on_trial);
+
 }  // namespace p1ota

@@ -178,4 +178,14 @@ bool should_install(unsigned found, unsigned running, unsigned failed, bool auto
     return true;
 }
 
+bool storage_on_trial_should_rollback(bool on_trial, bool filesystem_ok, bool settings_ok)
+{
+    return on_trial && (!filesystem_ok || !settings_ok);
+}
+
+bool storage_format_allowed(bool on_trial)
+{
+    return !on_trial;
+}
+
 }  // namespace p1ota

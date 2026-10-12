@@ -8,7 +8,7 @@
 
 namespace p1log {
 
-bool LittleFsStore::begin(bool* formatted)
+bool LittleFsStore::begin(bool* formatted, bool format_on_failure)
 {
     if (formatted != nullptr) {
         *formatted = false;
@@ -17,7 +17,7 @@ bool LittleFsStore::begin(bool* formatted)
         mounted_ = true;
         return true;
     }
-    if (LittleFS.begin(true)) {
+    if (format_on_failure && LittleFS.begin(true)) {
         mounted_ = true;
         if (formatted != nullptr) {
             *formatted = true;

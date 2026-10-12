@@ -1466,16 +1466,29 @@ static void service_trial()
     g_log.log(p1log::Level::Info, "New firmware confirmed");
 }
 
-static void apply_ota_note_at_boot(const char* running_label)
+static bool running_on_trial()
 {
-    g_on_trial = false;
 #if defined(CONFIG_APP_ROLLBACK_ENABLE)
     const esp_partition_t* running = esp_ota_get_running_partition();
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
     if (running != nullptr && esp_ota_get_state_partition(running, &st) == ESP_OK) {
-        g_on_trial = (st == ESP_OTA_IMG_PENDING_VERIFY);
+        return st == ESP_OTA_IMG_PENDING_VERIFY;
     }
 #endif
+    return false;
+}
+
+static void rollback_storage_on_trial(const char* why)
+{
+    char line[48];
+    std::snprintf(line, sizeof(line), "Storage failed on trial: %s", why);
+    Serial.println(line);
+    delay(1000);
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+}
+
+static void apply_ota_note_at_boot(const char* running_label)
+{
     if (g_on_trial) {
         g_log.log(p1log::Level::Info, "New firmware on trial");
     }
@@ -2298,8 +2311,16 @@ void setup()
 
     g_hw_reset_reason = p1log::hw_reset_reason_string(static_cast<int>(esp_reset_reason()));
 
+    g_on_trial = running_on_trial();
+#if defined(P1_TEST_STORAGE_FAIL)
+    if (p1ota::storage_on_trial_should_rollback(g_on_trial, false, false)) {
+        rollback_storage_on_trial("filesystem");
+    }
+#endif
+
+    bool fs_ok = false;
     bool formatted = false;
-    if (!g_fs.begin(&formatted)) {
+    if (!g_fs.begin(&formatted, p1ota::storage_format_allowed(g_on_trial))) {
         Serial.println("ERROR filesystem mount failed");
         g_fs_fault = true;
     } else {
@@ -2314,7 +2335,13 @@ void setup()
             std::snprintf(fsmsg, sizeof(fsmsg), "Filesystem mounted %u bytes",
                           static_cast<unsigned>(LittleFS.totalBytes()));
             g_log.log(p1log::Level::Info, fsmsg);
+            fs_ok = true;
         }
+    }
+
+    const bool settings_ok = g_cfg.settings_storage_ok();
+    if (p1ota::storage_on_trial_should_rollback(g_on_trial, fs_ok, settings_ok)) {
+        rollback_storage_on_trial(!fs_ok ? "filesystem" : "settings");
     }
 
     g_cfg.load();

@@ -582,6 +582,18 @@ void Store::save_one(const CfgEntry& e)
     }
 }
 
+bool Store::settings_storage_ok()
+{
+    if (!backend_.begin(false)) {
+        return false;
+    }
+    backend_.put_bool("NVSOK", true);
+    const bool ok = backend_.has("NVSOK") && backend_.get_bool("NVSOK", false);
+    backend_.remove("NVSOK");
+    backend_.end();
+    return ok;
+}
+
 void Store::load()
 {
     migrated_ = false;

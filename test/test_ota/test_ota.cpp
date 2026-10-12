@@ -77,6 +77,21 @@ void test_should_install()
     TEST_ASSERT_FALSE(p1ota::should_install(301, 301, 0, false));
 }
 
+void test_storage_guard()
+{
+    TEST_ASSERT_FALSE(p1ota::storage_on_trial_should_rollback(false, true, true));
+    TEST_ASSERT_FALSE(p1ota::storage_on_trial_should_rollback(false, false, false));
+    TEST_ASSERT_FALSE(p1ota::storage_on_trial_should_rollback(false, false, true));
+    TEST_ASSERT_FALSE(p1ota::storage_on_trial_should_rollback(false, true, false));
+    TEST_ASSERT_TRUE(p1ota::storage_format_allowed(false));
+
+    TEST_ASSERT_FALSE(p1ota::storage_on_trial_should_rollback(true, true, true));
+    TEST_ASSERT_FALSE(p1ota::storage_format_allowed(true));
+    TEST_ASSERT_TRUE(p1ota::storage_on_trial_should_rollback(true, false, true));
+    TEST_ASSERT_TRUE(p1ota::storage_on_trial_should_rollback(true, true, false));
+    TEST_ASSERT_TRUE(p1ota::storage_on_trial_should_rollback(true, false, false));
+}
+
 void test_format_version()
 {
     char buf[16];
@@ -99,5 +114,6 @@ int main(int argc, char** argv)
     RUN_TEST(test_channel_urls);
     RUN_TEST(test_format_version);
     RUN_TEST(test_should_install);
+    RUN_TEST(test_storage_guard);
     return UNITY_END();
 }
