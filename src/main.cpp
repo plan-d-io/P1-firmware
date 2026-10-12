@@ -1443,7 +1443,9 @@ static bool reachable_for_trial()
 
 static void service_trial()
 {
-    if (!g_on_trial || g_trial_confirmed) {
+    const bool want_confirm = g_on_trial && !g_trial_confirmed;
+    const bool want_import_final = g_cfg.import_pending();
+    if (!want_confirm && !want_import_final) {
         return;
     }
     if (!reachable_for_trial()) {
@@ -1457,13 +1459,19 @@ static void service_trial()
     if (millis() - g_trial_reach_ms < kTrialConfirmMs) {
         return;
     }
-    esp_ota_mark_app_valid_cancel_rollback();
-    g_trial_confirmed = true;
-    g_on_trial = false;
-    g_cfg.clear_ota_note();
-    g_cfg.clear_ota_failed();
-    g_upd_fail_msg[0] = '\0';
-    g_log.log(p1log::Level::Info, "New firmware confirmed");
+    if (want_confirm) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        g_trial_confirmed = true;
+        g_on_trial = false;
+        g_cfg.clear_ota_note();
+        g_cfg.clear_ota_failed();
+        g_upd_fail_msg[0] = '\0';
+        g_log.log(p1log::Level::Info, "New firmware confirmed");
+    }
+    if (g_cfg.import_pending()) {
+        g_cfg.clear_import_pending();
+        g_log.log(p1log::Level::Info, "Imported settings are now final");
+    }
 }
 
 static bool running_on_trial()
@@ -2351,8 +2359,11 @@ void setup()
             std::snprintf(w, sizeof(w), "Legacy import skipped %s", g_cfg.legacy_skip_key(i));
             g_log.log(p1log::Level::Warn, w);
         }
-        char msg[72];
-        std::snprintf(msg, sizeof(msg), "Settings imported from legacy firmware (%u settings)",
+        char msg[80];
+        std::snprintf(msg, sizeof(msg),
+                      g_cfg.legacy_import_again()
+                          ? "Settings imported again from legacy firmware (%u settings)"
+                          : "Settings imported from legacy firmware (%u settings)",
                       static_cast<unsigned>(g_cfg.legacy_imported()));
         g_log.log(p1log::Level::Info, msg);
     }

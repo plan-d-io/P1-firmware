@@ -316,7 +316,10 @@ public:
     // Does not load or import settings.
     bool settings_storage_ok();
     bool legacy_import_ran() const { return legacy_import_ran_; }
+    bool legacy_import_again() const { return legacy_import_again_; }
     std::size_t legacy_imported() const { return legacy_imported_; }
+    bool import_pending() const { return import_pending_; }
+    void clear_import_pending();
     std::size_t legacy_skip_count() const { return legacy_skip_n_; }
     const char* legacy_skip_key(std::size_t i) const;
 
@@ -324,8 +327,8 @@ public:
     // every other setting alone.
     void reset_wifi();
     // Every catalogue setting back to its table default, including clearing
-    // HA_MIG / HA_SLUG / HA_PFIX / OTA_NPART / OTA_NVER / OTA_FAIL which are
-    // not settings.
+    // HA_MIG / HA_SLUG / HA_PFIX / OTA_NPART / OTA_NVER / OTA_FAIL / IMP_PEND
+    // which are not settings.
     void factory_reset();
 
     bool migrated() const { return migrated_; }
@@ -417,6 +420,8 @@ private:
     bool reboot_needed_ = false;
     NetworkSettings boot_net_{};
     bool legacy_import_ran_ = false;
+    bool legacy_import_again_ = false;
+    bool import_pending_ = false;
     std::size_t legacy_imported_ = 0;
     std::size_t legacy_skip_n_ = 0;
     char legacy_skip_[kLegacySkipMax][16]{};

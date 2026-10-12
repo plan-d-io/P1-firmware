@@ -1004,6 +1004,8 @@ void test_legacy_import_full_2x()
     Store s(ours, &legacy);
     s.load();
     TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_FALSE(s.legacy_import_again());
+    TEST_ASSERT_TRUE(s.import_pending());
     TEST_ASSERT_TRUE(s.legacy_imported() > 0);
     TEST_ASSERT_EQUAL_STRING("TestNet", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("testpass1", s.values().wifi_pass);
@@ -1175,15 +1177,60 @@ void test_factory_reset_clears_legacy_namespace()
     Store s(ours, &legacy);
     s.load();
     TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_TRUE(s.import_pending());
     TEST_ASSERT_TRUE(legacy.has("WIFI_SSID"));
     s.factory_reset();
+    TEST_ASSERT_FALSE(s.import_pending());
     TEST_ASSERT_EQUAL_UINT(0, legacy.key_count());
     TEST_ASSERT_FALSE(legacy.has("WIFI_SSID"));
 
     Store s2(ours, &legacy);
     s2.load();
     TEST_ASSERT_FALSE(s2.legacy_import_ran());
+    TEST_ASSERT_FALSE(s2.import_pending());
     TEST_ASSERT_EQUAL_STRING("", s2.values().wifi_ssid);
+}
+
+void test_legacy_reimport_while_pending()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.import_pending());
+    s.values().region[0] = 'b';
+    s.values().region[1] = 'e';
+    s.values().region[2] = '\0';
+    s.save();
+    legacy.begin(false);
+    legacy.put_str("WIFI_PASSWD", "newpass");
+    legacy.end();
+    Store s2(ours, &legacy);
+    s2.load();
+    TEST_ASSERT_TRUE(s2.legacy_import_ran());
+    TEST_ASSERT_TRUE(s2.legacy_import_again());
+    TEST_ASSERT_EQUAL_STRING("newpass", s2.values().wifi_pass);
+    TEST_ASSERT_EQUAL_STRING("be", s2.values().region);
+}
+
+void test_legacy_no_import_when_mark_cleared()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.import_pending());
+    std::snprintf(s.values().wifi_ssid, sizeof(s.values().wifi_ssid), "KeepMe");
+    s.save();
+    s.clear_import_pending();
+    TEST_ASSERT_FALSE(s.import_pending());
+    Store s2(ours, &legacy);
+    s2.load();
+    TEST_ASSERT_FALSE(s2.legacy_import_ran());
+    TEST_ASSERT_FALSE(s2.import_pending());
+    TEST_ASSERT_EQUAL_STRING("KeepMe", s2.values().wifi_ssid);
 }
 
 extern "C" void setUp() {}
@@ -1237,5 +1284,7 @@ int main()
     RUN_TEST(test_legacy_import_skipped_when_cfg_ver_present);
     RUN_TEST(test_legacy_namespace_unchanged_after_import);
     RUN_TEST(test_factory_reset_clears_legacy_namespace);
+    RUN_TEST(test_legacy_reimport_while_pending);
+    RUN_TEST(test_legacy_no_import_when_mark_cleared);
     return UNITY_END();
 }

@@ -598,6 +598,8 @@ void Store::load()
 {
     migrated_ = false;
     legacy_import_ran_ = false;
+    legacy_import_again_ = false;
+    import_pending_ = false;
     legacy_imported_ = 0;
     legacy_skip_n_ = 0;
     apply_defaults();
@@ -605,18 +607,9 @@ void Store::load()
 
     backend_.begin(true);
     const bool ver_present = backend_.has("CFG_VER");
+    const bool pending = backend_.has("IMP_PEND") && backend_.get_bool("IMP_PEND", false);
+    import_pending_ = pending;
     backend_.end();
-
-    if (!ver_present && legacy_ != nullptr) {
-        legacy_->begin(true);
-        const bool have = legacy_->stored_type("WIFI_SSID") == StoredType::Str ||
-                          legacy_->stored_type("MQTT_HOST") == StoredType::Str;
-        if (have) {
-            import_from(*legacy_);
-            legacy_import_ran_ = true;
-        }
-        legacy_->end();
-    }
 
     backend_.begin(true);
     for (std::size_t i = 0; i < kSettingCount; ++i) {
@@ -643,8 +636,28 @@ void Store::load()
     const std::uint32_t ver = ver_present ? v_.cfg_ver : 0;
     backend_.end();
 
+    const bool want_import = (!ver_present || pending) && legacy_ != nullptr;
+    if (want_import) {
+        legacy_->begin(true);
+        const bool have = legacy_->stored_type("WIFI_SSID") == StoredType::Str ||
+                          legacy_->stored_type("MQTT_HOST") == StoredType::Str;
+        if (have) {
+            import_from(*legacy_);
+            legacy_import_ran_ = true;
+            legacy_import_again_ = pending;
+        }
+        legacy_->end();
+    }
+
     if (!ver_present || ver < kSchemaVersion) {
         migrate();
+    }
+    if (legacy_import_ran_) {
+        save();
+        backend_.begin(false);
+        backend_.put_bool("IMP_PEND", true);
+        backend_.end();
+        import_pending_ = true;
     }
 }
 
@@ -688,6 +701,14 @@ void Store::reset_wifi()
     save();
 }
 
+void Store::clear_import_pending()
+{
+    import_pending_ = false;
+    backend_.begin(false);
+    backend_.remove("IMP_PEND");
+    backend_.end();
+}
+
 void Store::factory_reset()
 {
     apply_defaults();
@@ -696,6 +717,7 @@ void Store::factory_reset()
     clear_published_ha_identity();
     clear_ota_note();
     clear_ota_failed();
+    clear_import_pending();
     backend_.begin(false);
     backend_.remove("HA_MIG");
     backend_.end();
