@@ -1424,6 +1424,8 @@ static void eid_forget()
     g_eid.hello_now = false;
     g_eid.net_fails = 0;
     g_eid.next_upload_ms = 0;
+    g_eid.next_hello_ms = 0;
+    g_eid.wifi_ms = 0;
     g_eid.error[0] = '\0';
 }
 
