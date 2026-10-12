@@ -47,7 +47,7 @@
     <button type="button" class="collapsible">Updates</button>
     <div class="content" data-section="upd"></div>
 
-    <button type="button" class="collapsible">Dongle settings</button>
+    <button type="button" class="collapsible">Advanced settings</button>
     <div class="content" data-section="dongle"></div>
 
     <button type="submit" class="submit">Save</button>
@@ -131,7 +131,7 @@
     ],
     tg: [
       ["FRMT_PYLD", "Payload Format", "select", [
-        ["0", "Value only"], ["1", "JSON basic"], ["2", "JSON + name"], ["3", "JSON full"]
+        ["0", "Value only"], ["1", "Basic JSON"], ["2", "Standard JSON"], ["3", "Full JSON"]
       ]],
       ["UPL_THROTTLE", "Update interval (s)", "number"],
       ["PUSH_FULL", "Push complete telegram over MQTT", "checkbox", null,
@@ -368,7 +368,7 @@
     (list || []).forEach(function (n) {
       if (!n || !n.ssid || seen[n.ssid]) return;
       seen[n.ssid] = true;
-      sel.appendChild(el("option", {value: n.ssid, text: n.ssid + " (" + n.rssi + " dBm)"}));
+      sel.appendChild(el("option", {value: n.ssid, text: n.ssid}));
     });
     if (storedSsid && !seen[storedSsid]) {
       sel.insertBefore(el("option", {value: storedSsid, text: storedSsid}), sel.firstChild);
