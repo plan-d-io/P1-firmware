@@ -21,6 +21,17 @@ bool json_has(const char* json, const char* needle)
 
 }  // namespace
 
+void test_update_defaults_official_and_self_built()
+{
+    p1cfg::Settings v;
+    p1cfg::apply_update_defaults(v, true);
+    TEST_ASSERT_TRUE(v.upd_auto);
+    TEST_ASSERT_TRUE(v.upd_autochk);
+    p1cfg::apply_update_defaults(v, false);
+    TEST_ASSERT_FALSE(v.upd_auto);
+    TEST_ASSERT_FALSE(v.upd_autochk);
+}
+
 void test_legacy_update_reason_and_empty_ha()
 {
     char buf[64];
@@ -59,8 +70,8 @@ void test_defaults_and_stored()
     TEST_ASSERT_FALSE(s.values().eid_en);
     TEST_ASSERT_EQUAL_STRING("", s.values().uuid);
     TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
-    TEST_ASSERT_TRUE(s.values().upd_auto);
-    TEST_ASSERT_TRUE(s.values().upd_autochk);
+    TEST_ASSERT_EQUAL(p1cfg::official_build(), s.values().upd_auto);
+    TEST_ASSERT_EQUAL(p1cfg::official_build(), s.values().upd_autochk);
     TEST_ASSERT_FALSE(s.values().push_full);
     TEST_ASSERT_FALSE(s.values().rint_spiffs);
     TEST_ASSERT_EQUAL_STRING("", s.values().email);
@@ -532,7 +543,7 @@ void test_schema6_migrates_new_keys()
     TEST_ASSERT_EQUAL_UINT32(7, s.values().reboots);
     TEST_ASSERT_FALSE(s.values().fip_en);
     TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
-    TEST_ASSERT_TRUE(s.values().upd_auto);
+    TEST_ASSERT_EQUAL(p1cfg::official_build(), s.values().upd_auto);
     TEST_ASSERT_FALSE(s.values().push_full);
     TEST_ASSERT_TRUE(mem.has("FIP_EN"));
     TEST_ASSERT_TRUE(mem.has("REL_CHAN"));
@@ -945,8 +956,8 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_EQUAL_STRING("", s.values().email);
     TEST_ASSERT_FALSE(s.values().push_full);
-    TEST_ASSERT_TRUE(s.values().upd_auto);
-    TEST_ASSERT_TRUE(s.values().upd_autochk);
+    TEST_ASSERT_EQUAL(p1cfg::official_build(), s.values().upd_auto);
+    TEST_ASSERT_EQUAL(p1cfg::official_build(), s.values().upd_autochk);
     TEST_ASSERT_EQUAL_STRING("auto", s.values().region);
     TEST_ASSERT_EQUAL_STRING("main", s.values().rel_chan);
     TEST_ASSERT_EQUAL_INT32(3, s.values().frmt_pyld);
@@ -1314,6 +1325,7 @@ extern "C" void tearDown() {}
 int main()
 {
     UNITY_BEGIN();
+    RUN_TEST(test_update_defaults_official_and_self_built);
     RUN_TEST(test_legacy_update_reason_and_empty_ha);
     RUN_TEST(test_defaults_and_stored);
     RUN_TEST(test_round_trip);

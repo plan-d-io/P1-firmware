@@ -288,6 +288,12 @@ std::size_t write_legacy_update_reason(char* out, std::size_t cap, const char* v
 // firmware reset-reason value so a blank reason publishes as "none".
 const char* ha_reason_or_none(const char* reason);
 
+// Official builds (EnergieID keys compiled in) default automatic updates on;
+// a self-built image without those keys defaults them off. Stored values and
+// a 2.x import are never overridden by this.
+bool official_build();
+void apply_update_defaults(Settings& v, bool official);
+
 // Arduino IPAddress uint32 (first octet in the lowest byte) → dotted text.
 // 0 writes an empty string. Returns false if cap is too small for a dotted-quad.
 bool format_arduino_ipv4(std::uint32_t v, char* out, std::size_t cap);

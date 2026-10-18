@@ -4,6 +4,13 @@
 #include <cstdio>
 #include <cstring>
 
+#if __has_include("eid_keys_gen.h")
+#include "eid_keys_gen.h"
+#endif
+#ifndef P1_EID_KEYS
+#define P1_EID_KEYS 0
+#endif
+
 namespace p1cfg {
 namespace {
 
@@ -147,6 +154,21 @@ const char* ha_reason_or_none(const char* reason)
         return "none";
     }
     return reason;
+}
+
+bool official_build()
+{
+#if P1_EID_KEYS
+    return true;
+#else
+    return false;
+#endif
+}
+
+void apply_update_defaults(Settings& v, bool official)
+{
+    v.upd_auto = official;
+    v.upd_autochk = official;
 }
 
 bool mask_contiguous(std::uint32_t mask_host)
@@ -473,8 +495,7 @@ void Store::apply_defaults()
     v_.mqtt_port = 1883;
     v_.frmt_pyld = 3;
     v_.upl_throttle = 10;
-    v_.upd_auto = true;
-    v_.upd_autochk = true;
+    apply_update_defaults(v_, official_build());
     std::memset(field_over_, 0, sizeof(field_over_));
 }
 
@@ -562,8 +583,9 @@ void Store::bind_table()
             sizeof(v_.eidclaim), "");
     add_str("UUID", "Device UUID", CFG_IN_API | CFG_READONLY, v_.uuid, sizeof(v_.uuid), "");
     add_str("REL_CHAN", "Release channel", CFG_IN_API, v_.rel_chan, sizeof(v_.rel_chan), "main");
-    add_bool("UPD_AUTO", "Automatic updates", CFG_IN_API, &v_.upd_auto, true);
-    add_bool("UPD_AUTOCHK", "Check for updates", CFG_IN_API, &v_.upd_autochk, true);
+    add_bool("UPD_AUTO", "Automatic updates", CFG_IN_API, &v_.upd_auto, official_build());
+    add_bool("UPD_AUTOCHK", "Check for updates", CFG_IN_API, &v_.upd_autochk,
+             official_build());
     add_str("EMAIL", "User email", CFG_IN_API, v_.email, sizeof(v_.email), "");
     add_bool("PUSH_FULL", "Publish full telegram (~1 KB)", CFG_IN_API, &v_.push_full, false);
     add_bool("RINT_SPIFFS", "Reinitialise filesystem", CFG_IN_API, &v_.rint_spiffs, false);
