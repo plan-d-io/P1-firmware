@@ -65,11 +65,16 @@ std::size_t config_snapshot(const p1cfg::Store& cfg, const char* hostname, const
 // True only for a JSON object whose "value" is the string "true".
 bool reboot_command(std::string_view payload);
 
+// 2.23 published heap as ESP.getFreeHeap()/1000.0 with unit kB. Writes a JSON
+// number token (trailing zeros stripped). 0 if the buffer is too small.
+std::size_t heap_kb_json(unsigned bytes, char* out, std::size_t cap);
+
 // value_json is a raw JSON token (193140 or "192.0.2.10"), not a C string to quote.
 // unix_ts == 0 omits the timestamp field (clock not yet valid).
+// unit, if non-empty, is written as unit_of_measurement (2.23 heap payloads).
 std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
                          std::string_view entity, std::string_view sensor_id, char* out,
-                         std::size_t cap, std::uint64_t unix_ts = 0);
+                         std::size_t cap, std::uint64_t unix_ts = 0, const char* unit = nullptr);
 
 // Reassembles MQTT_EVENT_DATA chunks. The handler copies; the loop takes.
 class InboundAssembler {

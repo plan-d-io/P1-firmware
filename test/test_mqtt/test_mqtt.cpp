@@ -235,6 +235,34 @@ void test_config_snapshot_hides_password()
     TEST_ASSERT_NULL(std::strstr(buf, "s3cret-pass"));
 }
 
+void test_heap_kb_json_matches_legacy_rounding()
+{
+    char buf[16];
+    TEST_ASSERT_EQUAL_UINT(1, p1mqtt::heap_kb_json(0, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("0", buf);
+    TEST_ASSERT_EQUAL_UINT(1, p1mqtt::heap_kb_json(1000, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("1", buf);
+    TEST_ASSERT_EQUAL_UINT(3, p1mqtt::heap_kb_json(500, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("0.5", buf);
+    TEST_ASSERT_EQUAL_UINT(7, p1mqtt::heap_kb_json(133564, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("133.564", buf);
+    TEST_ASSERT_EQUAL_UINT(7, p1mqtt::heap_kb_json(134204, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("134.204", buf);
+}
+
+void test_diag_payload_includes_heap_unit()
+{
+    char buf[256];
+    TEST_ASSERT_TRUE(p1mqtt::diag_payload("Free heap size", "133.564", "P1AABBCC",
+                                          "free_heap_size", buf, sizeof(buf), 0, "kB") > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"value\":133.564"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"unit_of_measurement\":\"kB\""));
+
+    TEST_ASSERT_TRUE(p1mqtt::diag_payload("Reboots", "12", "P1AABBCC", "reboots", buf,
+                                          sizeof(buf)) > 0);
+    TEST_ASSERT_NULL(std::strstr(buf, "unit_of_measurement"));
+}
+
 void test_diag_interval_gate()
 {
     TEST_ASSERT_FALSE(p1mqtt::interval_due(p1mqtt::kDiagIntervalMs, 59999, 0));
@@ -264,6 +292,8 @@ int main()
     RUN_TEST(test_inbound_oversized_dropped);
     RUN_TEST(test_reboot_command);
     RUN_TEST(test_config_snapshot_hides_password);
+    RUN_TEST(test_heap_kb_json_matches_legacy_rounding);
+    RUN_TEST(test_diag_payload_includes_heap_unit);
     RUN_TEST(test_diag_interval_gate);
     return UNITY_END();
 }

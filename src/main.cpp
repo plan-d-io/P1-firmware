@@ -1012,7 +1012,8 @@ static void publish_config_snapshot()
     g_mqtt.publish(topic, std::string_view(g_json, n), true);
 }
 
-static void publish_one_diag(const char* name, const char* friendly, const char* value_json)
+static void publish_one_diag(const char* name, const char* friendly, const char* value_json,
+                             const char* unit = nullptr)
 {
     char topic[p1mqtt::kTopicBuf];
     char payload[256];
@@ -1021,8 +1022,8 @@ static void publish_one_diag(const char* name, const char* friendly, const char*
         return;
     }
     const std::uint64_t ts = p1log::time_valid() ? p1log::unix_now() : 0;
-    if (p1mqtt::diag_payload(friendly, value_json, g_device_id, name, payload, sizeof(payload),
-                             ts) == 0) {
+    if (p1mqtt::diag_payload(friendly, value_json, g_device_id, name, payload, sizeof(payload), ts,
+                             unit) == 0) {
         return;
     }
     g_mqtt.publish(topic, payload, true);
@@ -1033,14 +1034,14 @@ static void publish_diagnostics()
     char num[24];
     char quoted[96];
 
-    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getFreeHeap()));
-    publish_one_diag("free_heap_size", "Free heap size", num);
+    p1mqtt::heap_kb_json(ESP.getFreeHeap(), num, sizeof(num));
+    publish_one_diag("free_heap_size", "Free heap size", num, "kB");
 
-    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getMaxAllocHeap()));
-    publish_one_diag("max_allocatable_block", "Allocatable block size", num);
+    p1mqtt::heap_kb_json(ESP.getMaxAllocHeap(), num, sizeof(num));
+    publish_one_diag("max_allocatable_block", "Allocatable block size", num, "kB");
 
-    std::snprintf(num, sizeof(num), "%lu", static_cast<unsigned long>(ESP.getMinFreeHeap()));
-    publish_one_diag("min_free_heap", "Lowest free heap size", num);
+    p1mqtt::heap_kb_json(ESP.getMinFreeHeap(), num, sizeof(num));
+    publish_one_diag("min_free_heap", "Lowest free heap size", num, "kB");
 
     const IPAddress ip = WiFi.localIP();
     std::snprintf(quoted, sizeof(quoted), "\"%u.%u.%u.%u\"", ip[0], ip[1], ip[2], ip[3]);
@@ -1048,6 +1049,9 @@ static void publish_diagnostics()
 
     std::snprintf(quoted, sizeof(quoted), "\"%s\"", p1fw::kFwVer);
     publish_one_diag("firmware", "Firmware", quoted);
+
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_cfg.values().rel_chan);
+    publish_one_diag("release_channel", "Release channel", quoted);
 
     std::snprintf(num, sizeof(num), "%ld", static_cast<long>(WiFi.RSSI()));
     publish_one_diag("rssi", "RSSI", num);

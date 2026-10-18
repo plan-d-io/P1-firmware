@@ -467,9 +467,31 @@ bool reboot_command(std::string_view payload)
     return saw_value && saw_true;
 }
 
+std::size_t heap_kb_json(unsigned bytes, char* out, std::size_t cap)
+{
+    write_nul(out, cap);
+    if (out == nullptr || cap < 2) {
+        return 0;
+    }
+    const int n = std::snprintf(out, cap, "%.3f", static_cast<double>(bytes) / 1000.0);
+    if (n <= 0 || static_cast<std::size_t>(n) >= cap) {
+        write_nul(out, cap);
+        return 0;
+    }
+    char* p = out + n;
+    while (p > out && *(p - 1) == '0') {
+        --p;
+    }
+    if (p > out && *(p - 1) == '.') {
+        --p;
+    }
+    *p = '\0';
+    return static_cast<std::size_t>(p - out);
+}
+
 std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
                          std::string_view entity, std::string_view sensor_id, char* out,
-                         std::size_t cap, std::uint64_t unix_ts)
+                         std::size_t cap, std::uint64_t unix_ts, const char* unit)
 {
     write_nul(out, cap);
     if (out == nullptr || cap == 0) {
@@ -482,6 +504,13 @@ std::size_t diag_payload(std::string_view friendly, std::string_view value_json,
         !append(out, cap, n, ",\"sensorId\":") || !append_json_str(out, cap, n, sensor_id)) {
         write_nul(out, cap);
         return 0;
+    }
+    if (unit != nullptr && unit[0] != '\0') {
+        if (!append(out, cap, n, ",\"unit_of_measurement\":") ||
+            !append_json_str(out, cap, n, unit)) {
+            write_nul(out, cap);
+            return 0;
+        }
     }
     if (unix_ts != 0) {
         char num[24];

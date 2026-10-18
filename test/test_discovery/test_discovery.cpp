@@ -467,6 +467,41 @@ void test_state_class_from_device_class()
     TEST_ASSERT_NULL(p1pub::ha_state_class(*tariff));
     TEST_ASSERT_NULL(p1pub::ha_state_class(*text));
     TEST_ASSERT_NULL(p1pub::ha_state_class(*eq));
+    TEST_ASSERT_EQUAL_STRING("kWh", p1pub::ha_unit(*energy));
+    TEST_ASSERT_EQUAL_STRING("kW", p1pub::ha_unit(*power));
+    TEST_ASSERT_EQUAL_STRING("V", p1pub::ha_unit(*volt));
+    TEST_ASSERT_EQUAL_STRING("A", p1pub::ha_unit(*curr));
+    TEST_ASSERT_EQUAL_STRING("m\xC2\xB3", p1pub::ha_unit(*gas));
+    TEST_ASSERT_EQUAL_STRING("m\xC2\xB3", p1pub::ha_unit(*water));
+    TEST_ASSERT_NULL(p1pub::ha_unit(*tariff));
+}
+
+void test_meter_discovery_attributes_match_legacy()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    char buf[p1pub::kDiscoveryCap];
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.00", kTestConfigUrl,
+                                            p1pub::enabled_field_mask(cfg), 0, buf,
+                                            sizeof(buf)) > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        buf, "\"dev_cla\":\"energy\",\"stat_cla\":\"total_increasing\",\"unit_of_meas\":\"kWh\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        buf, "\"dev_cla\":\"power\",\"stat_cla\":\"measurement\",\"unit_of_meas\":\"kW\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        buf, "\"dev_cla\":\"voltage\",\"stat_cla\":\"measurement\",\"unit_of_meas\":\"V\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(
+        buf, "\"dev_cla\":\"current\",\"stat_cla\":\"measurement\",\"unit_of_meas\":\"A\""));
+    const char* tariff = std::strstr(buf, "\"utility_meter_active_tariff_period\":{");
+    TEST_ASSERT_NOT_NULL(tariff);
+    const char* tend = std::strchr(tariff, '}');
+    TEST_ASSERT_NOT_NULL(tend);
+    const std::string tcomp(tariff, static_cast<std::size_t>(tend - tariff + 1));
+    TEST_ASSERT_NOT_NULL(std::strstr(tcomp.c_str(), "Active tariff period"));
+    TEST_ASSERT_NULL(std::strstr(tcomp.c_str(), "stat_cla"));
+    TEST_ASSERT_NULL(std::strstr(tcomp.c_str(), "dev_cla"));
+    TEST_ASSERT_NULL(std::strstr(tcomp.c_str(), "unit_of_meas"));
 }
 
 void test_availability_topic_once_at_root()
@@ -795,6 +830,8 @@ void test_abbreviated_payload_keeps_unique_ids()
     TEST_ASSERT_TRUE(json_closed(buf));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"P1AABBCC_free_heap_size\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"stat_t\":\"sys/devices/P1AABBCC/free_heap_size\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"unit_of_meas\":\"kB\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"P1AABBCC_release_channel\""));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"ent_cat\":\"diagnostic\""));
     TEST_ASSERT_NULL(std::strstr(buf, "\"unique_id\":"));
     TEST_ASSERT_NULL(std::strstr(buf, "\"~\""));
@@ -841,6 +878,7 @@ int main()
     RUN_TEST(test_no_object_id);
     RUN_TEST(test_component_name_omits_device_name);
     RUN_TEST(test_state_class_from_device_class);
+    RUN_TEST(test_meter_discovery_attributes_match_legacy);
     RUN_TEST(test_availability_topic_once_at_root);
     RUN_TEST(test_value_template_gated_on_format);
     RUN_TEST(test_default_catalogue_json_size);

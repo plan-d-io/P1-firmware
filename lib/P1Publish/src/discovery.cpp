@@ -116,20 +116,22 @@ struct LiveDiag {
     const char* channel;
     const char* name;
     bool is_switch;
+    const char* unit;
 };
 
 constexpr LiveDiag kLiveDiag[] = {
-    {"free_heap_size", "Free heap size", false},
-    {"max_allocatable_block", "Allocatable block size", false},
-    {"min_free_heap", "Lowest free heap size", false},
-    {"ip", "IP", false},
-    {"firmware", "Firmware", false},
-    {"rssi", "RSSI", false},
-    {"reboots", "Reboots", false},
-    {"last_reset_reason_hw", "Last reset reason (hardware)", false},
-    {"last_reset_reason_fw", "Last reset reason (firmware)", false},
-    {"syslog", "System log", false},
-    {"reboot", "Reboot", true},
+    {"free_heap_size", "Free heap size", false, "kB"},
+    {"max_allocatable_block", "Allocatable block size", false, "kB"},
+    {"min_free_heap", "Lowest free heap size", false, "kB"},
+    {"ip", "IP", false, nullptr},
+    {"firmware", "Firmware", false, nullptr},
+    {"rssi", "RSSI", false, nullptr},
+    {"reboots", "Reboots", false, nullptr},
+    {"last_reset_reason_hw", "Last reset reason (hardware)", false, nullptr},
+    {"last_reset_reason_fw", "Last reset reason (firmware)", false, nullptr},
+    {"release_channel", "Release channel", false, nullptr},
+    {"syslog", "System log", false, nullptr},
+    {"reboot", "Reboot", true, nullptr},
 };
 
 bool write_origin(Wr& w, const char* fw_ver, bool& first)
@@ -455,6 +457,11 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
             !wr_json_str(w, "{{ value_json.value }}") || !wr_key(w, "ent_cat", f) ||
             !wr_json_str(w, "diagnostic")) {
             return 0;
+        }
+        if (d.unit != nullptr && d.unit[0] != '\0') {
+            if (!wr_key(w, "unit_of_meas", f) || !wr_json_str(w, d.unit)) {
+                return 0;
+            }
         }
         if (d.is_switch) {
             if (!wr_key(w, "cmd_t", f) || !wr_json_str(w, cmd_full) || !wr_key(w, "pl_on", f) ||
