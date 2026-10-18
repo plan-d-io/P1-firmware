@@ -21,6 +21,20 @@ bool json_has(const char* json, const char* needle)
 
 }  // namespace
 
+void test_legacy_update_reason_and_empty_ha()
+{
+    char buf[64];
+    TEST_ASSERT_TRUE(p1cfg::write_legacy_update_reason(buf, sizeof(buf), "") > 0);
+    TEST_ASSERT_EQUAL_STRING("Updated from legacy firmware", buf);
+    TEST_ASSERT_TRUE(p1cfg::write_legacy_update_reason(buf, sizeof(buf), nullptr) > 0);
+    TEST_ASSERT_EQUAL_STRING("Updated from legacy firmware", buf);
+    TEST_ASSERT_TRUE(p1cfg::write_legacy_update_reason(buf, sizeof(buf), "2.23") > 0);
+    TEST_ASSERT_EQUAL_STRING("Updated from legacy firmware 2.23", buf);
+    TEST_ASSERT_EQUAL_STRING("none", p1cfg::ha_reason_or_none(""));
+    TEST_ASSERT_EQUAL_STRING("none", p1cfg::ha_reason_or_none(nullptr));
+    TEST_ASSERT_EQUAL_STRING("SW_CPU_RESET", p1cfg::ha_reason_or_none("SW_CPU_RESET"));
+}
+
 void test_defaults_and_stored()
 {
     MemoryBackend mem;
@@ -1300,6 +1314,7 @@ extern "C" void tearDown() {}
 int main()
 {
     UNITY_BEGIN();
+    RUN_TEST(test_legacy_update_reason_and_empty_ha);
     RUN_TEST(test_defaults_and_stored);
     RUN_TEST(test_round_trip);
     RUN_TEST(test_json_out_metadata);

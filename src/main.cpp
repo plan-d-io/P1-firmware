@@ -1062,7 +1062,8 @@ static void publish_diagnostics()
     std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_hw_reset_reason);
     publish_one_diag("last_reset_reason_hw", "Last reset reason (hardware)", quoted);
 
-    std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_fw_reset_reason);
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"",
+                  p1cfg::ha_reason_or_none(g_fw_reset_reason));
     publish_one_diag("last_reset_reason_fw", "Last reset reason (firmware)", quoted);
 
     publish_one_diag("reboot", "Reboot", "\"off\"");
@@ -2741,6 +2742,8 @@ void setup()
 
     g_cfg.load();
     if (g_cfg.legacy_import_ran()) {
+        p1cfg::write_legacy_update_reason(g_cfg.values().last_reset,
+                                          sizeof(g_cfg.values().last_reset), "");
         for (std::size_t i = 0; i < g_cfg.legacy_skip_count(); ++i) {
             char w[48];
             std::snprintf(w, sizeof(w), "Legacy import skipped %s", g_cfg.legacy_skip_key(i));

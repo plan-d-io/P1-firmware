@@ -279,6 +279,15 @@ const char* json_status_name(JsonStatus s);
 bool ip_ok(const char* s);
 bool rel_chan_ok(const char* s);
 
+// Text for LAST_RESET on the boot that imported 2.x settings.
+// version_display empty → "Updated from legacy firmware".
+// Otherwise appends a space and that display string. Never invents a version.
+std::size_t write_legacy_update_reason(char* out, std::size_t cap, const char* version_display);
+
+// Home Assistant shows an empty MQTT sensor as "unknown". Use this for the
+// firmware reset-reason value so a blank reason publishes as "none".
+const char* ha_reason_or_none(const char* reason);
+
 // Arduino IPAddress uint32 (first octet in the lowest byte) → dotted text.
 // 0 writes an empty string. Returns false if cap is too small for a dotted-quad.
 bool format_arduino_ipv4(std::uint32_t v, char* out, std::size_t cap);

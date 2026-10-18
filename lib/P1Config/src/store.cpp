@@ -119,6 +119,36 @@ bool ip_ok(const char* s)
     return parse_ipv4(s, unused);
 }
 
+std::size_t write_legacy_update_reason(char* out, std::size_t cap, const char* version_display)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    const char* kBase = "Updated from legacy firmware";
+    if (version_display == nullptr || version_display[0] == '\0') {
+        const int n = std::snprintf(out, cap, "%s", kBase);
+        if (n <= 0 || static_cast<std::size_t>(n) >= cap) {
+            out[0] = '\0';
+            return 0;
+        }
+        return static_cast<std::size_t>(n);
+    }
+    const int n = std::snprintf(out, cap, "%s %s", kBase, version_display);
+    if (n <= 0 || static_cast<std::size_t>(n) >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return static_cast<std::size_t>(n);
+}
+
+const char* ha_reason_or_none(const char* reason)
+{
+    if (reason == nullptr || reason[0] == '\0') {
+        return "none";
+    }
+    return reason;
+}
+
 bool mask_contiguous(std::uint32_t mask_host)
 {
     if (mask_host == 0) {
