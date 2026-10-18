@@ -533,6 +533,21 @@ std::size_t for_each_legacy_discovery_topic(const p1cfg::Store& cfg, const char*
     };
     one_id(device_id);
     one_id(legacy_id);
+    // 2.x never published a device-discovery config, but HA keeps a device
+    // registry entry under the unpadded id. Empty-retain it when the ids differ
+    // so the leftover debug device can disappear. Never clear the current id:
+    // that is the 3.0x device topic published just before step 3.
+    if (legacy_id != nullptr && legacy_id[0] != '\0' &&
+        (device_id == nullptr || std::strcmp(legacy_id, device_id) != 0)) {
+        Wr w{topic, sizeof(topic)};
+        wr_append(w, "homeassistant/device/");
+        wr_append(w, legacy_id);
+        wr_append(w, "/config");
+        if (finish(w) != 0) {
+            emit_topic(fn, ctx, topic);
+            ++n;
+        }
+    }
     return n;
 }
 

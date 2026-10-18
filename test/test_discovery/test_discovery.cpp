@@ -615,7 +615,15 @@ void test_legacy_topic_enumeration()
     const std::size_t n = p1pub::for_each_legacy_discovery_topic(
         cfg, "P10AB2C3", "P1AB2C3", collect, &topics);
     TEST_ASSERT_EQUAL_UINT(n, topics.size());
-    TEST_ASSERT_EQUAL_UINT(50 + 12 + 12, n);
+    TEST_ASSERT_EQUAL_UINT(50 + 12 + 12 + 1, n);
+    bool saw_legacy_device = false;
+    for (const std::string& t : topics) {
+        if (t == "homeassistant/device/P1AB2C3/config") {
+            saw_legacy_device = true;
+        }
+        TEST_ASSERT_FALSE(t == "homeassistant/device/P10AB2C3/config");
+    }
+    TEST_ASSERT_TRUE(saw_legacy_device);
 
     bool saw_new = false;
     bool saw_old = false;
@@ -639,6 +647,54 @@ void test_legacy_topic_enumeration()
     TEST_ASSERT_TRUE(saw_old);
     TEST_ASSERT_TRUE(saw_meter);
     TEST_ASSERT_TRUE(saw_switch);
+}
+
+void test_legacy_debug_topics_cover_2x_unpadded_id()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    const std::uint8_t mac[6] = {0x02, 0x00, 0x00, 0xA5, 0x0C, 0x3E};
+    char id[p1mqtt::kDeviceIdCap];
+    char legacy[p1mqtt::kDeviceIdCap];
+    p1mqtt::device_id(mac, id, sizeof(id));
+    p1mqtt::legacy_device_id(mac, legacy, sizeof(legacy));
+    TEST_ASSERT_EQUAL_STRING("P1A50C3E", id);
+    TEST_ASSERT_EQUAL_STRING("P1A5C3E", legacy);
+
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    p1pub::for_each_legacy_discovery_topic(cfg, id, legacy, collect, &topics);
+
+    const char* k23[] = {
+        "homeassistant/sensor/P1A5C3E_reboots/config",
+        "homeassistant/sensor/P1A5C3E_last_reset_reason_hw/config",
+        "homeassistant/sensor/P1A5C3E_free_heap_size/config",
+        "homeassistant/sensor/P1A5C3E_max_allocatable_block/config",
+        "homeassistant/sensor/P1A5C3E_min_free_heap/config",
+        "homeassistant/sensor/P1A5C3E_last_reset_reason_fw/config",
+        "homeassistant/sensor/P1A5C3E_syslog/config",
+        "homeassistant/sensor/P1A5C3E_ip/config",
+        "homeassistant/sensor/P1A5C3E_firmware/config",
+        "homeassistant/sensor/P1A5C3E_release_channel/config",
+        "homeassistant/switch/P1A5C3E_reboot/config",
+        "homeassistant/device/P1A5C3E/config",
+    };
+    for (const char* want : k23) {
+        bool found = false;
+        for (const std::string& t : topics) {
+            if (t == want) {
+                found = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(found, want);
+    }
+    for (const std::string& t : topics) {
+        TEST_ASSERT_FALSE(t == "homeassistant/device/P1A50C3E/config");
+    }
 }
 
 void test_ha_status_inbound_topic()
@@ -885,6 +941,7 @@ int main()
     RUN_TEST(test_all_fields_json_size);
     RUN_TEST(test_removal_form_platform_only);
     RUN_TEST(test_legacy_topic_enumeration);
+    RUN_TEST(test_legacy_debug_topics_cover_2x_unpadded_id);
     RUN_TEST(test_ha_status_inbound_topic);
     RUN_TEST(test_identity_clear_ha_device);
     RUN_TEST(test_identity_clear_mqtt_prefix);
