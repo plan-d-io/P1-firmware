@@ -184,6 +184,9 @@ static unsigned g_rejected = 0;
 static std::uint32_t g_last_telegram_ms = 0;
 static bool g_hold_p1 = false;  // desk: pause telegram handling without unplugging
 static volatile unsigned g_ovf = 0;
+static unsigned g_uart_heap_before = 0;
+static unsigned g_uart_heap_after = 0;
+static std::uint32_t g_loop_max_ms = 0;
 static volatile unsigned g_full = 0;
 static volatile unsigned g_frm = 0;
 static volatile bool g_got_ip = false;
@@ -2193,6 +2196,8 @@ static void handle_inbound()
     }
 }
 
+static void on_telegram(const p1dsmr::Data& data);
+
 static void snapshot_readings(const p1dsmr::Data& data)
 {
     const p1cfg::Field* cat = p1cfg::catalogue();
@@ -2207,6 +2212,30 @@ static void snapshot_readings(const p1dsmr::Data& data)
     g_readings_view.count = nf;
     g_eid.batch_n = p1eid::upload_batch(data, g_eid.batch, sizeof(g_eid.batch));
     g_eid.batch_ms = millis();
+}
+
+static void apply_uart_bytes(std::span<const std::uint8_t> bytes)
+{
+    const unsigned prev = g_ok + g_rejected;
+    const auto stats = g_reader.feed(bytes, on_telegram);
+    g_ok += static_cast<unsigned>(stats.ok);
+    g_rejected += static_cast<unsigned>(stats.rejected);
+    if (stats.rejected > 0) {
+        g_log.log(p1log::Level::Warn, "Telegram rejected (CRC)");
+    }
+
+    const unsigned now = g_ok + g_rejected;
+    for (unsigned k = prev + 1; k <= now; ++k) {
+        if (k % 10 == 0) {
+            char msg[96];
+            std::snprintf(msg, sizeof(msg),
+                          "S ok=%u rejected=%u heap=%u ovf=%u full=%u frm=%u", g_ok, g_rejected,
+                          static_cast<unsigned>(ESP.getFreeHeap()),
+                          static_cast<unsigned>(g_ovf), static_cast<unsigned>(g_full),
+                          static_cast<unsigned>(g_frm));
+            g_log.log(p1log::Level::Debug, msg);
+        }
+    }
 }
 
 static void on_telegram(const p1dsmr::Data& data)
@@ -2691,7 +2720,13 @@ void setup()
     // board provides an external pull-up; pressed = LOW (M5Atom Button invert).
     pinMode(kBtn, INPUT);
 
+    g_uart_heap_before = static_cast<unsigned>(ESP.getFreeHeap());
+#if defined(P1_TEST_OLD_UART)
     const size_t rx = Serial1.setRxBufferSize(1024);
+#else
+    const size_t rx = Serial1.setRxBufferSize(p1dsmr::Reader::kBufferSize);
+#endif
+    g_uart_heap_after = static_cast<unsigned>(ESP.getFreeHeap());
     Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
     Serial1.onReceiveError(on_uart_err);
 
@@ -2826,6 +2861,10 @@ void setup()
                   p1fw::kFwVer, g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
                   static_cast<unsigned>(rx), part);
     g_log.log(p1log::Level::Info, boot);
+    char uart_heap[80];
+    std::snprintf(uart_heap, sizeof(uart_heap), "UART heap before=%u after=%u",
+                  g_uart_heap_before, g_uart_heap_after);
+    g_log.log(p1log::Level::Info, uart_heap);
     char reasons[128];
     std::snprintf(reasons, sizeof(reasons), "Reset hw=%s fw=%s", g_hw_reset_reason,
                   g_fw_reset_reason[0] != '\0' ? g_fw_reset_reason : "(none)");
@@ -2849,6 +2888,10 @@ void setup()
 
 void loop()
 {
+#ifdef P1_TEST_LOOP_DELAY_MS
+    delay(static_cast<std::uint32_t>(P1_TEST_LOOP_DELAY_MS));
+#endif
+    const std::uint32_t loop_t0 = millis();
     if (g_cfg.consume_rel_chan_changed()) {
         clear_ota_check_result();
     }
@@ -2954,30 +2997,33 @@ void loop()
         g_last_diag_ms = millis();
     }
 
+#if defined(P1_TEST_OLD_UART)
     std::uint8_t buf[64];
     const size_t n = Serial1.read(buf, sizeof(buf));
     if (n > 0) {
-        const unsigned prev = g_ok + g_rejected;
-        const auto stats =
-            g_reader.feed(std::span<const std::uint8_t>(buf, n), on_telegram);
-        g_ok += static_cast<unsigned>(stats.ok);
-        g_rejected += static_cast<unsigned>(stats.rejected);
-        if (stats.rejected > 0) {
-            g_log.log(p1log::Level::Warn, "Telegram rejected (CRC)");
+        apply_uart_bytes(std::span<const std::uint8_t>(buf, n));
+    }
+#else
+    std::uint8_t buf[256];
+    std::size_t drained = 0;
+    while (Serial1.available() > 0 && drained < p1dsmr::Reader::kBufferSize) {
+        std::size_t want = sizeof(buf);
+        const std::size_t room = p1dsmr::Reader::kBufferSize - drained;
+        if (want > room) {
+            want = room;
         }
+        const size_t n = Serial1.read(buf, want);
+        if (n == 0) {
+            break;
+        }
+        drained += n;
+        apply_uart_bytes(std::span<const std::uint8_t>(buf, n));
+    }
+#endif
 
-        const unsigned now = g_ok + g_rejected;
-        for (unsigned k = prev + 1; k <= now; ++k) {
-            if (k % 10 == 0) {
-                char msg[96];
-                std::snprintf(msg, sizeof(msg),
-                              "S ok=%u rejected=%u heap=%u ovf=%u full=%u frm=%u", g_ok, g_rejected,
-                              static_cast<unsigned>(ESP.getFreeHeap()),
-                              static_cast<unsigned>(g_ovf), static_cast<unsigned>(g_full),
-                              static_cast<unsigned>(g_frm));
-                g_log.log(p1log::Level::Debug, msg);
-            }
-        }
+    const std::uint32_t loop_dt = millis() - loop_t0;
+    if (loop_dt > g_loop_max_ms) {
+        g_loop_max_ms = loop_dt;
     }
 
 #ifdef P1_TEST_CRASH_AT_MS
