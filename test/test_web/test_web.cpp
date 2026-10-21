@@ -46,6 +46,10 @@ void test_route_ap_fallback()
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Post, "/fields"));
     TEST_ASSERT_EQUAL(p1web::Route::Status,
                       p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/status"));
+    TEST_ASSERT_EQUAL(p1web::Route::LogRejected,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/log/rejected"));
+    TEST_ASSERT_EQUAL(p1web::Route::LogSkipped,
+                      p1web::resolve(p1web::Mode::Ap, p1web::Method::Get, "/log/skipped"));
 }
 
 void test_route_station()
@@ -74,6 +78,10 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/syslog0"));
     TEST_ASSERT_EQUAL(p1web::Route::LogPage,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/log"));
+    TEST_ASSERT_EQUAL(p1web::Route::LogRejected,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/log/rejected"));
+    TEST_ASSERT_EQUAL(p1web::Route::LogSkipped,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/log/skipped"));
     TEST_ASSERT_EQUAL(p1web::Route::Reboot,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/reboot"));
     TEST_ASSERT_EQUAL(p1web::Route::NotFound,
@@ -194,6 +202,8 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_skipped\":2"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"has_rejected_telegram\":false"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"has_skipped_telegram\":false"));
     TEST_ASSERT_NULL(std::strstr(buf, "password"));
     TEST_ASSERT_NULL(std::strstr(buf, "secret"));
 }

@@ -277,6 +277,13 @@ button.submit,
     padding: 0 12px;
 }
 
+.log-downloads {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0.6rem 0 0;
+}
+.log-downloads a { color: #1fa3ec; }
 .log-toolbar {
     display: flex;
     gap: 12px;

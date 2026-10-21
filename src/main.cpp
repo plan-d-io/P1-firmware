@@ -221,6 +221,16 @@ static std::atomic<bool> g_fw_busy{false};
 static bool g_lan_reboot_armed = false;
 static std::uint32_t g_lan_reboot_at = 0;
 static p1web::UploadIo g_upload_io{};
+static p1web::TelegramIo g_telegram_io{};
+
+struct TelegramKeep {
+    char bytes[p1dsmr::Reader::kBufferSize]{};
+    std::size_t len = 0;
+    char reason[p1dsmr::Reader::kReasonMax]{};
+    char when[24]{};
+};
+static TelegramKeep g_keep_rej{};
+static TelegramKeep g_keep_skip{};
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
@@ -579,6 +589,8 @@ static void refresh_status_view()
     g_status_view.telegrams_ok = g_ok;
     g_status_view.telegrams_rejected = g_rejected;
     g_status_view.telegrams_skipped = g_skipped;
+    g_status_view.has_rejected_telegram = g_keep_rej.len > 0;
+    g_status_view.has_skipped_telegram = g_keep_skip.len > 0;
     g_status_view.upd_checked = g_upd_checked;
     g_status_view.upd_available = g_upd_available;
     g_status_view.upd_found = g_upd_found;
@@ -2223,6 +2235,35 @@ static void snapshot_readings(const p1dsmr::Data& data)
     g_eid.batch_ms = millis();
 }
 
+static void keep_telegram(TelegramKeep& dst, std::string_view raw, std::string_view reason)
+{
+    dst.len = (raw.size() < sizeof(dst.bytes)) ? raw.size() : sizeof(dst.bytes);
+    if (dst.len > 0 && raw.data() != nullptr) {
+        std::memcpy(dst.bytes, raw.data(), dst.len);
+    }
+    const std::size_t rn = (reason.size() < sizeof(dst.reason) - 1) ? reason.size()
+                                                                     : sizeof(dst.reason) - 1;
+    std::memcpy(dst.reason, reason.data(), rn);
+    dst.reason[rn] = '\0';
+    p1log::format_iso_utc(p1log::unix_now(), dst.when, sizeof(dst.when));
+}
+
+static p1web::TelegramDump dump_rejected()
+{
+    if (g_keep_rej.len == 0) {
+        return {};
+    }
+    return {g_keep_rej.bytes, g_keep_rej.len, g_keep_rej.reason, g_keep_rej.when};
+}
+
+static p1web::TelegramDump dump_skipped()
+{
+    if (g_keep_skip.len == 0) {
+        return {};
+    }
+    return {g_keep_skip.bytes, g_keep_skip.len, g_keep_skip.reason, g_keep_skip.when};
+}
+
 static void set_tele_reason(std::string_view reason)
 {
     const std::size_t n = (reason.size() < sizeof(g_tele_last_reason) - 1)
@@ -2295,9 +2336,11 @@ static void apply_uart_bytes(std::span<const std::uint8_t> bytes)
     g_win_rej += static_cast<unsigned>(stats.rejected);
     g_win_skip += static_cast<unsigned>(stats.skipped);
     if (stats.skipped > 0) {
+        keep_telegram(g_keep_skip, g_reader.last_with_skip(), g_reader.last_skipped_line());
         note_tele_problem("Telegram skipped line", g_reader.last_skipped_line());
     }
     if (stats.rejected > 0) {
+        keep_telegram(g_keep_rej, g_reader.last_rejected(), g_reader.last_reject_reason());
         note_tele_problem("Telegram rejected", g_reader.last_reject_reason());
     }
 
@@ -2956,7 +2999,10 @@ void setup()
     g_upload_io.end = &fw_end;
     g_upload_io.abort = &fw_abort;
     g_upload_io.max_image = &fw_max_image;
+    g_telegram_io.rejected = &dump_rejected;
+    g_telegram_io.skipped = &dump_skipped;
     g_web.set_upload_io(&g_upload_io);
+    g_web.set_telegram_io(&g_telegram_io);
     g_web.set_store(&g_cfg);
     g_web.set_files(&g_fs);
     WiFi.onEvent(on_wifi_event);

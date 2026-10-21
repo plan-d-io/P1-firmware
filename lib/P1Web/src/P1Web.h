@@ -67,6 +67,8 @@ enum class Route : std::uint8_t {
     Syslog,
     Syslog0,
     LogPage,
+    LogRejected,
+    LogSkipped,
     Reboot,
     ResetWifi,
     ResetFactory,
@@ -159,6 +161,8 @@ struct StatusView {
     unsigned telegrams_ok = 0;
     unsigned telegrams_rejected = 0;
     unsigned telegrams_skipped = 0;
+    bool has_rejected_telegram = false;
+    bool has_skipped_telegram = false;
     bool upd_checked = false;
     bool upd_available = false;
     unsigned upd_found = 0;
@@ -227,6 +231,18 @@ struct UploadIo {
     std::size_t (*max_image)() = nullptr;
 };
 
+struct TelegramDump {
+    const char* bytes = nullptr;
+    std::size_t len = 0;
+    const char* reason = "";
+    const char* when = "";
+};
+
+struct TelegramIo {
+    TelegramDump (*rejected)() = nullptr;
+    TelegramDump (*skipped)() = nullptr;
+};
+
 UploadRefuse check_upload_start(bool window_open, bool busy, bool have_length,
                                 std::size_t content_length, std::size_t max_image);
 UploadRefuse check_firmware_magic(std::uint8_t first);
@@ -276,6 +292,7 @@ public:
     void set_store(p1cfg::Store* store);
     void set_files(p1log::FileStore* files);
     void set_upload_io(const UploadIo* io);
+    void set_telegram_io(const TelegramIo* io);
     Actions* actions();
     bool running() const { return running_; }
 
@@ -287,6 +304,7 @@ public:
     p1cfg::Store* store_ptr() const;
     p1log::FileStore* files_ptr() const;
     const UploadIo* upload_io_ptr() const;
+    const TelegramIo* telegram_io_ptr() const;
 
 private:
     bool running_ = false;
@@ -298,6 +316,7 @@ private:
     p1cfg::Store* store_ = nullptr;
     p1log::FileStore* files_ = nullptr;
     const UploadIo* upload_io_ = nullptr;
+    const TelegramIo* telegram_io_ = nullptr;
     Actions actions_{};
 };
 

@@ -64,6 +64,12 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/log" || uri == "/log.html") {
         return Route::LogPage;
     }
+    if (uri == "/log/rejected" && method == Method::Get) {
+        return Route::LogRejected;
+    }
+    if (uri == "/log/skipped" && method == Method::Get) {
+        return Route::LogSkipped;
+    }
     if (uri == "/reboot" && method == Method::Post) {
         return Route::Reboot;
     }
@@ -389,6 +395,8 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put_u("telegrams_ok", v.telegrams_ok) || !put(",") ||
         !put_u("telegrams_rejected", v.telegrams_rejected) || !put(",") ||
         !put_u("telegrams_skipped", v.telegrams_skipped) || !put(",") ||
+        !put_bool("has_rejected_telegram", v.has_rejected_telegram) || !put(",") ||
+        !put_bool("has_skipped_telegram", v.has_skipped_telegram) || !put(",") ||
         !put_bool("upd_checked", v.upd_checked) || !put(",") ||
         !put_bool("upd_available", v.upd_available) || !put(",") ||
         !put_u("upd_found", v.upd_found) || !put(",") ||

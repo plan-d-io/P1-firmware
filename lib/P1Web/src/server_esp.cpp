@@ -355,6 +355,33 @@ esp_err_t dispatch(httpd_req_t* req)
     }
     case Route::LogPage:
         return send_gzip(req, "text/html", assets::kLogHtmlGz, assets::kLogHtmlGzLen);
+    case Route::LogRejected:
+    case Route::LogSkipped: {
+        const TelegramIo* io = g_server->telegram_io_ptr();
+        TelegramDump dump{};
+        if (io != nullptr) {
+            dump = (route == Route::LogRejected)
+                       ? (io->rejected != nullptr ? io->rejected() : TelegramDump{})
+                       : (io->skipped != nullptr ? io->skipped() : TelegramDump{});
+        }
+        if (dump.bytes == nullptr || dump.len == 0) {
+            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "none");
+            return ESP_FAIL;
+        }
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        httpd_resp_set_hdr(req, "Content-Disposition",
+                           (route == Route::LogRejected)
+                               ? "attachment; filename=\"rejected.p1\""
+                               : "attachment; filename=\"skipped.p1\"");
+        if (dump.reason != nullptr && dump.reason[0] != '\0') {
+            httpd_resp_set_hdr(req, "X-P1-Reason", dump.reason);
+        }
+        if (dump.when != nullptr && dump.when[0] != '\0') {
+            httpd_resp_set_hdr(req, "X-P1-Time", dump.when);
+        }
+        return httpd_resp_send(req, dump.bytes, static_cast<ssize_t>(dump.len));
+    }
     case Route::Syslog:
     case Route::Syslog0: {
         p1log::FileStore* fs = g_server->files_ptr();
@@ -565,6 +592,11 @@ const UploadIo* Server::upload_io_ptr() const
     return upload_io_;
 }
 
+const TelegramIo* Server::telegram_io_ptr() const
+{
+    return telegram_io_;
+}
+
 bool Server::begin(Mode mode)
 {
     if (running_) {
@@ -605,6 +637,8 @@ bool Server::begin(Mode mode)
     register_one(handle, "/syslog0", HTTP_GET);
     register_one(handle, "/log", HTTP_GET);
     register_one(handle, "/log.html", HTTP_GET);
+    register_one(handle, "/log/rejected", HTTP_GET);
+    register_one(handle, "/log/skipped", HTTP_GET);
     register_one(handle, "/reboot", HTTP_POST);
     register_one(handle, "/reset/wifi", HTTP_POST);
     register_one(handle, "/reset/factory", HTTP_POST);
@@ -665,6 +699,11 @@ void Server::set_files(p1log::FileStore* files)
 void Server::set_upload_io(const UploadIo* io)
 {
     upload_io_ = io;
+}
+
+void Server::set_telegram_io(const TelegramIo* io)
+{
+    telegram_io_ = io;
 }
 
 Actions* Server::actions()

@@ -10,6 +10,10 @@
 <div class="container log-page">
   <h2>Dongle log</h2>
   <p class="lede">Debug lines are not stored. They appear on the serial console only.</p>
+  <p class="log-downloads">
+    <a id="dlRejected" hidden href="/log/rejected" download="rejected.p1">Download last rejected telegram</a>
+    <a id="dlSkipped" hidden href="/log/skipped" download="skipped.p1">Download last telegram with a skipped line</a>
+  </p>
   <div class="log-toolbar">
     <label>Level
       <select id="levelFilter">
@@ -94,6 +98,10 @@
       }
       rows.reverse();
       render();
+      return fetch("/api/status").then(function (r) { return r.json(); }).then(function (st) {
+        document.getElementById("dlRejected").hidden = !st.has_rejected_telegram;
+        document.getElementById("dlSkipped").hidden = !st.has_skipped_telegram;
+      }).catch(function () {});
     }).catch(function (e) {
       document.getElementById("logFoot").textContent = String(e);
     });
