@@ -73,6 +73,7 @@ using Data = dsmr_parser::ParsedData<
 struct FeedStats {
     std::size_t ok = 0;
     std::size_t rejected = 0;
+    std::size_t skipped = 0;
 };
 
 // Byte-in, parsed telegram out — or a rejection. Arduino-free.
@@ -84,6 +85,8 @@ public:
     enum class Status : std::uint8_t { NeedMore, Ok, Rejected };
 
     static constexpr std::size_t kBufferSize = 4096;
+    static constexpr std::size_t kSkipLineMax = 100;
+    static constexpr std::size_t kReasonMax = 96;
 
     Reader();
     ~Reader();
@@ -102,15 +105,32 @@ public:
     std::string_view raw() const { return raw_; }
     bool has_telegram() const { return has_; }
 
+    std::size_t last_skipped_count() const { return skipped_count_; }
+    std::string_view last_skipped_line() const { return skipped_line_; }
+    std::string_view last_reject_reason() const { return reject_reason_; }
+    std::string_view last_rejected() const { return last_rejected_; }
+    std::string_view last_with_skip() const { return last_with_skip_; }
+
 private:
     void reset_data();
     Data& data_mut();
-    bool parse_telegram(const dsmr_parser::DsmrUnencryptedTelegram& telegram);
+    void note_skip(std::string_view line);
+    void note_reject(const char* reason);
+    void save_rejected();
+    bool consume_line(std::string_view line);
+    void parse_valid_crc(const dsmr_parser::DsmrUnencryptedTelegram& telegram);
 
     std::uint8_t buf_[kBufferSize]{};
+    std::uint8_t capture_[kBufferSize]{};
+    std::size_t capture_len_ = 0;
     dsmr_parser::PacketAccumulator acc_;
     alignas(Data) unsigned char data_store_[sizeof(Data)];
     std::string raw_;
+    std::string last_rejected_;
+    std::string last_with_skip_;
+    char skipped_line_[kSkipLineMax + 1]{};
+    char reject_reason_[kReasonMax]{};
+    std::size_t skipped_count_ = 0;
     int crc_nibbles_left_ = 0;
     bool has_ = false;
 };
@@ -123,6 +143,7 @@ FeedStats Reader::feed(std::span<const std::uint8_t> bytes, OnOk&& on_ok)
         switch (feed(b)) {
         case Status::Ok:
             ++stats.ok;
+            stats.skipped += last_skipped_count();
             on_ok(data());
             break;
         case Status::Rejected:
