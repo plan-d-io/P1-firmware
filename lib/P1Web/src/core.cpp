@@ -388,6 +388,7 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put(",") || !put_bool("mqtt_en", v.mqtt_en) || !put(",") ||
         !put_u("telegrams_ok", v.telegrams_ok) || !put(",") ||
         !put_u("telegrams_rejected", v.telegrams_rejected) || !put(",") ||
+        !put_u("telegrams_skipped", v.telegrams_skipped) || !put(",") ||
         !put_bool("upd_checked", v.upd_checked) || !put(",") ||
         !put_bool("upd_available", v.upd_available) || !put(",") ||
         !put_u("upd_found", v.upd_found) || !put(",") ||

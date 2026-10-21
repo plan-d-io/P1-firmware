@@ -122,7 +122,7 @@ static char g_status_ip[16]{};
 static char g_status_uptime[24]{};
 static char g_status_heap[16]{};
 static char g_status_rssi[12]{};
-static char g_status_tele[48]{};
+static char g_status_tele[72]{};
 static char g_mqtt_err[48]{};
 static bool g_upd_checked = false;
 static bool g_upd_available = false;
@@ -181,6 +181,13 @@ static EidRuntime g_eid{};
 
 static unsigned g_ok = 0;
 static unsigned g_rejected = 0;
+static unsigned g_skipped = 0;
+static bool g_tele_good_stretch = true;
+static std::uint32_t g_tele_summary_ms = 0;
+static unsigned g_win_ok = 0;
+static unsigned g_win_rej = 0;
+static unsigned g_win_skip = 0;
+static char g_tele_last_reason[p1dsmr::Reader::kReasonMax]{};
 static std::uint32_t g_last_telegram_ms = 0;
 static bool g_hold_p1 = false;  // desk: pause telegram handling without unplugging
 static volatile unsigned g_ovf = 0;
@@ -553,7 +560,8 @@ static void refresh_status_view()
     std::snprintf(g_status_heap, sizeof(g_status_heap), "%u",
                   static_cast<unsigned>(ESP.getFreeHeap()));
     std::snprintf(g_status_rssi, sizeof(g_status_rssi), "%ld", static_cast<long>(WiFi.RSSI()));
-    std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u", g_ok, g_rejected);
+    std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u skipped=%u", g_ok,
+                  g_rejected, g_skipped);
     g_status_view.device_id = g_device_id;
     g_status_view.fw_ver = p1fw::kFwVer;
     g_status_view.ip = g_status_ip;
@@ -570,6 +578,7 @@ static void refresh_status_view()
     g_status_view.mqtt_en = g_cfg.values().mqtt_en;
     g_status_view.telegrams_ok = g_ok;
     g_status_view.telegrams_rejected = g_rejected;
+    g_status_view.telegrams_skipped = g_skipped;
     g_status_view.upd_checked = g_upd_checked;
     g_status_view.upd_available = g_upd_available;
     g_status_view.upd_found = g_upd_found;
@@ -2214,14 +2223,82 @@ static void snapshot_readings(const p1dsmr::Data& data)
     g_eid.batch_ms = millis();
 }
 
+static void set_tele_reason(std::string_view reason)
+{
+    const std::size_t n = (reason.size() < sizeof(g_tele_last_reason) - 1)
+                              ? reason.size()
+                              : sizeof(g_tele_last_reason) - 1;
+    std::memcpy(g_tele_last_reason, reason.data(), n);
+    g_tele_last_reason[n] = '\0';
+}
+
+static void note_tele_problem(const char* kind, std::string_view reason)
+{
+    set_tele_reason(reason);
+    if (!g_tele_good_stretch) {
+        return;
+    }
+    g_tele_good_stretch = false;
+    g_tele_summary_ms = millis();
+    char msg[192];
+    std::snprintf(msg, sizeof(msg), "%s: %.*s", kind, static_cast<int>(reason.size()),
+                  reason.data());
+    g_log.log(p1log::Level::Warn, msg);
+}
+
+static void service_telegram_log()
+{
+    if (g_tele_good_stretch) {
+        return;
+    }
+    const std::uint32_t now = millis();
+    if (static_cast<std::int32_t>(now - g_tele_summary_ms) < 60000) {
+        return;
+    }
+    g_tele_summary_ms = now;
+    if (g_win_rej == 0 && g_win_skip == 0) {
+        g_tele_good_stretch = true;
+        g_win_ok = 0;
+        return;
+    }
+    char last[44];
+    const std::size_t n = std::strlen(g_tele_last_reason);
+    const std::size_t cut = (n < sizeof(last) - 1) ? n : sizeof(last) - 1;
+    std::memcpy(last, g_tele_last_reason, cut);
+    last[cut] = '\0';
+    char msg[192];
+    std::snprintf(msg, sizeof(msg),
+                  "Telegrams last minute: ok=%u rejected=%u skipped lines=%u; last: %s; "
+                  "uart ovf=%u full=%u frm=%u",
+                  g_win_ok, g_win_rej, g_win_skip, last, static_cast<unsigned>(g_ovf),
+                  static_cast<unsigned>(g_full), static_cast<unsigned>(g_frm));
+    g_log.log(p1log::Level::Warn, msg);
+    {
+        char loopmsg[48];
+        std::snprintf(loopmsg, sizeof(loopmsg), "loop max=%u ms",
+                      static_cast<unsigned>(g_loop_max_ms));
+        g_log.log(p1log::Level::Debug, loopmsg);
+    }
+    g_win_ok = 0;
+    g_win_rej = 0;
+    g_win_skip = 0;
+}
+
 static void apply_uart_bytes(std::span<const std::uint8_t> bytes)
 {
     const unsigned prev = g_ok + g_rejected;
     const auto stats = g_reader.feed(bytes, on_telegram);
     g_ok += static_cast<unsigned>(stats.ok);
     g_rejected += static_cast<unsigned>(stats.rejected);
+    g_skipped += static_cast<unsigned>(stats.skipped);
+    g_win_ok += static_cast<unsigned>(stats.ok);
+    g_win_rej += static_cast<unsigned>(stats.rejected);
+    g_win_skip += static_cast<unsigned>(stats.skipped);
+    if (stats.skipped > 0) {
+        note_tele_problem("Telegram skipped line", g_reader.last_skipped_line());
+    }
     if (stats.rejected > 0) {
-        g_log.log(p1log::Level::Warn, "Telegram rejected (CRC)");
+        note_tele_problem("Telegram rejected", g_reader.last_reject_reason());
     }
 
     const unsigned now = g_ok + g_rejected;
@@ -3020,6 +3097,8 @@ void loop()
         apply_uart_bytes(std::span<const std::uint8_t>(buf, n));
     }
 #endif
+
+    service_telegram_log();
 
     const std::uint32_t loop_dt = millis() - loop_t0;
     if (loop_dt > g_loop_max_ms) {

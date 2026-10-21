@@ -28,9 +28,8 @@ constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
 // Previous 1024 plus `"wifi_fail":"<kWifiFailMax escaped>"`. Headroom for escaping.
 constexpr std::size_t kWifiFailMax = 128;
-// Previous 1280 plus eid (8), claim (32 escaped), record (64 escaped),
-// interval, last_upload unix, error (64 escaped). 2048 is headroom.
-constexpr std::size_t kApiStatusMax = 2048;
+// Previous 2048 plus telegrams_skipped and last-telegram download flags.
+constexpr std::size_t kApiStatusMax = 2304;
 // 24 entries, 32-char SSIDs fully escaped (64), rssi int32 min:
 // {"ssid":"<64>","rssi":-2147483648} = 93; 24*93 + 23 commas +
 // {"scanning":false,"networks":[]} (33) = 2288. 2560 is headroom.
@@ -159,6 +158,7 @@ struct StatusView {
     bool mqtt_en = false;
     unsigned telegrams_ok = 0;
     unsigned telegrams_rejected = 0;
+    unsigned telegrams_skipped = 0;
     bool upd_checked = false;
     bool upd_available = false;
     unsigned upd_found = 0;

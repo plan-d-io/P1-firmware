@@ -149,14 +149,14 @@ void test_status_render()
     v.heap = "169000";
     v.rssi = "-66";
     v.mqtt = "Connected";
-    v.telegrams = "ok=10 rejected=1";
+    v.telegrams = "ok=10 rejected=1 skipped=2";
     char page[p1web::kHtmlBuf];
     TEST_ASSERT_TRUE(p1web::render_status_page(v, page, sizeof(page)) > 0);
     TEST_ASSERT_NOT_NULL(std::strstr(page, "P1AABBCC"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "3.00"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "192.0.2.10"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "Connected"));
-    TEST_ASSERT_NOT_NULL(std::strstr(page, "ok=10 rejected=1"));
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "ok=10 rejected=1 skipped=2"));
 }
 
 void test_api_status_json()
@@ -175,6 +175,7 @@ void test_api_status_json()
     v.mqtt_en = true;
     v.telegrams_ok = 10;
     v.telegrams_rejected = 1;
+    v.telegrams_skipped = 2;
     char buf[p1web::kApiStatusMax];
     const std::size_t n = p1web::render_api_status(v, buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
@@ -192,6 +193,7 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"wifi\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"mqtt_en\":true"));
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_ok\":10"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"telegrams_skipped\":2"));
     TEST_ASSERT_NULL(std::strstr(buf, "password"));
     TEST_ASSERT_NULL(std::strstr(buf, "secret"));
 }
@@ -206,7 +208,7 @@ void test_api_status_json_max()
     char rssi[12];
     char mqtt[16];
     char mqtt_err[48];
-    char telegrams[48];
+    char telegrams[72];
     char upd_channel[p1cfg::kRelChanMax];
     char upd_fail[64];
     char wifi_fail[p1web::kWifiFailMax];
@@ -251,6 +253,7 @@ void test_api_status_json_max()
     v.mqtt_en = true;
     v.telegrams_ok = 4294967295u;
     v.telegrams_rejected = 4294967295u;
+    v.telegrams_skipped = 4294967295u;
     v.upd_checked = true;
     v.upd_available = true;
     v.upd_found = 4294967295u;
@@ -539,7 +542,7 @@ void test_status_page_full_size()
     char uptime[24];
     char heap[16];
     char rssi[12];
-    char telegrams[48];
+    char telegrams[72];
     std::memset(device_id, 'P', sizeof(device_id) - 1);
     device_id[sizeof(device_id) - 1] = '\0';
     std::memset(ip, '1', sizeof(ip) - 1);

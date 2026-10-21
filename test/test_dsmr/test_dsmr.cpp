@@ -390,6 +390,7 @@ void test_corrupt_crc_rejected()
     TEST_ASSERT_EQUAL_UINT(0, stats.ok);
     TEST_ASSERT_TRUE(stats.rejected >= 1);
     TEST_ASSERT_FALSE(reader.has_telegram());
+    TEST_ASSERT_NOT_NULL(std::strstr(reader.last_reject_reason().data(), "CRC mismatch"));
 }
 
 void test_fragmented_input()
@@ -490,6 +491,7 @@ void test_short_crc_rejected()
     TEST_ASSERT_EQUAL_UINT(0, stats.ok);
     TEST_ASSERT_TRUE(stats.rejected >= 1);
     TEST_ASSERT_FALSE(reader.has_telegram());
+    TEST_ASSERT_EQUAL_STRING("malformed CRC", reader.last_reject_reason().data());
 }
 
 void test_overlong_telegram_rejected()
@@ -502,6 +504,7 @@ void test_overlong_telegram_rejected()
     TEST_ASSERT_EQUAL_UINT(0, stats.ok);
     TEST_ASSERT_TRUE(stats.rejected >= 1);
     TEST_ASSERT_FALSE(reader.has_telegram());
+    TEST_ASSERT_EQUAL_STRING("buffer overflow", reader.last_reject_reason().data());
 }
 
 void test_long_belgian_whole_and_split()
