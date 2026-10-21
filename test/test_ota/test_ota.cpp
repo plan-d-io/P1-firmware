@@ -9,8 +9,8 @@ void test_fw_ver_matches_num()
 {
     unsigned parsed = 0;
     TEST_ASSERT_TRUE(p1ota::parse_display_version(p1fw::kFwVer, parsed));
-    TEST_ASSERT_EQUAL_UINT(301u, parsed);
-    TEST_ASSERT_EQUAL_UINT(301u, p1fw::kFwVerNum);
+    TEST_ASSERT_EQUAL_UINT(302u, parsed);
+    TEST_ASSERT_EQUAL_UINT(302u, p1fw::kFwVerNum);
     TEST_ASSERT_EQUAL_UINT(parsed, p1fw::kFwVerNum);
 }
 
