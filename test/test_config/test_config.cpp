@@ -932,6 +932,7 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     })"));
     s.set_field_on("1-0:1.8.1", false);
     s.save();
+    s.set_ha_debug_migrated();
     s.set_ha_migrated();
     s.set_published_ha_identity("example_meter", "data/devices/example_meter/");
     s.set_ota_note("app1", 301);
@@ -971,6 +972,7 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     TEST_ASSERT_EQUAL_STRING("", s.published_ha_slug());
     TEST_ASSERT_EQUAL_STRING("", s.published_mqtt_pfix());
     TEST_ASSERT_FALSE(mem.has("HA_MIG"));
+    TEST_ASSERT_FALSE(mem.has("HA_MIG_D"));
     TEST_ASSERT_FALSE(mem.has("HA_SLUG"));
     TEST_ASSERT_FALSE(mem.has("HA_PFIX"));
     TEST_ASSERT_FALSE(s.has_ota_note());
@@ -1344,6 +1346,63 @@ void test_schema9_imports_trigger_from_legacy()
     TEST_ASSERT_EQUAL_UINT32(20, s.values().trg_int);
 }
 
+void test_ha_migration_flags_two_halves()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_FALSE(s.ha_debug_migrated());
+    TEST_ASSERT_FALSE(s.ha_meter_migrated());
+    TEST_ASSERT_FALSE(s.ha_migrated());
+
+    s.set_ha_debug_migrated();
+    TEST_ASSERT_TRUE(s.ha_debug_migrated());
+    TEST_ASSERT_FALSE(s.ha_meter_migrated());
+    TEST_ASSERT_FALSE(s.ha_migrated());
+    TEST_ASSERT_TRUE(mem.has("HA_MIG_D"));
+    TEST_ASSERT_FALSE(mem.has("HA_MIG"));
+
+    Store pending(mem);
+    pending.load();
+    TEST_ASSERT_TRUE(pending.ha_debug_migrated());
+    TEST_ASSERT_FALSE(pending.ha_meter_migrated());
+    TEST_ASSERT_FALSE(pending.ha_migrated());
+
+    pending.set_ha_migrated();
+    TEST_ASSERT_TRUE(pending.ha_debug_migrated());
+    TEST_ASSERT_TRUE(pending.ha_meter_migrated());
+    TEST_ASSERT_TRUE(pending.ha_migrated());
+    TEST_ASSERT_TRUE(mem.has("HA_MIG"));
+}
+
+void test_ha_mig_old_flag_counts_as_both_halves()
+{
+    MemoryBackend mem;
+    mem.begin(false);
+    mem.put_u32("CFG_VER", 9);
+    mem.put_str("WIFI_SSID", "Already");
+    mem.put_bool("HA_MIG", true);
+    mem.end();
+    MemoryBackend legacy;
+    legacy.begin(false);
+    legacy.put_str("WIFI_SSID", "Ignored");
+    legacy.end();
+
+    Store s(mem, &legacy);
+    s.load();
+    TEST_ASSERT_FALSE(s.legacy_import_ran());
+    TEST_ASSERT_EQUAL_STRING("Already", s.values().wifi_ssid);
+    TEST_ASSERT_TRUE(s.ha_migrated());
+    TEST_ASSERT_TRUE(s.ha_debug_migrated());
+    TEST_ASSERT_TRUE(s.ha_meter_migrated());
+    TEST_ASSERT_FALSE(mem.has("HA_MIG_D"));
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
+
+    s.set_ha_debug_migrated();
+    TEST_ASSERT_FALSE(mem.has("HA_MIG_D"));
+    TEST_ASSERT_TRUE(mem.has("HA_MIG"));
+}
+
 void test_type1_request_line_timing()
 {
     p1req::Line line;
@@ -1447,5 +1506,7 @@ int main()
     RUN_TEST(test_trigger_json_validation);
     RUN_TEST(test_schema9_imports_trigger_from_legacy);
     RUN_TEST(test_type1_request_line_timing);
+    RUN_TEST(test_ha_migration_flags_two_halves);
+    RUN_TEST(test_ha_mig_old_flag_counts_as_both_halves);
     return UNITY_END();
 }

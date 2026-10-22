@@ -893,6 +893,109 @@ void test_abbreviated_payload_keeps_unique_ids()
     TEST_ASSERT_NULL(std::strstr(buf, "\"~\""));
 }
 
+void test_ha_announce_debug_without_telegram()
+{
+    const p1pub::HaAnnounce off = p1pub::ha_announce_now(false, false);
+    TEST_ASSERT_FALSE(off.debug);
+    TEST_ASSERT_FALSE(off.meter);
+
+    const p1pub::HaAnnounce no_tg = p1pub::ha_announce_now(true, false);
+    TEST_ASSERT_TRUE(no_tg.debug);
+    TEST_ASSERT_FALSE(no_tg.meter);
+
+    const p1pub::HaAnnounce online_no_tg = p1pub::ha_announce_now(true, false);
+    TEST_ASSERT_TRUE(online_no_tg.debug);
+    TEST_ASSERT_FALSE(online_no_tg.meter);
+
+    const p1pub::HaAnnounce online_with = p1pub::ha_announce_now(true, true);
+    TEST_ASSERT_TRUE(online_with.debug);
+    TEST_ASSERT_TRUE(online_with.meter);
+
+    const p1pub::HaAnnounce ha_off = p1pub::ha_announce_now(false, true);
+    TEST_ASSERT_FALSE(ha_off.debug);
+    TEST_ASSERT_FALSE(ha_off.meter);
+}
+
+void test_legacy_halves_split_meter_and_debug()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    std::vector<std::string> meter;
+    std::vector<std::string> debug;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    p1pub::for_each_legacy_discovery_topic(cfg, "P10AB2C3", "P1AB2C3", collect, &meter,
+                                           p1pub::LegacyDisc::Meter);
+    p1pub::for_each_legacy_discovery_topic(cfg, "P10AB2C3", "P1AB2C3", collect, &debug,
+                                           p1pub::LegacyDisc::Debug);
+    TEST_ASSERT_EQUAL_UINT(50, meter.size());
+    TEST_ASSERT_EQUAL_UINT(12 + 12 + 1, debug.size());
+    bool saw_catalogue = false;
+    for (const std::string& t : meter) {
+        TEST_ASSERT_TRUE(t.find("homeassistant/sensor/") == 0);
+        TEST_ASSERT_TRUE(t.find("P10AB2C3") == std::string::npos);
+        TEST_ASSERT_TRUE(t.find("P1AB2C3") == std::string::npos);
+        if (t == "homeassistant/sensor/utility_meter_total_energy_consumed/config") {
+            saw_catalogue = true;
+        }
+    }
+    TEST_ASSERT_TRUE(saw_catalogue);
+    bool saw_debug = false;
+    bool saw_legacy_device = false;
+    for (const std::string& t : debug) {
+        TEST_ASSERT_FALSE(t == "homeassistant/sensor/utility_meter_total_energy_consumed/config");
+        if (t == "homeassistant/sensor/P10AB2C3_free_heap_size/config") {
+            saw_debug = true;
+        }
+        if (t == "homeassistant/device/P1AB2C3/config") {
+            saw_legacy_device = true;
+        }
+    }
+    TEST_ASSERT_TRUE(saw_debug);
+    TEST_ASSERT_TRUE(saw_legacy_device);
+}
+
+void test_debug_unique_id_reuses_2x_when_ids_match()
+{
+    // Desk-like MAC 02:00:00:aa:bb:cc — padded and unpadded ids are both P1AABBCC.
+    const std::uint8_t mac[6] = {0x02, 0x00, 0x00, 0xAA, 0xBB, 0xCC};
+    char id[p1mqtt::kDeviceIdCap];
+    char legacy[p1mqtt::kDeviceIdCap];
+    p1mqtt::device_id(mac, id, sizeof(id));
+    p1mqtt::legacy_device_id(mac, legacy, sizeof(legacy));
+    TEST_ASSERT_EQUAL_STRING("P1AABBCC", id);
+    TEST_ASSERT_EQUAL_STRING("P1AABBCC", legacy);
+
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    char buf[p1pub::kDiscoveryCap];
+    TEST_ASSERT_TRUE(p1pub::dongle_discovery(cfg, id, "3.03", kTestConfigUrl, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"P1AABBCC_free_heap_size\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"uniq_id\":\"P1AABBCC_reboot\""));
+
+    std::vector<std::string> topics;
+    auto collect = [](std::string_view t, void* ctx) {
+        static_cast<std::vector<std::string>*>(ctx)->emplace_back(t.data(), t.size());
+    };
+    p1pub::for_each_legacy_discovery_topic(cfg, id, legacy, collect, &topics,
+                                           p1pub::LegacyDisc::Debug);
+    bool saw_heap = false;
+    bool saw_reboot = false;
+    for (const std::string& t : topics) {
+        if (t == "homeassistant/sensor/P1AABBCC_free_heap_size/config") {
+            saw_heap = true;
+        }
+        if (t == "homeassistant/switch/P1AABBCC_reboot/config") {
+            saw_reboot = true;
+        }
+    }
+    TEST_ASSERT_TRUE(saw_heap);
+    TEST_ASSERT_TRUE(saw_reboot);
+}
+
 void test_ha_device_discovery_schema_shape()
 {
     p1cfg::MemoryBackend mem;
@@ -952,5 +1055,8 @@ int main()
     RUN_TEST(test_published_identity_survives_reload);
     RUN_TEST(test_abbreviated_payload_keeps_unique_ids);
     RUN_TEST(test_ha_device_discovery_schema_shape);
+    RUN_TEST(test_ha_announce_debug_without_telegram);
+    RUN_TEST(test_legacy_halves_split_meter_and_debug);
+    RUN_TEST(test_debug_unique_id_reuses_2x_when_ids_match);
     return UNITY_END();
 }

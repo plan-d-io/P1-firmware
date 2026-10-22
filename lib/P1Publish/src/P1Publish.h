@@ -25,6 +25,21 @@ constexpr const char kDongleModel[] = "P1 dongle debug monitoring";
 
 constexpr const char kMigrateDiscovery[] = "{\"migrate_discovery\":true}";
 
+// MQTT connect, HA status "online", and HA re-enable: the debug device is
+// announced whenever Home Assistant is on. The meter device waits for a
+// telegram, because its field list comes from the meter.
+struct HaAnnounce {
+    bool debug;
+    bool meter;
+};
+
+inline HaAnnounce ha_announce_now(bool ha_en, bool have_telegram)
+{
+    return HaAnnounce{ha_en, ha_en && have_telegram};
+}
+
+enum class LegacyDisc : std::uint8_t { Meter = 1, Debug = 2, All = 3 };
+
 // MQTT_PFIX + slugged catalogue label. 0 if the buffer is too small.
 std::size_t reading_topic(const p1cfg::Store& cfg, const p1cfg::Field& field, char* out,
                           std::size_t cap);
@@ -78,11 +93,13 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const c
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
                              const char* config_url, char* out, std::size_t cap);
 
-// Old per-entity config topics: 50 catalogue labels + 11 sensors + reboot switch
-// under both device ids. Returns how many topics were visited.
+// Old per-entity config topics. Meter: 50 catalogue labels. Debug: 11 sensors
+// + reboot switch under both device ids, and homeassistant/device/<legacy id>
+// when the ids differ. All = both halves. Returns how many topics were visited.
 std::size_t for_each_legacy_discovery_topic(const p1cfg::Store& cfg, const char* device_id,
                                             const char* legacy_id,
-                                            void (*fn)(std::string_view, void*), void* ctx);
+                                            void (*fn)(std::string_view, void*), void* ctx,
+                                            LegacyDisc which = LegacyDisc::All);
 
 // Turns one telegram into topic/payload pairs. No network, no heap per telegram.
 // The views passed to `on_msg` are valid only for the duration of that call.

@@ -427,6 +427,9 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
     }
 
     for (const LiveDiag& d : kLiveDiag) {
+        // unique_id is device_id + '_' + channel, the same string 2.x used
+        // when the padded and unpadded ids match (no dropped zero). Those
+        // dongles must mark-announce-clear so HA does not reject a duplicate.
         char uid[kUniqueIdMax];
         Wr uw{uid, sizeof(uid)};
         wr_append(uw, device_id);
@@ -483,26 +486,37 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
 
 std::size_t for_each_legacy_discovery_topic(const p1cfg::Store& cfg, const char* device_id,
                                             const char* legacy_id,
-                                            void (*fn)(std::string_view, void*), void* ctx)
+                                            void (*fn)(std::string_view, void*), void* ctx,
+                                            LegacyDisc which)
 {
     std::size_t n = 0;
     char topic[160];
     char uid[kUniqueIdMax];
-    const p1cfg::Field* all = p1cfg::catalogue();
-    const std::size_t nf = p1cfg::catalogue_size();
-    for (std::size_t i = 0; i < nf; ++i) {
-        if (meter_unique_id(cfg.values().ha_device, all[i].label, uid, sizeof(uid)) == 0) {
-            continue;
+    const unsigned bits = static_cast<unsigned>(which);
+    const bool want_meter = (bits & static_cast<unsigned>(LegacyDisc::Meter)) != 0;
+    const bool want_debug = (bits & static_cast<unsigned>(LegacyDisc::Debug)) != 0;
+
+    if (want_meter) {
+        const p1cfg::Field* all = p1cfg::catalogue();
+        const std::size_t nf = p1cfg::catalogue_size();
+        for (std::size_t i = 0; i < nf; ++i) {
+            if (meter_unique_id(cfg.values().ha_device, all[i].label, uid, sizeof(uid)) == 0) {
+                continue;
+            }
+            Wr w{topic, sizeof(topic)};
+            wr_append(w, "homeassistant/sensor/");
+            wr_append(w, uid);
+            wr_append(w, "/config");
+            if (finish(w) == 0) {
+                continue;
+            }
+            emit_topic(fn, ctx, topic);
+            ++n;
         }
-        Wr w{topic, sizeof(topic)};
-        wr_append(w, "homeassistant/sensor/");
-        wr_append(w, uid);
-        wr_append(w, "/config");
-        if (finish(w) == 0) {
-            continue;
-        }
-        emit_topic(fn, ctx, topic);
-        ++n;
+    }
+
+    if (!want_debug) {
+        return n;
     }
 
     auto one_id = [&](const char* id) {

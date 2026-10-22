@@ -345,8 +345,8 @@ public:
     // every other setting alone.
     void reset_wifi();
     // Every catalogue setting back to its table default, including clearing
-    // HA_MIG / HA_SLUG / HA_PFIX / OTA_NPART / OTA_NVER / OTA_FAIL / IMP_PEND
-    // which are not settings.
+    // HA_MIG / HA_MIG_D / HA_SLUG / HA_PFIX / OTA_NPART / OTA_NVER / OTA_FAIL /
+    // IMP_PEND which are not settings.
     void factory_reset();
 
     bool migrated() const { return migrated_; }
@@ -361,9 +361,16 @@ public:
     bool field_on(std::string_view id) const;
     void set_field_on(std::string_view id, bool on);
 
-    // One-shot HA per-entity → device discovery migration. Not a user setting.
+    // HA 2.x → 3.x discovery migration. Not user settings.
+    // HA_MIG (ha_migrated / ha_meter_migrated): both halves done — the flag
+    // 3.0x already stored. A dongle with HA_MIG set is migrated for debug and
+    // meter and does neither again.
+    // HA_MIG_D (ha_debug_migrated unless HA_MIG): debug half only, meter pending.
     bool ha_migrated() const { return ha_mig_; }
+    bool ha_meter_migrated() const { return ha_mig_; }
+    bool ha_debug_migrated() const { return ha_mig_ || ha_mig_d_; }
     void set_ha_migrated();
+    void set_ha_debug_migrated();
 
     // Last identity discovery was published under. Not a user setting.
     bool has_published_ha_identity() const { return ha_pub_have_; }
@@ -427,6 +434,7 @@ private:
     std::uint8_t field_over_[kMaxFields]{};  // 0 = default, 1 = on, 2 = off
     bool migrated_ = false;
     bool ha_mig_ = false;
+    bool ha_mig_d_ = false;
     bool ha_pub_have_ = false;
     char ha_pub_slug_[kHaMax]{};
     char ha_pub_pfix_[kPrefixMax]{};

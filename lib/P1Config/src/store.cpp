@@ -680,6 +680,7 @@ void Store::load()
     }
     load_overrides();
     ha_mig_ = backend_.has("HA_MIG") && backend_.get_bool("HA_MIG", false);
+    ha_mig_d_ = backend_.has("HA_MIG_D") && backend_.get_bool("HA_MIG_D", false);
     ha_pub_have_ = backend_.has("HA_SLUG");
     ha_pub_slug_[0] = '\0';
     ha_pub_pfix_[0] = '\0';
@@ -784,12 +785,14 @@ void Store::factory_reset()
     apply_defaults();
     save();
     ha_mig_ = false;
+    ha_mig_d_ = false;
     clear_published_ha_identity();
     clear_ota_note();
     clear_ota_failed();
     clear_import_pending();
     backend_.begin(false);
     backend_.remove("HA_MIG");
+    backend_.remove("HA_MIG_D");
     backend_.end();
     if (legacy_ != nullptr) {
         legacy_->begin(false);
@@ -894,6 +897,17 @@ void Store::set_ha_migrated()
     ha_mig_ = true;
     backend_.begin(false);
     backend_.put_bool("HA_MIG", true);
+    backend_.end();
+}
+
+void Store::set_ha_debug_migrated()
+{
+    ha_mig_d_ = true;
+    if (ha_mig_) {
+        return;
+    }
+    backend_.begin(false);
+    backend_.put_bool("HA_MIG_D", true);
     backend_.end();
 }
 

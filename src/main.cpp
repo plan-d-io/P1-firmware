@@ -1223,7 +1223,13 @@ static bool publish_discovery_buf(std::string_view topic, const char* buf, std::
     return true;
 }
 
-static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_mask)
+static void fill_ha_config_url(char* config_url, std::size_t cap)
+{
+    const IPAddress ip = WiFi.localIP();
+    std::snprintf(config_url, cap, "http://%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
+static bool publish_ha_meter(std::uint64_t include_mask, std::uint64_t stub_mask)
 {
     if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
         return false;
@@ -1233,32 +1239,44 @@ static bool publish_ha_devices(std::uint64_t include_mask, std::uint64_t stub_ma
         g_log.log(p1log::Level::Error, "HA discovery alloc failed");
         return false;
     }
-
-    bool ok = true;
     char topic[p1pub::kTopicMax];
     char slug_id[p1pub::kUniqueIdMax];
     char config_url[32];
-    const IPAddress ip = WiFi.localIP();
-    std::snprintf(config_url, sizeof(config_url), "http://%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    fill_ha_config_url(config_url, sizeof(config_url));
+    bool ok = false;
     if (p1pub::slug(g_cfg.values().ha_device, slug_id, sizeof(slug_id)) > 0 &&
         p1pub::device_discovery_topic(slug_id, topic, sizeof(topic)) > 0) {
         const std::size_t n =
             p1pub::meter_discovery(g_cfg, p1fw::kFwVer, config_url, include_mask, stub_mask, buf,
                                    p1pub::kDiscoveryCap);
-        ok = publish_discovery_buf(topic, buf, n) && ok;
-    } else {
-        ok = false;
+        ok = publish_discovery_buf(topic, buf, n);
     }
+    delete[] buf;
+    return ok;
+}
 
-    if (g_device_id[0] != '\0' &&
-        p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
-        const std::size_t n = p1pub::dongle_discovery(g_cfg, g_device_id, p1fw::kFwVer, config_url, buf,
-                                                     p1pub::kDiscoveryCap);
-        ok = publish_discovery_buf(topic, buf, n) && ok;
-    } else {
-        ok = false;
+static bool publish_ha_debug()
+{
+    if (!g_cfg.values().ha_en || g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
+        return false;
     }
-
+    if (g_device_id[0] == '\0') {
+        return false;
+    }
+    char* buf = new (std::nothrow) char[p1pub::kDiscoveryCap];
+    if (buf == nullptr) {
+        g_log.log(p1log::Level::Error, "HA discovery alloc failed");
+        return false;
+    }
+    char topic[p1pub::kTopicMax];
+    char config_url[32];
+    fill_ha_config_url(config_url, sizeof(config_url));
+    bool ok = false;
+    if (p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
+        const std::size_t n = p1pub::dongle_discovery(g_cfg, g_device_id, p1fw::kFwVer, config_url,
+                                                     buf, p1pub::kDiscoveryCap);
+        ok = publish_discovery_buf(topic, buf, n);
+    }
     delete[] buf;
     return ok;
 }
@@ -1270,25 +1288,88 @@ static void for_legacy_pub(std::string_view topic, void* ctx)
                    true);
 }
 
-static void run_ha_migration()
+static void for_legacy_half(p1pub::LegacyDisc which, const char* payload)
 {
     char legacy[p1mqtt::kDeviceIdCap];
     p1mqtt::legacy_device_id(g_mac, legacy, sizeof(legacy));
-
-    g_log.log(p1log::Level::Info, "HA migrate step 1");
     p1pub::for_each_legacy_discovery_topic(g_cfg, g_device_id, legacy, &for_legacy_pub,
-                                           const_cast<char*>(p1pub::kMigrateDiscovery));
+                                           const_cast<char*>(payload), which);
+}
 
-    g_log.log(p1log::Level::Info, "HA migrate step 2");
-    if (!publish_ha_devices(g_disc_mask, 0)) {
-        g_log.log(p1log::Level::Error, "HA migrate step 2 failed; not clearing old topics");
+static void run_ha_debug_migration()
+{
+    if (g_cfg.ha_debug_migrated()) {
+        return;
+    }
+    g_log.log(p1log::Level::Info, "HA migrate debug step 1");
+    for_legacy_half(p1pub::LegacyDisc::Debug, p1pub::kMigrateDiscovery);
+
+    g_log.log(p1log::Level::Info, "HA migrate debug step 2");
+    if (!publish_ha_debug()) {
+        g_log.log(p1log::Level::Error, "HA migrate debug step 2 failed; not clearing old topics");
         return;
     }
 
-    g_log.log(p1log::Level::Info, "HA migrate step 3");
-    p1pub::for_each_legacy_discovery_topic(g_cfg, g_device_id, legacy, &for_legacy_pub, nullptr);
+    g_log.log(p1log::Level::Info, "HA migrate debug step 3");
+    for_legacy_half(p1pub::LegacyDisc::Debug, nullptr);
+    g_cfg.set_ha_debug_migrated();
+    g_log.log(p1log::Level::Info, "HA migrate debug done");
+}
+
+static void run_ha_meter_migration()
+{
+    if (g_cfg.ha_meter_migrated()) {
+        return;
+    }
+    g_log.log(p1log::Level::Info, "HA migrate meter step 1");
+    for_legacy_half(p1pub::LegacyDisc::Meter, p1pub::kMigrateDiscovery);
+
+    g_log.log(p1log::Level::Info, "HA migrate meter step 2");
+    if (!publish_ha_meter(g_disc_mask, 0)) {
+        g_log.log(p1log::Level::Error, "HA migrate meter step 2 failed; not clearing old topics");
+        return;
+    }
+
+    g_log.log(p1log::Level::Info, "HA migrate meter step 3");
+    for_legacy_half(p1pub::LegacyDisc::Meter, nullptr);
     g_cfg.set_ha_migrated();
-    g_log.log(p1log::Level::Info, "HA migrate done");
+    g_log.log(p1log::Level::Info, "HA migrate meter done");
+}
+
+static bool remember_ha_identity()
+{
+    char cur_slug[p1pub::kUniqueIdMax];
+    if (p1pub::slug(g_cfg.values().ha_device, cur_slug, sizeof(cur_slug)) == 0) {
+        return false;
+    }
+    g_cfg.set_published_ha_identity(cur_slug, g_cfg.values().mqtt_pfix);
+    return true;
+}
+
+static void ha_publish_current()
+{
+    const p1pub::HaAnnounce plan = p1pub::ha_announce_now(g_cfg.values().ha_en, g_disc_have);
+    if (!plan.debug && !plan.meter) {
+        return;
+    }
+    if (g_mqtt.state() != p1mqtt::Mqtt::State::Connected) {
+        return;
+    }
+    if (plan.debug) {
+        if (!g_cfg.ha_debug_migrated()) {
+            run_ha_debug_migration();
+        } else if (!publish_ha_debug()) {
+            return;
+        }
+    }
+    if (plan.meter) {
+        if (!g_cfg.ha_meter_migrated()) {
+            run_ha_meter_migration();
+        } else if (!publish_ha_meter(g_disc_mask, 0)) {
+            return;
+        }
+    }
+    remember_ha_identity();
 }
 
 static void sync_ha_identity(bool republish);
@@ -1303,10 +1384,7 @@ static void ha_on_field_set(std::uint64_t next)
     if (!g_disc_have) {
         g_disc_mask = next;
         g_disc_have = true;
-        if (!g_cfg.ha_migrated()) {
-            run_ha_migration();
-        }
-        sync_ha_identity(true);
+        ha_publish_current();
         return;
     }
     if (next == g_disc_mask) {
@@ -1314,10 +1392,10 @@ static void ha_on_field_set(std::uint64_t next)
     }
     const std::uint64_t removed = g_disc_mask & ~next;
     if (removed != 0) {
-        publish_ha_devices(next, removed);
+        publish_ha_meter(next, removed);
     }
     g_disc_mask = next;
-    publish_ha_devices(g_disc_mask, 0);
+    publish_ha_meter(g_disc_mask, 0);
 }
 
 static void ha_clear_topic(std::string_view topic, void* /*ctx*/)
@@ -1382,12 +1460,10 @@ static void reconcile_ha_discovery()
         g_log.log(p1log::Level::Info, msg);
         return;
     }
-    // Re-enable with g_disc_have still set: same as a first publish.
-    if (!g_cfg.has_published_ha_identity() && g_disc_have) {
-        if (!g_cfg.ha_migrated()) {
-            run_ha_migration();
-        }
-        sync_ha_identity(true);
+    // Re-enable, or first MQTT session with HA on: debug now; meter if a
+    // telegram has already arrived.
+    if (!g_cfg.has_published_ha_identity()) {
+        ha_publish_current();
     }
 }
 
@@ -1404,16 +1480,8 @@ static void sync_ha_identity(bool republish)
     const char* last_pfix = g_cfg.has_published_ha_identity() ? g_cfg.published_mqtt_pfix() : "";
     const std::size_t n = p1pub::identity_clear_topics(
         last_slug, last_pfix, cur_slug, g_cfg.values().mqtt_pfix, &ha_clear_topic, nullptr);
-    if (!g_disc_have) {
-        return;
-    }
     if (n > 0 || republish || !g_cfg.has_published_ha_identity()) {
-        if (!publish_ha_devices(g_disc_mask, 0)) {
-            return;
-        }
-    }
-    if (n > 0 || !g_cfg.has_published_ha_identity()) {
-        g_cfg.set_published_ha_identity(cur_slug, g_cfg.values().mqtt_pfix);
+        ha_publish_current();
     }
 }
 
@@ -2156,10 +2224,7 @@ static void on_just_connected()
                       static_cast<unsigned>(ESP.getMinFreeHeap()));
         g_log.log(p1log::Level::Info, msg);
     }
-    if (g_cfg.values().ha_en && g_disc_have) {
-        if (!g_cfg.ha_migrated()) {
-            run_ha_migration();
-        }
+    if (g_cfg.values().ha_en) {
         sync_ha_identity(true);
     }
 }
@@ -2223,9 +2288,7 @@ static void handle_inbound()
             return;
         }
         g_log.log(p1log::Level::Info, "HA status online");
-        if (g_disc_have) {
-            publish_ha_devices(g_disc_mask, 0);
-        }
+        ha_publish_current();
     }
 }
 
