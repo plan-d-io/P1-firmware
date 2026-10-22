@@ -27,6 +27,13 @@
 #include <fcntl.h>
 #include <eid_keys_gen.h>
 #include <fw_version.h>
+#include <p1_data_request.h>
+#include <driver/gpio.h>
+#include <soc/io_mux_reg.h>
+#include <soc/uart_reg.h>
+#if defined(P1_TEST_RX_DUMP)
+#include "rx_line_dump.h"
+#endif
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 
@@ -70,6 +77,7 @@ static constexpr LedRgb kLedOff{0x00, 0x00, 0x00};
 // Display / integer version: include/fw_version.h — bump both together.
 
 static void request_reboot(const char* reason);
+static void service_data_request(bool force);
 static void perform_factory_reset();
 static void publish_config_snapshot();
 static void restart_mqtt();
@@ -80,6 +88,10 @@ static bool ota_auto_should_install(unsigned found);
 static void remember_ota_dest();
 static void write_ota_note(unsigned ver);
 
+#if defined(P1_TEST_RX_DUMP)
+static bool g_rx_dump_done = false;
+#endif
+static p1req::Line g_req;
 static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
 static p1mqtt::Mqtt g_mqtt;
@@ -2345,6 +2357,9 @@ static void apply_uart_bytes(std::span<const std::uint8_t> bytes)
     }
 
     const unsigned now = g_ok + g_rejected;
+    if (now > prev) {
+        g_req.on_telegram(millis());
+    }
     for (unsigned k = prev + 1; k <= now; ++k) {
         if (k % 10 == 0) {
             char msg[96];
@@ -2506,6 +2521,14 @@ static void cmd_set(char* rest)
         }
         if (std::strcmp(e->key, "MQTT_PORT") == 0 && (v < 1u || v > 65535u)) {
             Serial.println("MQTT_PORT 1..65535");
+            return;
+        }
+        if (std::strcmp(e->key, "TRG_TYPE") == 0 && v > 1u) {
+            Serial.println("TRG_TYPE 0|1");
+            return;
+        }
+        if (std::strcmp(e->key, "TRG_INT") == 0 && (v < 1u || v > 3600u)) {
+            Serial.println("TRG_INT 1..3600");
             return;
         }
         *e->var.u = v;
@@ -2810,6 +2833,20 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info)
     }
 }
 
+static void service_data_request(bool force)
+{
+    const auto& v = g_cfg.values();
+    static std::uint32_t applied_type = 0xFFFFFFFFu;
+    static std::uint32_t applied_int = 0xFFFFFFFFu;
+    if (force || v.trg_type != applied_type || v.trg_int != applied_int) {
+        g_req.configure(v.trg_type, v.trg_int, millis());
+        applied_type = v.trg_type;
+        applied_int = v.trg_int;
+    }
+    g_req.tick(millis());
+    digitalWrite(kDataRequest, g_req.high ? HIGH : LOW);
+}
+
 // Increments only — this runs on uart_event_task (~2 KB stack).
 static void on_uart_err(hardwareSerial_error_t err)
 {
@@ -2835,7 +2872,6 @@ void setup()
     led_show_busy_red();
 
     pinMode(kDataRequest, OUTPUT);
-    digitalWrite(kDataRequest, HIGH);
     // GPIO 39 is input-only on ESP32-PICO-D4 — no internal pull-up. The Atom
     // board provides an external pull-up; pressed = LOW (M5Atom Button invert).
     pinMode(kBtn, INPUT);
@@ -2849,6 +2885,21 @@ void setup()
     g_uart_heap_after = static_cast<unsigned>(ESP.getFreeHeap());
     Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
     Serial1.onReceiveError(on_uart_err);
+    // Match 2.23 (Arduino-esp32 2.0.14) on this chip: GPIO 21 as GPIO
+    // function with pull-up, UART1 clocked from APB at 115201 baud, RX
+    // timeout 3 symbols. Measured against a 2.0.14 sketch on the desk unit.
+    PIN_FUNC_SELECT(IO_MUX_GPIO21_REG, PIN_FUNC_GPIO);
+    PIN_INPUT_ENABLE(IO_MUX_GPIO21_REG);
+    gpio_pullup_en(static_cast<gpio_num_t>(kP1Rx));
+    gpio_pulldown_dis(static_cast<gpio_num_t>(kP1Rx));
+    REG_SET_BIT(UART_CONF0_REG(1), UART_TICK_REF_ALWAYS_ON);
+    {
+        const std::uint32_t clk = static_cast<std::uint32_t>(getApbFrequency());
+        const std::uint32_t clkdiv = (clk << 4) / 115200u;
+        REG_WRITE(UART_CLKDIV_REG(1),
+                  ((clkdiv & 0xFu) << UART_CLKDIV_FRAG_S) | (clkdiv >> 4));
+    }
+    Serial1.setRxTimeout(3);
 
     std::uint8_t mac[6]{};
     read_mac(mac);
@@ -2896,6 +2947,14 @@ void setup()
     }
 
     g_cfg.load();
+    service_data_request(true);
+    {
+        char msg[72];
+        std::snprintf(msg, sizeof(msg), "Telegram request type=%u interval=%u s",
+                      static_cast<unsigned>(g_cfg.values().trg_type),
+                      static_cast<unsigned>(g_cfg.values().trg_int));
+        g_log.log(p1log::Level::Info, msg);
+    }
     if (g_cfg.legacy_import_ran()) {
         p1cfg::write_legacy_update_reason(g_cfg.values().last_reset,
                                           sizeof(g_cfg.values().last_reset), "");
@@ -3062,7 +3121,28 @@ void loop()
 
     if (g_mqtt.take_just_connected()) {
         on_just_connected();
+#if defined(P1_TEST_RX_DUMP)
+        if (!g_rx_dump_done) {
+            rxdump::dump();
+            g_rx_dump_done = true;
+        }
+#endif
     }
+#if defined(P1_TEST_RX_DUMP)
+    if (!g_rx_dump_done && WiFi.status() == WL_CONNECTED && millis() > 25000) {
+        rxdump::dump();
+        g_rx_dump_done = true;
+    }
+    {
+        static unsigned last_ovf = 0;
+        const unsigned now_ovf = static_cast<unsigned>(g_ovf);
+        if (now_ovf != last_ovf) {
+            Serial.printf("RXDUMP ovf %u -> %u at %u ms\n", last_ovf, now_ovf,
+                          static_cast<unsigned>(millis()));
+            last_ovf = now_ovf;
+        }
+    }
+#endif
 
     int cert_flags = 0;
     int tls_esp_err = 0;
@@ -3104,6 +3184,8 @@ void loop()
             break;
         }
     }
+
+    service_data_request(false);
 
     handle_inbound();
     reconcile_ha_discovery();

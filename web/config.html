@@ -151,6 +151,10 @@
       ["EID_EN", "Use EnergieID", "checkbox"]
     ],
     dongle: [
+      ["TRG_TYPE", "Telegram request", "select", [
+        ["0", "Continuous"], ["1", "Every N seconds"]
+      ]],
+      ["TRG_INT", "Request interval (s)", "number"],
       ["RINT_SPIFFS", "Reinitialise filesystem", "checkbox"]
     ]
   };
@@ -508,6 +512,7 @@
     loadNetworks();
     updateWifiPassHint();
     syncUpdActionAvailability();
+    syncTrgInterval();
   }
 
   function clearErrors() {
@@ -555,7 +560,7 @@
           if (b !== initial[key]) { body[key] = b; any = true; }
           return;
         }
-        if (kind === "number" || (kind === "select" && key === "FRMT_PYLD")) {
+        if (kind === "number" || (kind === "select" && (key === "FRMT_PYLD" || key === "TRG_TYPE"))) {
           var n = Number(input.value);
           if (n !== Number(initial[key])) { body[key] = n; any = true; }
           return;
@@ -865,14 +870,23 @@
         setStatusBox(box, "neutral", "Not checked yet", s.fw_ver ? ("Running " + s.fw_ver) : "");
       }
     }
-    var autoOn = !!(document.getElementById("UPD_AUTO") && document.getElementById("UPD_AUTO").checked);
     if (inst) {
-      inst.style.display = (s.upd_available && !autoOn) ? "" : "none";
+      inst.style.display = s.upd_available ? "" : "none";
     }
     syncUpdActionAvailability();
   }
 
+  function syncTrgInterval() {
+    var t = document.getElementById("TRG_TYPE");
+    var i = document.getElementById("TRG_INT");
+    if (!t || !i || !i.parentNode) return;
+    i.parentNode.style.display = t.value === "1" ? "" : "none";
+  }
+
   renderForm();
+  var trgType = document.getElementById("TRG_TYPE");
+  if (trgType) trgType.addEventListener("change", syncTrgInterval);
+  syncTrgInterval();
 
   document.getElementById("updCheckBtn").addEventListener("click", function () {
     if (!lastStatus.wifi || formDirty()) return;

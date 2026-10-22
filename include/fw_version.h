@@ -4,7 +4,7 @@
 // kFwVerNum. Keep them in lockstep - the host test asserts they agree.
 namespace p1fw {
 
-constexpr char kFwVer[] = "3.02";
-constexpr unsigned kFwVerNum = 302;
+constexpr char kFwVer[] = "3.03";
+constexpr unsigned kFwVerNum = 303;
 
 }  // namespace p1fw

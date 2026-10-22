@@ -136,6 +136,7 @@ void Store::import_from(StoreBackend& legacy)
     take_str("UUID", v_.uuid, sizeof(v_.uuid));
     take_str("EMAIL", v_.email, sizeof(v_.email));
     take_u32("reboots", &v_.reboots, false);
+    import_trigger(legacy);
 
     bool beta = false;
     bool alpha = false;
@@ -167,6 +168,34 @@ void Store::import_from(StoreBackend& legacy)
             v_.fip_en = false;
             skip_legacy("FIP_EN");
         }
+    }
+}
+
+void Store::import_trigger(StoreBackend& legacy)
+{
+    const StoredType tt = legacy.stored_type("TRG_TYPE");
+    if (tt == StoredType::U32) {
+        const std::uint32_t v = legacy.get_u32("TRG_TYPE", v_.trg_type);
+        if (v <= 1u) {
+            v_.trg_type = v;
+            ++legacy_imported_;
+        } else {
+            skip_legacy("TRG_TYPE");
+        }
+    } else if (tt != StoredType::Absent) {
+        skip_legacy("TRG_TYPE");
+    }
+    const StoredType it = legacy.stored_type("TRG_INT");
+    if (it == StoredType::U32) {
+        const std::uint32_t v = legacy.get_u32("TRG_INT", v_.trg_int);
+        if (v >= 1u && v <= 3600u) {
+            v_.trg_int = v;
+            ++legacy_imported_;
+        } else {
+            skip_legacy("TRG_INT");
+        }
+    } else if (it != StoredType::Absent) {
+        skip_legacy("TRG_INT");
     }
 }
 

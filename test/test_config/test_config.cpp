@@ -1,4 +1,5 @@
 ﻿#include <P1Config.h>
+#include <p1_data_request.h>
 
 #include <unity.h>
 
@@ -60,7 +61,7 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("", s.values().wifi_pass);
     TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
-    TEST_ASSERT_EQUAL_UINT(35, s.setting_count());
+    TEST_ASSERT_EQUAL_UINT(37, s.setting_count());
     TEST_ASSERT_EQUAL_UINT32(0, s.values().reboots);
     TEST_ASSERT_EQUAL_STRING("", s.values().last_reset);
     TEST_ASSERT_EQUAL_UINT32(0, s.values().log_mark);
@@ -74,6 +75,8 @@ void test_defaults_and_stored()
     TEST_ASSERT_EQUAL(p1cfg::official_build(), s.values().upd_autochk);
     TEST_ASSERT_FALSE(s.values().push_full);
     TEST_ASSERT_FALSE(s.values().rint_spiffs);
+    TEST_ASSERT_EQUAL_UINT32(0, s.values().trg_type);
+    TEST_ASSERT_EQUAL_UINT32(10, s.values().trg_int);
     TEST_ASSERT_EQUAL_STRING("", s.values().email);
     TEST_ASSERT_NOT_NULL(s.find_setting("FIP_EN"));
     TEST_ASSERT_NOT_NULL(s.find_setting("PUSH_FULL"));
@@ -1060,6 +1063,8 @@ void fill_full_2x(MemoryBackend& L, bool beta, bool alpha, bool v2)
     L.put_str("UUID", "P16512d5689ff6529d");
     L.put_str("EMAIL", "desk@example.com");
     L.put_u32("reboots", 42);
+    L.put_u32("TRG_TYPE", 1);
+    L.put_u32("TRG_INT", 15);
     L.put_bool("BETA_FLT", beta);
     L.put_bool("ALPHA_FLT", alpha);
     L.put_bool("V2_FLT", v2);
@@ -1112,6 +1117,8 @@ void test_legacy_import_full_2x()
     TEST_ASSERT_EQUAL_STRING("P16512d5689ff6529d", s.values().uuid);
     TEST_ASSERT_FALSE(ours.has("EID_PROVKEY"));
     TEST_ASSERT_FALSE(ours.has("EID_PROVSEC"));
+    TEST_ASSERT_EQUAL_UINT32(1, s.values().trg_type);
+    TEST_ASSERT_EQUAL_UINT32(15, s.values().trg_int);
     TEST_ASSERT_EQUAL(writes, legacy.write_count());
 }
 
@@ -1300,6 +1307,67 @@ void test_legacy_reimport_while_pending()
     TEST_ASSERT_EQUAL_STRING("be", s2.values().region);
 }
 
+void test_trigger_json_validation()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"TRG_TYPE":2})"));
+    TEST_ASSERT_EQUAL_UINT32(0, s.values().trg_type);
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(R"({"TRG_TYPE":1,"TRG_INT":15})"));
+    TEST_ASSERT_EQUAL_UINT32(1, s.values().trg_type);
+    TEST_ASSERT_EQUAL_UINT32(15, s.values().trg_int);
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"TRG_INT":0})"));
+    TEST_ASSERT_EQUAL_UINT32(15, s.values().trg_int);
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(R"({"TRG_INT":3601})"));
+}
+
+void test_schema9_imports_trigger_from_legacy()
+{
+    MemoryBackend ours;
+    ours.begin(false);
+    ours.put_u32("CFG_VER", 8);
+    ours.put_str("WIFI_SSID", "Already");
+    ours.end();
+    MemoryBackend legacy;
+    legacy.begin(false);
+    legacy.put_u32("TRG_TYPE", 1);
+    legacy.put_u32("TRG_INT", 20);
+    legacy.put_str("WIFI_SSID", "Ignored");
+    legacy.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.migrated());
+    TEST_ASSERT_EQUAL_UINT32(p1cfg::kSchemaVersion, s.values().cfg_ver);
+    TEST_ASSERT_EQUAL_STRING("Already", s.values().wifi_ssid);
+    TEST_ASSERT_EQUAL_UINT32(1, s.values().trg_type);
+    TEST_ASSERT_EQUAL_UINT32(20, s.values().trg_int);
+}
+
+void test_type1_request_line_timing()
+{
+    p1req::Line line;
+    line.configure(p1req::kTypeContinuous, 10, 0);
+    TEST_ASSERT_TRUE(line.high);
+    line.tick(5000);
+    TEST_ASSERT_TRUE(line.high);
+    line.on_telegram(6000);
+    TEST_ASSERT_TRUE(line.high);
+
+    line.configure(p1req::kTypeInterval, 10, 0);
+    TEST_ASSERT_FALSE(line.high);
+    line.tick(9999);
+    TEST_ASSERT_FALSE(line.high);
+    line.tick(10000);
+    TEST_ASSERT_TRUE(line.high);
+    line.on_telegram(10500);
+    TEST_ASSERT_FALSE(line.high);
+    line.tick(20499);
+    TEST_ASSERT_FALSE(line.high);
+    line.tick(20500);
+    TEST_ASSERT_TRUE(line.high);
+}
+
 void test_legacy_no_import_when_mark_cleared()
 {
     MemoryBackend ours;
@@ -1376,5 +1444,8 @@ int main()
     RUN_TEST(test_factory_reset_clears_legacy_namespace);
     RUN_TEST(test_legacy_reimport_while_pending);
     RUN_TEST(test_legacy_no_import_when_mark_cleared);
+    RUN_TEST(test_trigger_json_validation);
+    RUN_TEST(test_schema9_imports_trigger_from_legacy);
+    RUN_TEST(test_type1_request_line_timing);
     return UNITY_END();
 }

@@ -23,7 +23,7 @@ constexpr CfgFlags CFG_REBOOT = 4;
 constexpr CfgFlags CFG_HIDDEN = 8;
 constexpr CfgFlags CFG_READONLY = 16;
 
-constexpr std::uint32_t kSchemaVersion = 8;
+constexpr std::uint32_t kSchemaVersion = 9;
 
 constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;
@@ -110,6 +110,8 @@ struct Settings {
     char email[kEmailMax]{};
     bool push_full = false;
     bool rint_spiffs = false;
+    std::uint32_t trg_type = 0;
+    std::uint32_t trg_int = 10;
     // Byte offset in /syslog.txt up to which lines have been MQTT-published.
     std::uint32_t log_mark = 0;
     std::uint32_t cfg_ver = 0;
@@ -319,7 +321,7 @@ constexpr std::size_t kToJsonBufMin = 4096;
 
 class Store {
 public:
-    static constexpr std::size_t kSettingCount = 35;
+    static constexpr std::size_t kSettingCount = 37;
     static constexpr std::size_t kLegacySkipMax = 16;
 
     explicit Store(StoreBackend& backend, StoreBackend* legacy = nullptr);
@@ -415,6 +417,7 @@ private:
     void load_overrides();
     void save_overrides();
     void import_from(StoreBackend& legacy);
+    void import_trigger(StoreBackend& legacy);
     void skip_legacy(const char* key);
 
     StoreBackend& backend_;

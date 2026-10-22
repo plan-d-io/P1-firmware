@@ -588,6 +588,8 @@ void Store::bind_table()
              official_build());
     add_str("EMAIL", "User email", CFG_IN_API, v_.email, sizeof(v_.email), "");
     add_bool("PUSH_FULL", "Publish full telegram (~1 KB)", CFG_IN_API, &v_.push_full, false);
+    add_u32("TRG_TYPE", "Telegram request", CFG_IN_API, &v_.trg_type, 0);
+    add_u32("TRG_INT", "Request interval (s)", CFG_IN_API, &v_.trg_int, 10);
     add_bool("RINT_SPIFFS", "Reinitialise filesystem", CFG_IN_API, &v_.rint_spiffs, false);
     // Internal store-and-forward cursor — not a user setting.
     add_u32("LOG_MARK", "Syslog replay watermark", CFG_HIDDEN, &v_.log_mark, 0);
@@ -711,6 +713,11 @@ void Store::load()
     }
 
     if (!ver_present || ver < kSchemaVersion) {
+        if (ver < 9 && legacy_ != nullptr) {
+            legacy_->begin(true);
+            import_trigger(*legacy_);
+            legacy_->end();
+        }
         migrate();
     }
     if (legacy_import_ran_) {
@@ -1073,6 +1080,12 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
                 return fail(JsonStatus::WrongType, key);
             }
             if (std::strcmp(e->key, "MQTT_PORT") == 0 && (v < 1u || v > 65535u)) {
+                return fail(JsonStatus::Invalid, key);
+            }
+            if (std::strcmp(e->key, "TRG_TYPE") == 0 && v > 1u) {
+                return fail(JsonStatus::Invalid, key);
+            }
+            if (std::strcmp(e->key, "TRG_INT") == 0 && (v < 1u || v > 3600u)) {
                 return fail(JsonStatus::Invalid, key);
             }
             *e->var.u = v;
