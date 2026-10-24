@@ -30,9 +30,34 @@ std::size_t format_version(unsigned num, char* out, std::size_t cap);
 // Used by the host test that locks kFwVer to kFwVerNum.
 bool parse_display_version(std::string_view s, unsigned& out);
 
-// Automatic install skips exactly `failed` (0 = none). Manual install does not.
-// Also requires found > running.
-bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic);
+// Automatic skip of a failed version lasts this long. A test-only compile
+// flag shortens it for the desk; it is never set on a release build.
+#if defined(P1_TEST_OTA_FAIL_SKIP_S)
+constexpr std::uint32_t kAutoFailSkipS = static_cast<std::uint32_t>(P1_TEST_OTA_FAIL_SKIP_S);
+#else
+constexpr std::uint32_t kAutoFailSkipS = 23u * 3600u;
+#endif
+
+// Automatic install skips `failed` (0 = none) only while elapsed_s is still
+// under kAutoFailSkipS. Manual install does not skip. Requires found > running.
+bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic,
+                    std::uint32_t elapsed_s = 0);
+
+// Seconds since the failure was noticed. Uses the persisted unix stamp when
+// the clock is valid; otherwise millis() since boot_ms_at (this boot only).
+std::uint32_t fail_elapsed_s(std::uint32_t unix_noticed, std::uint32_t boot_ms_at,
+                             bool clock_valid, std::uint32_t now_unix,
+                             std::uint32_t now_boot_ms);
+
+// Unix time to persist once the clock is valid: backdated by uptime since
+// boot_ms_at, so a later power cut does not restart the wait.
+std::uint32_t fail_unix_stamp(std::uint32_t now_unix, std::uint32_t now_boot_ms,
+                              std::uint32_t boot_ms_at);
+
+// "2026-10-25 15:04:00 UTC". 0 if the buffer is too small.
+std::size_t format_unix_utc(std::uint32_t unix, char* out, std::size_t cap);
+// "boot+23h" / "boot+3m" / "boot+12s". 0 if the buffer is too small.
+std::size_t format_boot_age(std::uint32_t elapsed_s, char* out, std::size_t cap);
 
 // Storage guard while a new image is on trial (pending-verify).
 // Rollback if on trial and filesystem or settings storage failed.

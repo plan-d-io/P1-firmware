@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -996,6 +999,49 @@ void test_debug_unique_id_reuses_2x_when_ids_match()
     TEST_ASSERT_TRUE(saw_reboot);
 }
 
+void test_1phase_discovery_has_no_l2_l3()
+{
+    const char* candidates[] = {
+#ifdef FIXTURES_DIR
+        FIXTURES_DIR,
+#endif
+        "fixtures",
+        "../fixtures",
+        "../../fixtures",
+        "../../../fixtures",
+    };
+    std::ifstream in;
+    for (const char* dir : candidates) {
+        in.open(std::string(dir) + "/belgian-1phase-derived.p1", std::ios::binary);
+        if (in) {
+            break;
+        }
+        in.clear();
+    }
+    TEST_ASSERT_TRUE(static_cast<bool>(in));
+    const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(in),
+                                          std::istreambuf_iterator<char>()};
+    p1dsmr::Reader reader;
+    const auto stats = reader.feed(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
+    TEST_ASSERT_EQUAL_UINT(1, stats.ok);
+
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.load();
+    TEST_ASSERT_EQUAL(p1cfg::JsonStatus::Ok,
+                      cfg.apply_json(R"({"HA_DEVICE":"Example meter","MQTT_PFIX":"data/devices/example_meter/"})"));
+    const std::uint64_t mask = p1pub::discovery_field_mask(reader.data(), cfg);
+    char buf[p1pub::kDiscoveryCap];
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(cfg, "3.04", kTestConfigUrl, mask, 0, buf,
+                                            sizeof(buf)) > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "Voltage phase 1"));
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "Active power consumption L1"));
+    TEST_ASSERT_NULL(std::strstr(buf, "phase 2"));
+    TEST_ASSERT_NULL(std::strstr(buf, "phase 3"));
+    TEST_ASSERT_NULL(std::strstr(buf, " L2"));
+    TEST_ASSERT_NULL(std::strstr(buf, " L3"));
+}
+
 void test_ha_device_discovery_schema_shape()
 {
     p1cfg::MemoryBackend mem;
@@ -1058,5 +1104,6 @@ int main()
     RUN_TEST(test_ha_announce_debug_without_telegram);
     RUN_TEST(test_legacy_halves_split_meter_and_debug);
     RUN_TEST(test_debug_unique_id_reuses_2x_when_ids_match);
+    RUN_TEST(test_1phase_discovery_has_no_l2_l3);
     return UNITY_END();
 }

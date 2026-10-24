@@ -220,7 +220,7 @@ void test_api_status_json_max()
     char mqtt_err[48];
     char telegrams[72];
     char upd_channel[p1cfg::kRelChanMax];
-    char upd_fail[64];
+    char upd_fail[p1web::kUpdFailMax];
     char wifi_fail[p1web::kWifiFailMax];
     std::memset(device_id, 'A', sizeof(device_id) - 1);
     device_id[sizeof(device_id) - 1] = '\0';

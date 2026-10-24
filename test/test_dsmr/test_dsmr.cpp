@@ -438,6 +438,29 @@ void test_fixtures_match_library_field_for_field()
     assert_fixture_matches_library("belgian-mbus-gas-water-spec.p1");
     assert_fixture_matches_library("belgian-full-spec-v21.p1");
     assert_fixture_matches_library("dutch-3phase-esmr5-simulator.p1");
+    assert_fixture_matches_library("belgian-1phase-derived.p1");
+}
+
+void test_belgian_1phase_derived()
+{
+    const auto bytes = load_fixture("belgian-1phase-derived.p1");
+    p1dsmr::Reader reader;
+    const auto stats = parse_all(reader, bytes);
+    TEST_ASSERT_EQUAL_UINT(1, stats.ok);
+    TEST_ASSERT_EQUAL_UINT(0, stats.rejected);
+    TEST_ASSERT_EQUAL_UINT(0, stats.skipped);
+    const auto& d = reader.data();
+    TEST_ASSERT_TRUE(d.voltage_l1_present);
+    TEST_ASSERT_TRUE(d.current_l1_present);
+    TEST_ASSERT_TRUE(d.power_delivered_l1_present);
+    TEST_ASSERT_FALSE(d.voltage_l2_present);
+    TEST_ASSERT_FALSE(d.voltage_l3_present);
+    TEST_ASSERT_FALSE(d.current_l2_present);
+    TEST_ASSERT_FALSE(d.current_l3_present);
+    TEST_ASSERT_FALSE(d.power_delivered_l2_present);
+    TEST_ASSERT_FALSE(d.power_delivered_l3_present);
+    TEST_ASSERT_FALSE(d.power_returned_l2_present);
+    TEST_ASSERT_FALSE(d.power_returned_l3_present);
 }
 
 void test_malformed_line_skipped()
@@ -574,6 +597,7 @@ int main()
     RUN_TEST(test_junk_before_telegram_resync);
     RUN_TEST(test_peak_history_sentinel_timestamp);
     RUN_TEST(test_fixtures_match_library_field_for_field);
+    RUN_TEST(test_belgian_1phase_derived);
     RUN_TEST(test_malformed_line_skipped);
     RUN_TEST(test_heat_meter_channel1_skipped);
     RUN_TEST(test_duplicate_line_keeps_first);

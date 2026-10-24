@@ -17,7 +17,7 @@ constexpr std::uint32_t kRetryIntervalMs = 120000;
 constexpr std::uint32_t kRetryAttemptMs = 20000;
 constexpr std::size_t kMaxScanResults = 24;
 constexpr std::size_t kSsidMax = 33;
-constexpr std::size_t kPassMax = 64;
+constexpr std::size_t kPassMax = 65;
 // Status page: 838 B template + worst-case replacements (~60 B). malloc.
 constexpr std::size_t kHtmlBuf = 1024;
 constexpr std::size_t kUpdateWindowJsonMax = 64;
@@ -28,8 +28,9 @@ constexpr std::size_t kConfigBodyMax = 2048;
 constexpr std::size_t kConfigJsonMax = 8192;
 // Previous 1024 plus `"wifi_fail":"<kWifiFailMax escaped>"`. Headroom for escaping.
 constexpr std::size_t kWifiFailMax = 128;
-// Previous 2048 plus telegrams_skipped and last-telegram download flags.
-constexpr std::size_t kApiStatusMax = 2304;
+constexpr std::size_t kUpdFailMax = 160;
+// Previous 2304 plus a longer upd_fail retry sentence.
+constexpr std::size_t kApiStatusMax = 2560;
 // 24 entries, 32-char SSIDs fully escaped (64), rssi int32 min:
 // {"ssid":"<64>","rssi":-2147483648} = 93; 24*93 + 23 commas +
 // {"scanning":false,"networks":[]} (33) = 2288. 2560 is headroom.

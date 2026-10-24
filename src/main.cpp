@@ -140,8 +140,9 @@ static bool g_upd_checked = false;
 static bool g_upd_available = false;
 static unsigned g_upd_found = 0;
 static char g_upd_channel[p1cfg::kRelChanMax]{};
-static char g_upd_fail_msg[64]{};
+static char g_upd_fail_msg[p1web::kUpdFailMax]{};
 static char g_ota_dest_label[p1cfg::kOtaPartMax]{};
+static std::uint32_t g_ota_fail_boot_ms = 0;
 static bool g_on_trial = false;
 static bool g_trial_confirmed = false;
 static bool g_trial_reach_seen = false;
@@ -1880,6 +1881,39 @@ static void write_ota_note(unsigned ver)
     g_cfg.set_ota_note(g_ota_dest_label, ver);
 }
 
+static void fill_ota_fail_msg();
+
+static void format_fail_when(char* out, std::size_t cap, std::uint32_t offset_s)
+{
+    out[0] = '\0';
+    if (g_cfg.ota_fail_unix() != 0 && p1log::time_valid()) {
+        p1ota::format_unix_utc(g_cfg.ota_fail_unix() + offset_s, out, cap);
+        return;
+    }
+    const std::uint32_t at = (g_ota_fail_boot_ms / 1000u) + offset_s;
+    p1ota::format_boot_age(at, out, cap);
+}
+
+static std::uint32_t ota_fail_elapsed_s()
+{
+    const bool clock = p1log::time_valid();
+    const std::uint32_t now_unix =
+        clock ? static_cast<std::uint32_t>(p1log::unix_now()) : 0;
+    return p1ota::fail_elapsed_s(g_cfg.ota_fail_unix(), g_ota_fail_boot_ms, clock, now_unix,
+                                 millis());
+}
+
+static void maybe_stamp_ota_fail_unix(std::uint32_t now_unix)
+{
+    if (!g_cfg.has_ota_failed() || g_cfg.ota_fail_unix() != 0) {
+        return;
+    }
+    const std::uint32_t stamped =
+        p1ota::fail_unix_stamp(now_unix, millis(), g_ota_fail_boot_ms);
+    g_cfg.set_ota_fail_unix(stamped);
+    fill_ota_fail_msg();
+}
+
 static void fill_ota_fail_msg()
 {
     g_upd_fail_msg[0] = '\0';
@@ -1894,22 +1928,49 @@ static void fill_ota_fail_msg()
     }
     char disp[16];
     p1ota::format_version(ver, disp, sizeof(disp));
+    if (!g_cfg.values().upd_auto) {
+        std::snprintf(g_upd_fail_msg, sizeof(g_upd_fail_msg),
+                      "Update to %s failed to start and was undone.", disp);
+        return;
+    }
+    char when[32];
+    format_fail_when(when, sizeof(when), p1ota::kAutoFailSkipS);
     std::snprintf(g_upd_fail_msg, sizeof(g_upd_fail_msg),
-                  "Update to %s failed to start and was undone.", disp);
+                  "Update to %s failed to start and was undone. It will be tried again "
+                  "automatically after %s.",
+                  disp, when);
 }
 
 static bool ota_auto_should_install(unsigned found)
 {
+    if (p1log::time_valid() && g_cfg.has_ota_failed() && g_cfg.ota_fail_unix() == 0) {
+        maybe_stamp_ota_fail_unix(static_cast<std::uint32_t>(p1log::unix_now()));
+    }
     const unsigned failed = g_cfg.has_ota_failed() ? g_cfg.ota_failed_ver() : 0;
-    if (p1ota::should_install(found, p1fw::kFwVerNum, failed, true)) {
+    const std::uint32_t elapsed = g_cfg.has_ota_failed() ? ota_fail_elapsed_s() : 0;
+    if (p1ota::should_install(found, p1fw::kFwVerNum, failed, true, elapsed)) {
+        if (failed != 0 && found == failed) {
+            char disp[16];
+            p1ota::format_version(found, disp, sizeof(disp));
+            char msg[96];
+            std::snprintf(msg, sizeof(msg),
+                          "Retrying automatic install of %s after an earlier failure", disp);
+            g_log.log(p1log::Level::Info, msg);
+        }
         return true;
     }
     if (failed != 0 && found == failed) {
         char disp[16];
         p1ota::format_version(found, disp, sizeof(disp));
-        char msg[80];
-        std::snprintf(msg, sizeof(msg), "Skipping automatic install of %s: it failed before",
-                      disp);
+        char failed_at[32];
+        char next_at[32];
+        format_fail_when(failed_at, sizeof(failed_at), 0);
+        format_fail_when(next_at, sizeof(next_at), p1ota::kAutoFailSkipS);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg),
+                      "Skipping automatic install of %s: it failed at %s; next automatic "
+                      "attempt after %s",
+                      disp, failed_at, next_at);
         g_log.log(p1log::Level::Info, msg);
     }
     return false;
@@ -1947,6 +2008,7 @@ static void service_trial()
         g_on_trial = false;
         g_cfg.clear_ota_note();
         g_cfg.clear_ota_failed();
+        g_ota_fail_boot_ms = 0;
         g_upd_fail_msg[0] = '\0';
         g_log.log(p1log::Level::Info, "New firmware confirmed");
     }
@@ -1984,6 +2046,9 @@ static void apply_ota_note_at_boot(const char* running_label)
     }
 
     if (!g_cfg.has_ota_note()) {
+        if (g_cfg.has_ota_failed() && g_cfg.ota_fail_unix() == 0) {
+            g_ota_fail_boot_ms = millis();
+        }
         fill_ota_fail_msg();
         return;
     }
@@ -1993,6 +2058,7 @@ static void apply_ota_note_at_boot(const char* running_label)
     if (!same) {
         const unsigned ver = g_cfg.ota_note_ver();
         g_cfg.set_ota_failed(ver);
+        g_ota_fail_boot_ms = millis();
         g_cfg.clear_ota_note();
         fill_ota_fail_msg();
         g_log.log(p1log::Level::Warn, g_upd_fail_msg);
@@ -2441,6 +2507,12 @@ static void on_telegram(const p1dsmr::Data& data)
     if (g_hold_p1) {
         return;
     }
+    if (g_cfg.has_ota_failed() && g_cfg.ota_fail_unix() == 0 && data.timestamp_present) {
+        std::int64_t ts = 0;
+        if (p1eid::dsmr_to_unix(data.timestamp, ts) && ts > 1577836800) {
+            maybe_stamp_ota_fail_unix(static_cast<std::uint32_t>(ts));
+        }
+    }
     g_last_telegram_ms = millis();
     snapshot_readings(data);
 
@@ -2606,6 +2678,10 @@ static void cmd_set(char* rest)
         if (std::strcmp(e->key, "REGION") == 0 && std::strcmp(value, "auto") != 0 &&
             std::strcmp(value, "be") != 0 && std::strcmp(value, "nl") != 0) {
             Serial.println("REGION auto|be|nl");
+            return;
+        }
+        if (std::strcmp(e->key, "WIFI_PASS") == 0 && !p1cfg::wifi_pass_ok(value)) {
+            Serial.println("WIFI_PASS: 64 characters must be hex digits");
             return;
         }
         std::memcpy(e->var.s, value, n + 1);
@@ -3160,6 +3236,9 @@ void loop()
         }
         if (g_using_static_sta && g_gw_check == GwCheck::Idle) {
             start_gateway_reach_check();
+        }
+        if (g_cfg.has_ota_failed() && g_cfg.ota_fail_unix() == 0 && p1log::time_valid()) {
+            maybe_stamp_ota_fail_unix(static_cast<std::uint32_t>(p1log::unix_now()));
         }
         if (!g_ntp_started) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");

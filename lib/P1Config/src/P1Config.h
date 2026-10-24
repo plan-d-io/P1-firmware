@@ -29,6 +29,7 @@ constexpr std::size_t kHostMax = 64;
 constexpr std::size_t kIdMax = 32;
 constexpr std::size_t kUserMax = 32;
 constexpr std::size_t kPassMax = 64;
+constexpr std::size_t kWifiPassMax = 65;  // WPA: 8–63 ASCII or 64 hex + NUL
 constexpr std::size_t kPrefixMax = 48;
 constexpr std::size_t kHaMax = 32;
 constexpr std::size_t kRegionMax = 8;
@@ -43,19 +44,20 @@ constexpr std::size_t kEidClaimMax = 32;
 
 // Largest string setting. JSON parse uses each entry's str_cap; this is the
 // bound a scratch buffer would need, and a tripwire if a longer setting is added.
-static_assert(kIdMax <= kHostMax);
-static_assert(kUserMax <= kHostMax);
-static_assert(kPassMax <= kHostMax);
-static_assert(kPrefixMax <= kHostMax);
-static_assert(kHaMax <= kHostMax);
-static_assert(kRegionMax <= kHostMax);
-static_assert(kSsidMax <= kHostMax);
-static_assert(kLastResetMax <= kHostMax);
-static_assert(kIpMax <= kHostMax);
-static_assert(kUuidMax <= kHostMax);
-static_assert(kRelChanMax <= kHostMax);
-static_assert(kEmailMax <= kHostMax);
-static_assert(kEidClaimMax <= kHostMax);
+static_assert(kIdMax <= kWifiPassMax);
+static_assert(kHostMax <= kWifiPassMax);
+static_assert(kUserMax <= kWifiPassMax);
+static_assert(kPassMax <= kWifiPassMax);
+static_assert(kPrefixMax <= kWifiPassMax);
+static_assert(kHaMax <= kWifiPassMax);
+static_assert(kRegionMax <= kWifiPassMax);
+static_assert(kSsidMax <= kWifiPassMax);
+static_assert(kLastResetMax <= kWifiPassMax);
+static_assert(kIpMax <= kWifiPassMax);
+static_assert(kUuidMax <= kWifiPassMax);
+static_assert(kRelChanMax <= kWifiPassMax);
+static_assert(kEmailMax <= kWifiPassMax);
+static_assert(kEidClaimMax <= kWifiPassMax);
 
 // Worst-case FLD_OVR: every catalogue slot as "id=0,". Catalogue static_assert
 // checks the real table fits. identification is 14 chars; 16 is headroom.
@@ -67,7 +69,7 @@ constexpr std::size_t kOverrideBufCap = kMaxFields * (kMaxFieldId + 3) + 1;
 // this copy until the next reboot; live Settings can change underneath.
 struct NetworkSettings {
     char wifi_ssid[kSsidMax]{};
-    char wifi_pass[kPassMax]{};
+    char wifi_pass[kWifiPassMax]{};
     bool fip_en = false;
     char fipaddr[kIpMax]{};
     char fsubn[kIpMax]{};
@@ -92,7 +94,7 @@ struct Settings {
     std::uint32_t upl_throttle = 10;
     char region[kRegionMax]{};
     char wifi_ssid[kSsidMax]{};
-    char wifi_pass[kPassMax]{};
+    char wifi_pass[kWifiPassMax]{};
     std::uint32_t reboots = 0;
     char last_reset[kLastResetMax]{};
     bool fip_en = false;
@@ -280,6 +282,8 @@ const char* json_status_name(JsonStatus s);
 // True if s is a dotted-quad (0–255 each). Empty string is not valid.
 bool ip_ok(const char* s);
 bool rel_chan_ok(const char* s);
+// WPA passphrase: 0–63 any characters, 64 must be hex digits. Longer is overflow.
+bool wifi_pass_ok(std::string_view s);
 
 // Text for LAST_RESET on the boot that imported 2.x settings.
 // version_display empty → "Updated from legacy firmware".
@@ -346,7 +350,7 @@ public:
     void reset_wifi();
     // Every catalogue setting back to its table default, including clearing
     // HA_MIG / HA_MIG_D / HA_SLUG / HA_PFIX / OTA_NPART / OTA_NVER / OTA_FAIL /
-    // IMP_PEND which are not settings.
+    // OTA_FAIL_T / IMP_PEND which are not settings.
     void factory_reset();
 
     bool migrated() const { return migrated_; }
@@ -391,6 +395,9 @@ public:
     bool has_ota_failed() const { return ota_fail_have_; }
     std::uint32_t ota_failed_ver() const { return ota_fail_ver_; }
     void clear_ota_failed();
+    // Unix time the failure was noticed (0 until the clock is valid).
+    void set_ota_fail_unix(std::uint32_t unix);
+    std::uint32_t ota_fail_unix() const { return ota_fail_unix_; }
 
     // On failure, if bad_key is non-null and bad_key_cap > 0, writes the
     // offending setting key (NUL-terminated) when one is known. Cleared to
@@ -443,6 +450,7 @@ private:
     std::uint32_t ota_note_ver_ = 0;
     bool ota_fail_have_ = false;
     std::uint32_t ota_fail_ver_ = 0;
+    std::uint32_t ota_fail_unix_ = 0;
     bool rel_chan_changed_ = false;
     bool reboot_needed_ = false;
     NetworkSettings boot_net_{};

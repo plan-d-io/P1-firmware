@@ -245,6 +245,7 @@
       });
     } else if (kind === "password") {
       input = el("input", {type: "password", id: key, name: key, autocomplete: "off"});
+      if (key === "WIFI_PASS") input.maxLength = 64;
       input.dataset.secret = "1";
       input.dataset.changed = "0";
       input.addEventListener("input", function () { input.dataset.changed = "1"; });
@@ -750,6 +751,16 @@
   document.getElementById("configForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     clearErrors();
+    var passEl = document.getElementById("WIFI_PASS");
+    if (passEl && passEl.dataset.changed === "1") {
+      var pw = passEl.value || "";
+      if (pw.length === 64 && !/^[0-9a-fA-F]{64}$/.test(pw)) {
+        markError("WIFI_PASS", "A 64-character WiFi password must be 64 hex digits (WPA key).");
+        document.getElementById("infoMessage").style.color = "#ff8a8a";
+        document.getElementById("infoMessage").textContent = "A 64-character WiFi password must be 64 hex digits (WPA key).";
+        return;
+      }
+    }
     var cfgBody = collectChanges();
     var fldBody = collectFieldChanges();
     if (!cfgBody && !fldBody) {

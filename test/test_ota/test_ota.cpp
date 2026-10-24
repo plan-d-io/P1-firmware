@@ -9,8 +9,8 @@ void test_fw_ver_matches_num()
 {
     unsigned parsed = 0;
     TEST_ASSERT_TRUE(p1ota::parse_display_version(p1fw::kFwVer, parsed));
-    TEST_ASSERT_EQUAL_UINT(303u, parsed);
-    TEST_ASSERT_EQUAL_UINT(303u, p1fw::kFwVerNum);
+    TEST_ASSERT_EQUAL_UINT(304u, parsed);
+    TEST_ASSERT_EQUAL_UINT(304u, p1fw::kFwVerNum);
     TEST_ASSERT_EQUAL_UINT(parsed, p1fw::kFwVerNum);
 }
 
@@ -77,6 +77,44 @@ void test_should_install()
     TEST_ASSERT_FALSE(p1ota::should_install(301, 301, 0, false));
 }
 
+void test_should_install_skip_expires()
+{
+    const std::uint32_t skip = p1ota::kAutoFailSkipS;
+    TEST_ASSERT_EQUAL_UINT(23u * 3600u, skip);
+    TEST_ASSERT_FALSE(p1ota::should_install(305, 304, 305, true, 3u * 60u));
+    TEST_ASSERT_FALSE(p1ota::should_install(305, 304, 305, true, skip - 1u));
+    TEST_ASSERT_TRUE(p1ota::should_install(305, 304, 305, true, skip));
+    TEST_ASSERT_TRUE(p1ota::should_install(305, 304, 305, true, skip + 60u));
+    TEST_ASSERT_TRUE(p1ota::should_install(306, 304, 305, true, 0));
+    TEST_ASSERT_TRUE(p1ota::should_install(305, 304, 305, false, 0));
+}
+
+void test_fail_elapsed_fake_clock()
+{
+    TEST_ASSERT_EQUAL_UINT(180u, p1ota::fail_elapsed_s(0, 0, false, 0, 180000u));
+    TEST_ASSERT_EQUAL_UINT(p1ota::kAutoFailSkipS,
+                           p1ota::fail_elapsed_s(1700000000u, 0, true,
+                                                 1700000000u + p1ota::kAutoFailSkipS, 0));
+    TEST_ASSERT_EQUAL_UINT(p1ota::kAutoFailSkipS,
+                           p1ota::fail_elapsed_s(1700000000u, 50000u, true,
+                                                 1700000000u + p1ota::kAutoFailSkipS, 1000u));
+    TEST_ASSERT_EQUAL_UINT(5u, p1ota::fail_elapsed_s(0, 0, false, 0, 5000u));
+    TEST_ASSERT_EQUAL_UINT(1699999820u, p1ota::fail_unix_stamp(1700000000u, 180000u, 0));
+}
+
+void test_format_fail_times()
+{
+    char buf[32];
+    TEST_ASSERT_TRUE(p1ota::format_unix_utc(1577836800u, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("2020-01-01 00:00:00 UTC", buf);
+    TEST_ASSERT_TRUE(p1ota::format_boot_age(23u * 3600u, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("boot+23h", buf);
+    TEST_ASSERT_TRUE(p1ota::format_boot_age(180u, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("boot+3m", buf);
+    TEST_ASSERT_TRUE(p1ota::format_boot_age(12u, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("boot+12s", buf);
+}
+
 void test_storage_guard()
 {
     TEST_ASSERT_FALSE(p1ota::storage_on_trial_should_rollback(false, true, true));
@@ -114,6 +152,9 @@ int main(int argc, char** argv)
     RUN_TEST(test_channel_urls);
     RUN_TEST(test_format_version);
     RUN_TEST(test_should_install);
+    RUN_TEST(test_should_install_skip_expires);
+    RUN_TEST(test_fail_elapsed_fake_clock);
+    RUN_TEST(test_format_fail_times);
     RUN_TEST(test_storage_guard);
     return UNITY_END();
 }

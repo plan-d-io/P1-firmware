@@ -22,6 +22,8 @@ bool json_has(const char* json, const char* needle)
 
 }  // namespace
 
+void fill_full_2x(MemoryBackend& L, bool beta, bool alpha, bool v2);
+
 void test_update_defaults_official_and_self_built()
 {
     p1cfg::Settings v;
@@ -980,6 +982,74 @@ void test_factory_reset_defaults_and_clears_ha_keys()
     TEST_ASSERT_FALSE(mem.has("OTA_NPART"));
     TEST_ASSERT_FALSE(mem.has("OTA_NVER"));
     TEST_ASSERT_FALSE(mem.has("OTA_FAIL"));
+    TEST_ASSERT_FALSE(mem.has("OTA_FAIL_T"));
+}
+
+void test_ota_fail_unix_persists()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+    s.set_ota_failed(305);
+    TEST_ASSERT_EQUAL_UINT32(0, s.ota_fail_unix());
+    TEST_ASSERT_FALSE(mem.has("OTA_FAIL_T"));
+    s.set_ota_fail_unix(1700000000u);
+    TEST_ASSERT_EQUAL_UINT32(1700000000u, s.ota_fail_unix());
+    TEST_ASSERT_TRUE(mem.has("OTA_FAIL_T"));
+
+    Store s2(mem);
+    s2.load();
+    TEST_ASSERT_TRUE(s2.has_ota_failed());
+    TEST_ASSERT_EQUAL_UINT32(305, s2.ota_failed_ver());
+    TEST_ASSERT_EQUAL_UINT32(1700000000u, s2.ota_fail_unix());
+
+    s2.set_ota_failed(306);
+    TEST_ASSERT_EQUAL_UINT32(0, s2.ota_fail_unix());
+    TEST_ASSERT_FALSE(mem.has("OTA_FAIL_T"));
+}
+
+void test_wifi_pass_63_and_64()
+{
+    MemoryBackend mem;
+    Store s(mem);
+    s.load();
+
+    const std::string ascii63(63, 'p');
+    const std::string json63 = std::string("{\"WIFI_PASS\":\"") + ascii63 + "\"}";
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(json63));
+    TEST_ASSERT_EQUAL_STRING(ascii63.c_str(), s.values().wifi_pass);
+
+    const char* hex64 = "0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDEF";
+    TEST_ASSERT_EQUAL_UINT(64, std::strlen(hex64));
+    const std::string json64 = std::string("{\"WIFI_PASS\":\"") + hex64 + "\"}";
+    TEST_ASSERT_EQUAL(JsonStatus::Ok, s.apply_json(json64));
+    TEST_ASSERT_EQUAL_STRING(hex64, s.values().wifi_pass);
+
+    const std::string nothex64(64, 'g');
+    std::strcpy(s.values().wifi_pass, "keep");
+    const std::string json_bad = std::string("{\"WIFI_PASS\":\"") + nothex64 + "\"}";
+    TEST_ASSERT_EQUAL(JsonStatus::Invalid, s.apply_json(json_bad));
+    TEST_ASSERT_EQUAL_STRING("keep", s.values().wifi_pass);
+
+    TEST_ASSERT_TRUE(p1cfg::wifi_pass_ok("short"));
+    TEST_ASSERT_TRUE(p1cfg::wifi_pass_ok(ascii63));
+    TEST_ASSERT_TRUE(p1cfg::wifi_pass_ok(hex64));
+    TEST_ASSERT_FALSE(p1cfg::wifi_pass_ok(nothex64));
+}
+
+void test_legacy_import_64_hex_wifi_pass()
+{
+    MemoryBackend ours;
+    MemoryBackend legacy;
+    fill_full_2x(legacy, true, false, false);
+    const char* hex64 = "0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDEF";
+    legacy.begin(false);
+    legacy.put_str("WIFI_PASSWD", hex64);
+    legacy.end();
+    Store s(ours, &legacy);
+    s.load();
+    TEST_ASSERT_TRUE(s.legacy_import_ran());
+    TEST_ASSERT_EQUAL_STRING(hex64, s.values().wifi_pass);
 }
 
 void test_selectable_field_count()
@@ -1489,6 +1559,9 @@ int main()
     RUN_TEST(test_apply_json_reports_bad_key);
     RUN_TEST(test_reset_wifi_clears_creds_keeps_rest);
     RUN_TEST(test_factory_reset_defaults_and_clears_ha_keys);
+    RUN_TEST(test_ota_fail_unix_persists);
+    RUN_TEST(test_wifi_pass_63_and_64);
+    RUN_TEST(test_legacy_import_64_hex_wifi_pass);
     RUN_TEST(test_selectable_field_count);
     RUN_TEST(test_apply_fields_json);
     RUN_TEST(test_format_arduino_ipv4);

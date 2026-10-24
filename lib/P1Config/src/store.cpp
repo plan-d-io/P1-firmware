@@ -1,5 +1,6 @@
 #include "P1Config.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -210,6 +211,22 @@ bool static_ip_consistent(const char* ip_s, const char* mask_s, const char* gw_s
 bool rel_chan_ok(const char* s)
 {
     return s != nullptr && (std::strcmp(s, "main") == 0 || std::strcmp(s, "develop") == 0);
+}
+
+bool wifi_pass_ok(std::string_view s)
+{
+    if (s.size() < 64) {
+        return true;
+    }
+    if (s.size() != 64) {
+        return false;
+    }
+    for (char c : s) {
+        if (std::isxdigit(static_cast<unsigned char>(c)) == 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool format_arduino_ipv4(std::uint32_t v, char* out, std::size_t cap)
@@ -697,6 +714,10 @@ void Store::load()
     }
     ota_fail_have_ = backend_.has("OTA_FAIL");
     ota_fail_ver_ = ota_fail_have_ ? backend_.get_u32("OTA_FAIL", 0) : 0;
+    ota_fail_unix_ = 0;
+    if (ota_fail_have_ && backend_.has("OTA_FAIL_T")) {
+        ota_fail_unix_ = backend_.get_u32("OTA_FAIL_T", 0);
+    }
     const std::uint32_t ver = ver_present ? v_.cfg_ver : 0;
     backend_.end();
 
@@ -979,8 +1000,21 @@ void Store::set_ota_failed(std::uint32_t ver)
 {
     ota_fail_have_ = true;
     ota_fail_ver_ = ver;
+    ota_fail_unix_ = 0;
     backend_.begin(false);
     backend_.put_u32("OTA_FAIL", ota_fail_ver_);
+    backend_.remove("OTA_FAIL_T");
+    backend_.end();
+}
+
+void Store::set_ota_fail_unix(std::uint32_t unix)
+{
+    if (!ota_fail_have_) {
+        return;
+    }
+    ota_fail_unix_ = unix;
+    backend_.begin(false);
+    backend_.put_u32("OTA_FAIL_T", ota_fail_unix_);
     backend_.end();
 }
 
@@ -988,8 +1022,10 @@ void Store::clear_ota_failed()
 {
     ota_fail_have_ = false;
     ota_fail_ver_ = 0;
+    ota_fail_unix_ = 0;
     backend_.begin(false);
     backend_.remove("OTA_FAIL");
+    backend_.remove("OTA_FAIL_T");
     backend_.end();
 }
 
@@ -1117,6 +1153,9 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
                 return fail(JsonStatus::Invalid, key);
             }
             if (std::strcmp(e->key, "REL_CHAN") == 0 && !rel_chan_ok(e->var.s)) {
+                return fail(JsonStatus::Invalid, key);
+            }
+            if (std::strcmp(e->key, "WIFI_PASS") == 0 && !wifi_pass_ok(e->var.s)) {
                 return fail(JsonStatus::Invalid, key);
             }
             // IP field format is checked only when FIP_EN is true (post-pass).

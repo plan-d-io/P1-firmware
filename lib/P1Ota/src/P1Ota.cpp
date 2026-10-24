@@ -3,11 +3,16 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 namespace p1ota {
 namespace {
 
+#if defined(P1_TEST_OTA_BASE)
+constexpr char kBase[] = P1_TEST_OTA_BASE;
+#else
 constexpr char kBase[] = "https://raw.githubusercontent.com/plan-d-io/P1-dongle/";
+#endif
 
 bool append(char* out, std::size_t cap, std::size_t& n, const char* s)
 {
@@ -167,15 +172,89 @@ bool parse_display_version(std::string_view s, unsigned& out)
     return true;
 }
 
-bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic)
+bool should_install(unsigned found, unsigned running, unsigned failed, bool automatic,
+                    std::uint32_t elapsed_s)
 {
     if (found <= running) {
         return false;
     }
-    if (automatic && failed != 0 && found == failed) {
+    if (automatic && failed != 0 && found == failed && elapsed_s < kAutoFailSkipS) {
         return false;
     }
     return true;
+}
+
+std::uint32_t fail_elapsed_s(std::uint32_t unix_noticed, std::uint32_t boot_ms_at,
+                             bool clock_valid, std::uint32_t now_unix,
+                             std::uint32_t now_boot_ms)
+{
+    if (unix_noticed != 0 && clock_valid) {
+        if (now_unix <= unix_noticed) {
+            return 0;
+        }
+        return now_unix - unix_noticed;
+    }
+    return (now_boot_ms - boot_ms_at) / 1000u;
+}
+
+std::uint32_t fail_unix_stamp(std::uint32_t now_unix, std::uint32_t now_boot_ms,
+                              std::uint32_t boot_ms_at)
+{
+    const std::uint32_t up_s = (now_boot_ms - boot_ms_at) / 1000u;
+    if (now_unix <= up_s) {
+        return now_unix;
+    }
+    return now_unix - up_s;
+}
+
+std::size_t format_unix_utc(std::uint32_t unix, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    const std::time_t t = static_cast<std::time_t>(unix);
+    std::tm tm{};
+#if defined(_MSC_VER)
+    if (gmtime_s(&tm, &t) != 0) {
+        return 0;
+    }
+#else
+    const std::tm* p = std::gmtime(&t);
+    if (p == nullptr) {
+        return 0;
+    }
+    tm = *p;
+#endif
+    const int n = std::snprintf(out, cap, "%04d-%02d-%02d %02d:%02d:%02d UTC",
+                                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                                tm.tm_min, tm.tm_sec);
+    if (n < 0 || static_cast<std::size_t>(n) >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return static_cast<std::size_t>(n);
+}
+
+std::size_t format_boot_age(std::uint32_t elapsed_s, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    int n = 0;
+    if (elapsed_s >= 3600u) {
+        n = std::snprintf(out, cap, "boot+%uh", static_cast<unsigned>(elapsed_s / 3600u));
+    } else if (elapsed_s >= 60u) {
+        n = std::snprintf(out, cap, "boot+%um", static_cast<unsigned>(elapsed_s / 60u));
+    } else {
+        n = std::snprintf(out, cap, "boot+%us", static_cast<unsigned>(elapsed_s));
+    }
+    if (n < 0 || static_cast<std::size_t>(n) >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return static_cast<std::size_t>(n);
 }
 
 bool storage_on_trial_should_rollback(bool on_trial, bool filesystem_ok, bool settings_ok)

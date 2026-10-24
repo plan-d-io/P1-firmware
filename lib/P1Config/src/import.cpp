@@ -90,6 +90,27 @@ void Store::import_from(StoreBackend& legacy)
         legacy.get_str(lkey, dest, cap, dest);
         ++legacy_imported_;
     };
+    auto take_wifi_pass = [&](const char* lkey, char* dest, std::size_t cap) {
+        const StoredType t = legacy.stored_type(lkey);
+        if (t == StoredType::Absent) {
+            return;
+        }
+        if (t != StoredType::Str) {
+            skip_legacy(lkey);
+            return;
+        }
+        if (legacy.str_len(lkey) + 1 > cap) {
+            skip_legacy(lkey);
+            return;
+        }
+        legacy.get_str(lkey, dest, cap, dest);
+        if (!wifi_pass_ok(dest)) {
+            skip_legacy(lkey);
+            dest[0] = '\0';
+            return;
+        }
+        ++legacy_imported_;
+    };
     auto take_ip = [&](const char* lkey, char* dest, std::size_t cap) {
         const StoredType t = legacy.stored_type(lkey);
         if (t == StoredType::Absent) {
@@ -108,7 +129,7 @@ void Store::import_from(StoreBackend& legacy)
     };
 
     take_str("WIFI_SSID", v_.wifi_ssid, sizeof(v_.wifi_ssid));
-    take_str("WIFI_PASSWD", v_.wifi_pass, sizeof(v_.wifi_pass));
+    take_wifi_pass("WIFI_PASSWD", v_.wifi_pass, sizeof(v_.wifi_pass));
     take_bool("FIP_EN", &v_.fip_en);
     take_ip("FIPADDR", v_.fipaddr, sizeof(v_.fipaddr));
     take_ip("FSUBN", v_.fsubn, sizeof(v_.fsubn));

@@ -13,6 +13,7 @@ Check them at any time with:
 | File | Source | Telegrams | Covers |
 |---|---|---|---|
 | `belgian-3phase-fluvius.p1` | **Real Fluvius capture**, Aug 2023 (identifiers replaced) | 10, all CRC-valid | Fluvius three-phase, capacity-tariff fields. No MBUS devices. |
+| `belgian-1phase-derived.p1` | **Derived**, not captured — first Fluvius telegram with L2/L3 lines removed and CRC recomputed | 1, CRC valid | Single-phase field set: L1 present, L2/L3 absent. |
 | `belgian-mbus-gas-water-spec.p1` | **Spec-derived** (e-MUCS P1 **v1.6**), not captured | 1, CRC computed | Older profile (`50216`). Gas on `0-1:24.2.3`, water on `0-2:24.2.1`. No capacity tariff. |
 | `belgian-full-spec-v21.p1` | **Spec-derived** (e-MUCS P1 **v2.1**), not captured | 1, CRC computed | Current profile (`50221`). Capacity tariff *and* MBUS together, grid config, EAN codes, per-channel breaker state. Water on `0-2:24.2.**3**`. |
 | `dutch-3phase-esmr5-simulator.p1` | Benefactus simulator, Sept 2026 | 3, all CRC-valid | Dutch ESMR 5.0 three-phase, gas on the NL code `0-1:24.2.1`. |
