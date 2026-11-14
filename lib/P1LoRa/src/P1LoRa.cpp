@@ -3,8 +3,8 @@
 #include <cstring>
 
 extern "C" {
-#include "aes.h"
-#include "sha256.h"
+#include <mbedtls/aes.h>
+#include <mbedtls/sha256.h>
 }
 
 namespace p1lora {
@@ -12,10 +12,12 @@ namespace {
 
 void sha256(const std::uint8_t* data, std::size_t len, std::uint8_t out[32])
 {
-    SHA256_CTX ctx;
-    sha256_init(&ctx);
-    sha256_update(&ctx, data, len);
-    sha256_final(&ctx, out);
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    if (mbedtls_sha256_starts(&ctx, 0) == 0 && mbedtls_sha256_update(&ctx, data, len) == 0) {
+        mbedtls_sha256_finish(&ctx, out);
+    }
+    mbedtls_sha256_free(&ctx);
 }
 
 int hex_nibble(char c)
@@ -94,16 +96,26 @@ void write_header(std::uint8_t out[5], const Key& key, std::uint8_t type, std::u
 
 void cbc_encrypt(const Key& key, const std::uint8_t iv[16], std::uint8_t* buf, std::size_t len)
 {
-    AES_ctx ctx;
-    AES_init_ctx_iv(&ctx, key.aes, iv);
-    AES_CBC_encrypt_buffer(&ctx, buf, len);
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    std::uint8_t iv_copy[16];
+    std::memcpy(iv_copy, iv, 16);
+    if (mbedtls_aes_setkey_enc(&ctx, key.aes, 256) == 0) {
+        mbedtls_aes_crypt_cbc(&ctx, MBEDTLS_AES_ENCRYPT, len, iv_copy, buf, buf);
+    }
+    mbedtls_aes_free(&ctx);
 }
 
 void cbc_decrypt(const Key& key, const std::uint8_t iv[16], std::uint8_t* buf, std::size_t len)
 {
-    AES_ctx ctx;
-    AES_init_ctx_iv(&ctx, key.aes, iv);
-    AES_CBC_decrypt_buffer(&ctx, buf, len);
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    std::uint8_t iv_copy[16];
+    std::memcpy(iv_copy, iv, 16);
+    if (mbedtls_aes_setkey_dec(&ctx, key.aes, 256) == 0) {
+        mbedtls_aes_crypt_cbc(&ctx, MBEDTLS_AES_DECRYPT, len, iv_copy, buf, buf);
+    }
+    mbedtls_aes_free(&ctx);
 }
 
 bool reserved_reading_flags(std::uint8_t flags)
@@ -456,9 +468,14 @@ void frame_iv(const Key& key, const std::uint8_t header[5], std::uint8_t iv[16])
 {
     std::uint8_t block[16] = {};
     std::memcpy(block, header, 5);
-    AES_ctx ctx;
-    AES_init_ctx(&ctx, key.aes);
-    AES_ECB_encrypt(&ctx, block);
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    if (mbedtls_aes_setkey_enc(&ctx, key.aes, 256) == 0) {
+        std::uint8_t out[16];
+        mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_ENCRYPT, block, out);
+        std::memcpy(block, out, 16);
+    }
+    mbedtls_aes_free(&ctx);
     std::memcpy(iv, block, 16);
 }
 
@@ -708,10 +725,13 @@ const char* crypto_self_test()
         0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49, 0x60, 0x89};
     std::uint8_t block[16];
     std::memcpy(block, plain, 16);
-    AES_ctx ctx;
-    AES_init_ctx(&ctx, aes_key);
-    AES_ECB_encrypt(&ctx, block);
-    if (!same_bytes(block, expect_ct, 16)) {
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    std::uint8_t out[16];
+    const int aes_ok = mbedtls_aes_setkey_enc(&ctx, aes_key, 256) == 0 &&
+                       mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_ENCRYPT, block, out) == 0;
+    mbedtls_aes_free(&ctx);
+    if (!aes_ok || !same_bytes(out, expect_ct, 16)) {
         return "aes";
     }
 

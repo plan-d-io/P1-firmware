@@ -8,6 +8,8 @@
 
 #include <P1LoRa.h>
 
+#include <cstring>
+
 #include <esp_app_format.h>
 #include <esp_flash.h>
 #include <esp_mac.h>
@@ -213,6 +215,103 @@ uint8_t readRegVersion()
     return value;
 }
 
+p1lora::Reading threePhaseSample()
+{
+    p1lora::Reading r;
+    r.three_phase = true;
+    r.flags = 0x09;
+    r.t1_wh = 182077;
+    r.t2_wh = 199084;
+    r.inj1_wh = 23;
+    r.inj2_wh = 134;
+    r.power_w = 289;
+    r.inject_w = 0;
+    r.demand_w = 260;
+    r.p_plus_w[0] = 75;
+    r.p_plus_w[1] = 15;
+    r.p_plus_w[2] = 198;
+    r.p_minus_w[0] = r.p_minus_w[1] = r.p_minus_w[2] = 0;
+    r.v_dv[0] = 2421;
+    r.v_dv[1] = 2417;
+    r.v_dv[2] = 2403;
+    r.i_ca[0] = 53;
+    r.i_ca[1] = 7;
+    r.i_ca[2] = 97;
+    r.peak_time = 0xAC6DB4C0u;
+    r.peak_w = 2396;
+    return r;
+}
+
+bool sameReading(const p1lora::Reading& a, const p1lora::Reading& b)
+{
+    if (a.three_phase != b.three_phase || a.flags != b.flags) {
+        return false;
+    }
+    if (a.t1_wh != b.t1_wh || a.t2_wh != b.t2_wh || a.inj1_wh != b.inj1_wh || a.inj2_wh != b.inj2_wh) {
+        return false;
+    }
+    if (a.power_w != b.power_w || a.inject_w != b.inject_w || a.demand_w != b.demand_w) {
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (a.p_plus_w[i] != b.p_plus_w[i] || a.p_minus_w[i] != b.p_minus_w[i] || a.v_dv[i] != b.v_dv[i] ||
+            a.i_ca[i] != b.i_ca[i]) {
+            return false;
+        }
+    }
+    return a.gas_dm3 == b.gas_dm3 && a.peak_time == b.peak_time && a.peak_w == b.peak_w;
+}
+
+void printCrypto()
+{
+    const char* crypto = p1lora::crypto_self_test();
+    if (crypto != nullptr) {
+        Serial.printf("crypto: self-test FAILED %s\n", crypto);
+        return;
+    }
+
+    p1lora::Key key;
+    if (p1lora::parse_key("000102030405060708090a0b0c0d0e0f", 32, key) != p1lora::KeyStatus::Ok) {
+        Serial.println("crypto: self-test FAILED key");
+        return;
+    }
+    const p1lora::Reading reading = threePhaseSample();
+    const uint8_t expect[] = {
+        0x6b, 0x0b, 0x42, 0x01, 0x07, 0xb5, 0x35, 0x5d, 0xdf, 0xab, 0xc4, 0x7f, 0x48, 0xd5, 0x08, 0xd3,
+        0x98, 0x38, 0x86, 0x37, 0x78, 0x37, 0xab, 0xc2, 0x46, 0x66, 0x59, 0x5f, 0x24, 0xfc, 0x78, 0xa6,
+        0x8b, 0xfc, 0x5a, 0x21, 0x51, 0xc3, 0x13, 0x2c, 0x0b, 0x1a, 0x87, 0xd0, 0x9b, 0x97, 0x50, 0x5f,
+        0x73, 0x28, 0xd1, 0xf7, 0xe3, 0x35, 0x6d, 0x67, 0xc1, 0x8e, 0x68, 0x15, 0xf7, 0x55, 0xb8, 0x60,
+        0xb0, 0x47, 0x04, 0xc3, 0x7c};
+    const p1lora::Decoded once = p1lora::decode(key, expect, sizeof expect);
+    if (once.status != p1lora::Status::Ok || once.kind != p1lora::Kind::Reading || once.counter != 7 ||
+        !sameReading(once.reading, reading)) {
+        Serial.println("crypto: self-test FAILED decode");
+        return;
+    }
+
+    uint32_t pack_us = 0;
+    uint32_t decode_us = 0;
+    uint8_t frame[p1lora::kMaxFrame];
+    for (int i = 0; i < 1000; ++i) {
+        std::size_t len = 0;
+        const uint32_t pack_at = micros();
+        const p1lora::Status packed = p1lora::pack_reading(key, reading, 7, frame, sizeof frame, len);
+        pack_us += micros() - pack_at;
+        const uint32_t decode_at = micros();
+        const p1lora::Decoded decoded = p1lora::decode(key, expect, sizeof expect);
+        decode_us += micros() - decode_at;
+        if (packed != p1lora::Status::Ok || len != sizeof expect || decoded.status != p1lora::Status::Ok ||
+            !sameReading(decoded.reading, reading)) {
+            Serial.println("crypto: self-test FAILED timing");
+            return;
+        }
+    }
+    const uint32_t pack_mean = pack_us / 1000u;
+    const uint32_t decode_mean = decode_us / 1000u;
+    Serial.printf("crypto: self-test OK, pack %u.%03u ms, decode %u.%03u ms (mean of 1000)\n",
+                  pack_mean / 1000u, pack_mean % 1000u, decode_mean / 1000u, decode_mean % 1000u);
+}
+
 void printRadio()
 {
     if (!g_spi_ready) {
@@ -276,12 +375,7 @@ void setup()
     digitalWrite(kRadioCs, HIGH);
     printRadio();
 
-    const char* crypto = p1lora::crypto_self_test();
-    if (crypto == nullptr) {
-        Serial.println("crypto: self-test OK");
-    } else {
-        Serial.printf("crypto: self-test FAILED %s\n", crypto);
-    }
+    printCrypto();
 
     Serial.println("BOARDTEST DONE");
 
