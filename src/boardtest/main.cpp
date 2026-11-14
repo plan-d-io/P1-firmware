@@ -6,6 +6,8 @@
 #include <SPI.h>
 #include <Wire.h>
 
+#include <P1LoRa.h>
+
 #include <esp_app_format.h>
 #include <esp_flash.h>
 #include <esp_mac.h>
@@ -273,6 +275,13 @@ void setup()
     g_spi_ready = SPI.begin(kRadioSck, kRadioMiso, kRadioMosi, -1);
     digitalWrite(kRadioCs, HIGH);
     printRadio();
+
+    const char* crypto = p1lora::crypto_self_test();
+    if (crypto == nullptr) {
+        Serial.println("crypto: self-test OK");
+    } else {
+        Serial.printf("crypto: self-test FAILED %s\n", crypto);
+    }
 
     Serial.println("BOARDTEST DONE");
 

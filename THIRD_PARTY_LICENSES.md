@@ -20,6 +20,8 @@ Host-only test code (Unity) is not in the firmware and is omitted.
 | joltwallet littlefs | 1.20.4 | not in this snapshot | `esp_littlefs.h` states version 1.20.4. No LICENSE file is shipped in the precompiled include tree. |
 | lwIP | bundled with ESP-IDF 5.5 | BSD-style (three-clause), SICS | copyright block in `lwip/init.h` |
 | libb64 (Arduino core) | Arduino-esp32 3.3.7 | public-domain dedication | `cores/esp32/libb64/LICENSE` |
+| tiny-AES-c (inside `P1LoRa`, not linked into the dongle image) | commit 23856752fbd139da0b8ca6e471a13d5bcc99a08d | public domain (Unlicense) | `lib/P1LoRa/src/unlicense.txt`. AES-256 is selected in `aes.h`; the `.c` file is unchanged. |
+| Brad Conte SHA-256 (inside `P1LoRa`, not linked into the dongle image) | commit cfbde48414baacf51fc7c74f275190881f037d32 | public domain | header in `lib/P1LoRa/src/sha256.c`. No code change. |
 
 ## dsmr_parser — MIT
 
@@ -797,3 +799,41 @@ freely reproduced, distributed, transmitted, used, modified, built upon, or
 otherwise exploited by anyone for any purpose, commercial or non-commercial,
 and in any way, including by methods that have not yet been invented or
 conceived.
+
+## tiny-AES-c and Brad Conte SHA-256 — public domain
+
+These two files are compiled into `P1LoRa`. The dongle image does not include
+that library. tiny-AES-c is the Unlicense (public domain), commit
+`23856752fbd139da0b8ca6e471a13d5bcc99a08d`. The only edit is selecting AES-256
+in `aes.h` (upstream defaults to AES-128). The SHA-256 implementation is
+Brad Conte's `crypto-algorithms` commit `cfbde48414baacf51fc7c74f275190881f037d32`,
+whose header presents the code "as is" without a copyright claim. The one
+edit replaces `#include <memory.h>` with `#include <string.h>` so `memset` is
+declared when the ESP32 toolchain compiles it.
+
+The Unlicense text shipped with tiny-AES-c:
+
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>

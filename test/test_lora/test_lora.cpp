@@ -1,0 +1,533 @@
+#include <P1LoRa.h>
+#include <from_telegram.h>
+#include <P1DSMR.h>
+
+#include <unity.h>
+
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+std::string fixtures_dir()
+{
+    const char* candidates[] = {
+#ifdef FIXTURES_DIR
+        FIXTURES_DIR,
+#endif
+        "fixtures",
+        "../fixtures",
+        "../../fixtures",
+        "../../../fixtures",
+    };
+    for (const char* dir : candidates) {
+        std::ifstream probe(std::string(dir) + "/belgian-3phase-fluvius.p1", std::ios::binary);
+        if (probe) {
+            return dir;
+        }
+    }
+    return "fixtures";
+}
+
+std::vector<std::uint8_t> load_fixture(const char* name)
+{
+    const std::string path = fixtures_dir() + "/" + name;
+    std::ifstream in(path, std::ios::binary);
+    TEST_ASSERT_TRUE_MESSAGE(static_cast<bool>(in), path.c_str());
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+p1lora::Reading first_reading(const char* fixture)
+{
+    const auto bytes = load_fixture(fixture);
+    p1dsmr::Reader reader;
+    p1lora::Reading reading;
+    bool have = false;
+    reader.feed(std::span<const std::uint8_t>(bytes.data(), bytes.size()),
+                [&](const p1dsmr::Data& d) {
+                    if (!have) {
+                        reading = p1lora::from_telegram(d);
+                        have = true;
+                    }
+                });
+    TEST_ASSERT_TRUE(have);
+    return reading;
+}
+
+int unhex(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+std::vector<std::uint8_t> parse_hex(const char* hex)
+{
+    std::vector<std::uint8_t> out;
+    for (std::size_t i = 0; hex[i] != 0; i += 2) {
+        out.push_back(static_cast<std::uint8_t>((unhex(hex[i]) << 4) | unhex(hex[i + 1])));
+    }
+    return out;
+}
+
+p1lora::Key sample_key()
+{
+    p1lora::Key key;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::KeyStatus::Ok),
+                      static_cast<int>(p1lora::parse_key("000102030405060708090a0b0c0d0e0f", 32, key)));
+    return key;
+}
+
+p1lora::Reading three_phase_reading()
+{
+    p1lora::Reading r;
+    r.three_phase = true;
+    r.flags = 0x09;
+    r.t1_wh = 182077;
+    r.t2_wh = 199084;
+    r.inj1_wh = 23;
+    r.inj2_wh = 134;
+    r.power_w = 289;
+    r.inject_w = 0;
+    r.demand_w = 260;
+    r.p_plus_w[0] = 75;
+    r.p_plus_w[1] = 15;
+    r.p_plus_w[2] = 198;
+    r.p_minus_w[0] = r.p_minus_w[1] = r.p_minus_w[2] = 0;
+    r.v_dv[0] = 2421;
+    r.v_dv[1] = 2417;
+    r.v_dv[2] = 2403;
+    r.i_ca[0] = 53;
+    r.i_ca[1] = 7;
+    r.i_ca[2] = 97;
+    r.peak_time = 0xAC6DB4C0u;
+    r.peak_w = 2396;
+    return r;
+}
+
+void expect_reading(const p1lora::Reading& r, const p1lora::Reading& e)
+{
+    TEST_ASSERT_EQUAL(e.three_phase, r.three_phase);
+    TEST_ASSERT_EQUAL_UINT8(e.flags, r.flags);
+    TEST_ASSERT_EQUAL_UINT32(e.t1_wh, r.t1_wh);
+    TEST_ASSERT_EQUAL_UINT32(e.t2_wh, r.t2_wh);
+    TEST_ASSERT_EQUAL_UINT32(e.inj1_wh, r.inj1_wh);
+    TEST_ASSERT_EQUAL_UINT32(e.inj2_wh, r.inj2_wh);
+    TEST_ASSERT_EQUAL_UINT16(e.power_w, r.power_w);
+    TEST_ASSERT_EQUAL_UINT16(e.inject_w, r.inject_w);
+    TEST_ASSERT_EQUAL_UINT16(e.demand_w, r.demand_w);
+    for (int i = 0; i < 3; ++i) {
+        TEST_ASSERT_EQUAL_UINT16(e.p_plus_w[i], r.p_plus_w[i]);
+        TEST_ASSERT_EQUAL_UINT16(e.p_minus_w[i], r.p_minus_w[i]);
+        TEST_ASSERT_EQUAL_UINT16(e.v_dv[i], r.v_dv[i]);
+        TEST_ASSERT_EQUAL_UINT16(e.i_ca[i], r.i_ca[i]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(e.gas_dm3, r.gas_dm3);
+    TEST_ASSERT_EQUAL_UINT32(e.peak_time, r.peak_time);
+    TEST_ASSERT_EQUAL_UINT16(e.peak_w, r.peak_w);
+}
+
+}  // namespace
+
+void test_profiles()
+{
+    const p1lora::Profile& a = p1lora::profile(p1lora::ProfileId::A);
+    TEST_ASSERT_EQUAL_UINT32(869525000u, a.hz);
+    TEST_ASSERT_EQUAL_INT(17, a.max_dbm);
+    TEST_ASSERT_EQUAL_UINT32(360000u, a.duty_ms_per_hour);
+    TEST_ASSERT_EQUAL_UINT8(6, a.step_count);
+    for (int i = 0; i < 6; ++i) {
+        TEST_ASSERT_EQUAL_UINT8(12 - i, a.steps[i].sf);
+        TEST_ASSERT_EQUAL_UINT32(125000u, a.steps[i].bw_hz);
+    }
+
+    const p1lora::Profile& b = p1lora::profile(p1lora::ProfileId::B);
+    TEST_ASSERT_EQUAL_UINT32(868300000u, b.hz);
+    TEST_ASSERT_EQUAL_INT(13, b.max_dbm);
+    TEST_ASSERT_EQUAL_UINT32(36000u, b.duty_ms_per_hour);
+    TEST_ASSERT_EQUAL_UINT8(7, b.step_count);
+    TEST_ASSERT_EQUAL_UINT8(12, b.steps[0].sf);
+    TEST_ASSERT_EQUAL_UINT32(125000u, b.steps[0].bw_hz);
+    const std::uint8_t sf_b[] = {12, 11, 10, 9, 8, 7};
+    for (int i = 0; i < 6; ++i) {
+        TEST_ASSERT_EQUAL_UINT8(sf_b[i], b.steps[i + 1].sf);
+        TEST_ASSERT_EQUAL_UINT32(250000u, b.steps[i + 1].bw_hz);
+    }
+}
+
+void test_airtime_table()
+{
+    const std::uint16_t lens[] = {37, 53, 69, 8, 54};
+    const std::uint16_t ms[5][6] = {
+        {1974, 1069, 494, 267, 144, 82},
+        {2466, 1315, 616, 329, 185, 103},
+        {2957, 1642, 739, 411, 226, 128},
+        {991, 496, 248, 124, 72, 36},
+        {2466, 1315, 616, 349, 185, 103},
+    };
+    for (int row = 0; row < 5; ++row) {
+        for (int step = 0; step < 6; ++step) {
+            const std::uint32_t us = p1lora::airtime_us(p1lora::ProfileId::A, static_cast<std::uint8_t>(step), lens[row]);
+            TEST_ASSERT_EQUAL_UINT32(ms[row][step], (us + 500u) / 1000u);
+        }
+    }
+    const std::uint32_t b12 = p1lora::airtime_us(12, 250000u, 53);
+    const std::uint32_t b7 = p1lora::airtime_us(7, 250000u, 53);
+    TEST_ASSERT_EQUAL_UINT32(1233u, (b12 + 500u) / 1000u);
+    TEST_ASSERT_EQUAL_UINT32(51u, (b7 + 500u) / 1000u);
+}
+
+void test_reading_interval()
+{
+    const std::uint16_t tenths[] = {247, 131, 62, 33, 18, 10};
+    for (int step = 0; step < 6; ++step) {
+        const std::uint32_t us = p1lora::airtime_us(p1lora::ProfileId::A, static_cast<std::uint8_t>(step), 53);
+        const std::uint16_t got = p1lora::reading_interval_tenths(us, 360000u);
+        TEST_ASSERT_EQUAL_UINT16(tenths[step], got);
+    }
+}
+
+void test_key()
+{
+    p1lora::Key key = sample_key();
+    const auto aes = parse_hex("129b22b630b655e9913d8eb87cec060c7df76789b66b76b0e482207e9dcbe9d1");
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(key.aes, aes.data(), 32));
+    TEST_ASSERT_EQUAL_UINT8(0x6b, key.net[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x0b, key.net[1]);
+
+    p1lora::Key upper;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::KeyStatus::Ok),
+                      static_cast<int>(p1lora::parse_key("000102030405060708090A0B0C0D0E0F", 32, upper)));
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(key.aes, upper.aes, 32));
+    TEST_ASSERT_EQUAL_UINT8(key.net[0], upper.net[0]);
+    TEST_ASSERT_EQUAL_UINT8(key.net[1], upper.net[1]);
+
+    p1lora::Key junk;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::KeyStatus::Rejected),
+                      static_cast<int>(p1lora::parse_key("000102030405060708090a0b0c0d0e0", 31, junk)));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::KeyStatus::Rejected),
+                      static_cast<int>(p1lora::parse_key("000102030405060708090a0b0c0d0e0f00", 34, junk)));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::KeyStatus::Rejected),
+                      static_cast<int>(p1lora::parse_key("000102030405060708090a0b0c0d0e0g", 32, junk)));
+}
+
+void test_three_phase_frame()
+{
+    const p1lora::Key key = sample_key();
+    const p1lora::Reading reading = three_phase_reading();
+    std::uint8_t plain[80];
+    const std::size_t n = p1lora::write_reading_plain(reading, plain, sizeof plain);
+    const auto expect_plain = parse_hex(
+        "093dc70200ac09030017000000860000002101000004014b000f00c600000000000000"
+        "750971096309350007006100c0b46dac5c09");
+    TEST_ASSERT_EQUAL_UINT(expect_plain.size(), n);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(plain, expect_plain.data(), n));
+
+    std::uint8_t header[5];
+    std::memcpy(header, parse_hex("6b0b420107").data(), 5);
+    std::uint8_t iv[16];
+    p1lora::frame_iv(key, header, iv);
+    const auto expect_iv = parse_hex("e29af0cceef99a41745e357b9b3dc0e7");
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(iv, expect_iv.data(), 16));
+
+    std::uint8_t frame[80];
+    std::size_t len = 0;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_reading(key, reading, 7, frame, sizeof frame, len)));
+    const auto expect = parse_hex(
+        "6b0b420107b5355ddfabc47f48d508d3983886377837abc24666595f24fc78a68bfc5a"
+        "2151c3132c0b1a87d09b97505f7328d1f7e3356d67c18e6815f755b860b04704c37c");
+    TEST_ASSERT_EQUAL_UINT(expect.size(), len);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(frame, expect.data(), len));
+
+    const p1lora::Decoded back = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok), static_cast<int>(back.status));
+    TEST_ASSERT_EQUAL_UINT8(7, back.counter);
+    expect_reading(back.reading, reading);
+
+    p1lora::Key other = key;
+    other.aes[31] ^= 0x01;
+    const p1lora::Decoded bad = p1lora::decode(other, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::KeyCheck), static_cast<int>(bad.status));
+}
+
+void test_single_phase_frame()
+{
+    const p1lora::Key key = sample_key();
+    p1lora::Reading r;
+    r.three_phase = false;
+    r.flags = 0x01;
+    r.t1_wh = 182077;
+    r.t2_wh = 199084;
+    r.inj1_wh = 23;
+    r.inj2_wh = 134;
+    r.power_w = 289;
+    r.inject_w = 0;
+    r.demand_w = 260;
+    r.v_dv[0] = 2421;
+    r.i_ca[0] = 53;
+
+    std::uint8_t plain[40];
+    const std::size_t n = p1lora::write_reading_plain(r, plain, sizeof plain);
+    const auto expect_plain = parse_hex("013dc70200ac090300170000008600000021010000040175093500");
+    TEST_ASSERT_EQUAL_UINT(expect_plain.size(), n);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(plain, expect_plain.data(), n));
+
+    std::uint8_t frame[80];
+    std::size_t len = 0;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_reading(key, r, 0, frame, sizeof frame, len)));
+    const auto expect = parse_hex("6b0b4101006efa99e7fd18418d92dc8c6d4c6fac18f7fc40e68e95ee311f042fac0ec20721");
+    TEST_ASSERT_EQUAL_UINT(expect.size(), len);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(frame, expect.data(), len));
+
+    const p1lora::Decoded back = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok), static_cast<int>(back.status));
+    expect_reading(back.reading, r);
+}
+
+void test_control_frames()
+{
+    const p1lora::Key key = sample_key();
+    std::uint8_t frame[80];
+    std::size_t len = 0;
+
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_probe(key, 0, 32, frame, sizeof frame, len)));
+    TEST_ASSERT_EQUAL_UINT(37, len);
+    TEST_ASSERT_EQUAL_UINT8(0x04, frame[2]);
+    for (std::size_t i = 5; i < len; ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0, frame[i]);
+    }
+    p1lora::Decoded d = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Kind::Probe), static_cast<int>(d.kind));
+    TEST_ASSERT_EQUAL_UINT8(32, d.probe_len);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_probe(key, 1, 48, frame, sizeof frame, len)));
+    TEST_ASSERT_EQUAL_UINT(53, len);
+    d = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL_UINT8(48, d.probe_len);
+
+    p1lora::Ack ack;
+    ack.counter = 7;
+    ack.flags = 0x01;
+    ack.snr = 0x10;
+    ack.command = true;
+    ack.profile_bit = 1;
+    ack.mode_bit = 1;
+    ack.step = 5;
+    ack.fallback = 3;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_ack(key, 9, ack, frame, sizeof frame, len)));
+    const auto expect_ack = parse_hex("6b0b8101090703101703");
+    TEST_ASSERT_EQUAL_UINT(expect_ack.size(), len);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(frame, expect_ack.data(), len));
+    d = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok), static_cast<int>(d.status));
+    TEST_ASSERT_EQUAL_UINT8(7, d.ack.counter);
+    TEST_ASSERT_TRUE(d.ack.command);
+    TEST_ASSERT_EQUAL_UINT8(1, d.ack.profile_bit);
+    TEST_ASSERT_EQUAL_UINT8(1, d.ack.mode_bit);
+    TEST_ASSERT_EQUAL_UINT8(5, d.ack.step);
+    TEST_ASSERT_EQUAL_UINT8(3, d.ack.fallback);
+    TEST_ASSERT_EQUAL_INT(0x10, d.ack.snr);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_offer(key, 3, 4, frame, sizeof frame, len)));
+    const auto expect_offer = parse_hex("6b0b82010304");
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(frame, expect_offer.data(), len));
+    d = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Kind::Offer), static_cast<int>(d.kind));
+    TEST_ASSERT_EQUAL_UINT8(4, d.step);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_confirm(key, 3, 4, frame, sizeof frame, len)));
+    frame[2] = 0x83;
+    d = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Kind::Confirm), static_cast<int>(d.kind));
+    TEST_ASSERT_EQUAL_UINT8(4, d.step);
+}
+
+void test_rejections()
+{
+    const p1lora::Key key = sample_key();
+    auto frame = parse_hex("6b0b420107b5355ddfabc47f48d508d3983886377837abc24666595f24fc78a68bfc5a"
+                           "2151c3132c0b1a87d09b97505f7328d1f7e3356d67c18e6815f755b860b04704c37c");
+    frame[0] = 0x00;
+    p1lora::Decoded d = p1lora::decode(key, frame.data(), frame.size());
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::WrongNetwork), static_cast<int>(d.status));
+
+    frame[0] = 0x6b;
+    frame[2] = 0x05;
+    d = p1lora::decode(key, frame.data(), frame.size());
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::UnknownType), static_cast<int>(d.status));
+
+    frame[2] = 0x42;
+    frame[3] = 2;
+    d = p1lora::decode(key, frame.data(), frame.size());
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::UnknownVersion), static_cast<int>(d.status));
+
+    std::uint8_t ack[9] = {0x6b, 0x0b, 0x81, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00};
+    d = p1lora::decode(key, ack, sizeof ack);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::WrongLength), static_cast<int>(d.status));
+}
+
+void test_converter()
+{
+    const p1lora::Reading mbus = first_reading("belgian-mbus-gas-water-spec.p1");
+    TEST_ASSERT_TRUE(mbus.three_phase);
+    TEST_ASSERT_EQUAL_UINT8(0, mbus.flags & p1lora::kFlagTariff2);
+    TEST_ASSERT_EQUAL_UINT8(p1lora::kFlagGas, mbus.flags & p1lora::kFlagGas);
+    TEST_ASSERT_EQUAL_UINT8(0, mbus.flags & p1lora::kFlagWater);
+    TEST_ASSERT_EQUAL_UINT8(0, mbus.flags & p1lora::kFlagPeak);
+    TEST_ASSERT_EQUAL_UINT32(112384u, mbus.gas_dm3);
+    TEST_ASSERT_EQUAL_UINT16(p1lora::kAbsent16, mbus.demand_w);
+
+    const p1lora::Reading dutch = first_reading("dutch-3phase-esmr5-simulator.p1");
+    TEST_ASSERT_TRUE(dutch.three_phase);
+    TEST_ASSERT_EQUAL_UINT16(20700, dutch.power_w);
+    TEST_ASSERT_EQUAL_UINT16(3000, dutch.i_ca[0]);
+    TEST_ASSERT_EQUAL_UINT16(3000, dutch.i_ca[1]);
+    TEST_ASSERT_EQUAL_UINT16(3000, dutch.i_ca[2]);
+    TEST_ASSERT_EQUAL_UINT16(p1lora::kAbsent16, dutch.demand_w);
+    TEST_ASSERT_EQUAL_UINT8(p1lora::kFlagGas, dutch.flags & p1lora::kFlagGas);
+    TEST_ASSERT_EQUAL_UINT32(0u, dutch.gas_dm3);
+    TEST_ASSERT_EQUAL_UINT8(0, dutch.flags & p1lora::kFlagPeak);
+
+    TEST_ASSERT_FALSE(first_reading("belgian-1phase-derived.p1").three_phase);
+    TEST_ASSERT_TRUE(first_reading("belgian-3phase-fluvius.p1").three_phase);
+}
+
+void test_duty()
+{
+    auto run = [](std::uint32_t budget_ms, int min_first_hour) {
+        p1lora::Duty duty(budget_ms);
+        const std::uint32_t air_us = 2466u * 1000u;
+        const std::uint32_t end = 3u * 3600u * 1000u;
+        std::vector<std::uint32_t> sends;
+        std::uint32_t now = 0;
+        int first_hour = 0;
+        while (now < end) {
+            if (duty.can_send(now, air_us)) {
+                duty.record(now, air_us);
+                sends.push_back(now);
+                if (now < 3600000u) {
+                    ++first_hour;
+                }
+                now += 2466u;
+            } else {
+                const std::uint32_t w = duty.wait_ms(now, air_us);
+                TEST_ASSERT_TRUE(w > 0);
+                TEST_ASSERT_TRUE(now + w > now);
+                now += w;
+            }
+        }
+        TEST_ASSERT_TRUE(first_hour >= min_first_hour);
+        for (std::uint32_t t : sends) {
+            std::uint32_t sum_after = 0;
+            std::uint32_t sum_before = 0;
+            for (std::uint32_t s : sends) {
+                if (s >= t && s - t < 3600000u) {
+                    sum_after += 2466u;
+                }
+                if (t >= s && t - s < 3600000u) {
+                    sum_before += 2466u;
+                }
+            }
+            TEST_ASSERT_TRUE(sum_after <= budget_ms);
+            TEST_ASSERT_TRUE(sum_before <= budget_ms);
+        }
+    };
+    run(360000u, 140);
+    run(36000u, 13);
+
+    p1lora::Duty duty(360000u);
+    const std::uint32_t air_us = 2466u * 1000u;
+    std::uint32_t now = 0;
+    while (duty.can_send(now, air_us)) {
+        duty.record(now, air_us);
+        now += 2466u;
+    }
+    TEST_ASSERT_FALSE(duty.can_send(now, air_us));
+    now += 3600000u;
+    TEST_ASSERT_TRUE(duty.can_send(now, air_us));
+}
+
+void test_counter_gap()
+{
+    p1lora::Gap g = p1lora::counter_gap(10, 11);
+    TEST_ASSERT_FALSE(g.restart);
+    TEST_ASSERT_EQUAL_UINT8(0, g.loss);
+    g = p1lora::counter_gap(10, 14);
+    TEST_ASSERT_FALSE(g.restart);
+    TEST_ASSERT_EQUAL_UINT8(3, g.loss);
+    g = p1lora::counter_gap(254, 1);
+    TEST_ASSERT_FALSE(g.restart);
+    TEST_ASSERT_EQUAL_UINT8(2, g.loss);
+    g = p1lora::counter_gap(10, 0);
+    TEST_ASSERT_TRUE(g.restart);
+    g = p1lora::counter_gap(200, 0);
+    TEST_ASSERT_FALSE(g.restart);
+    TEST_ASSERT_EQUAL_UINT8(55, g.loss);
+}
+
+void test_optionals()
+{
+    p1lora::Optionals opt;
+    opt.observe(true, 100, false, 0, 0);
+    TEST_ASSERT_TRUE(opt.gas_pending());
+    opt.sent(1, true, false);
+    opt.sent(2, true, false);
+    opt.sent(3, true, false);
+    TEST_ASSERT_TRUE(opt.gas_pending());
+    opt.ack(2);
+    TEST_ASSERT_FALSE(opt.gas_pending());
+
+    p1lora::Optionals changed;
+    changed.observe(true, 100, false, 0, 0);
+    changed.sent(2, true, false);
+    changed.observe(true, 101, false, 0, 0);
+    changed.ack(2);
+    TEST_ASSERT_TRUE(changed.gas_pending());
+
+    p1lora::Optionals missed;
+    missed.observe(true, 100, false, 0, 0);
+    missed.sent(9, false, false);
+    missed.ack(9);
+    TEST_ASSERT_TRUE(missed.gas_pending());
+}
+
+void test_self_test()
+{
+    TEST_ASSERT_NULL(p1lora::crypto_self_test());
+}
+
+extern "C" void setUp() {}
+extern "C" void tearDown() {}
+
+int main()
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_profiles);
+    RUN_TEST(test_airtime_table);
+    RUN_TEST(test_reading_interval);
+    RUN_TEST(test_key);
+    RUN_TEST(test_three_phase_frame);
+    RUN_TEST(test_single_phase_frame);
+    RUN_TEST(test_control_frames);
+    RUN_TEST(test_rejections);
+    RUN_TEST(test_converter);
+    RUN_TEST(test_duty);
+    RUN_TEST(test_counter_gap);
+    RUN_TEST(test_optionals);
+    RUN_TEST(test_self_test);
+    return UNITY_END();
+}
