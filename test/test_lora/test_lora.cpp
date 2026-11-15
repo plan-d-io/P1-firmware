@@ -160,6 +160,8 @@ void test_profiles()
         TEST_ASSERT_EQUAL_UINT8(sf_b[i], b.steps[i + 1].sf);
         TEST_ASSERT_EQUAL_UINT32(250000u, b.steps[i + 1].bw_hz);
     }
+    TEST_ASSERT_EQUAL_UINT8(0x2B, a.sync_word);
+    TEST_ASSERT_EQUAL_UINT8(0x2B, b.sync_word);
 }
 
 void test_airtime_table()
@@ -461,6 +463,47 @@ void test_duty()
     TEST_ASSERT_TRUE(duty.can_send(now, air_us));
 }
 
+void test_power_clamp()
+{
+    TEST_ASSERT_EQUAL_INT(17, p1lora::clamp_tx_power(p1lora::ProfileId::A, 20));
+    TEST_ASSERT_EQUAL_INT(17, p1lora::clamp_tx_power(p1lora::ProfileId::A, 17));
+    TEST_ASSERT_EQUAL_INT(2, p1lora::clamp_tx_power(p1lora::ProfileId::A, 2));
+    TEST_ASSERT_EQUAL_INT(13, p1lora::clamp_tx_power(p1lora::ProfileId::B, 14));
+    TEST_ASSERT_EQUAL_INT(13, p1lora::clamp_tx_power(p1lora::ProfileId::B, 13));
+    TEST_ASSERT_EQUAL_INT(2, p1lora::clamp_tx_power(p1lora::ProfileId::B, 2));
+}
+
+void test_duty_image()
+{
+    p1lora::Duty duty(360000u);
+    duty.record(0, 1000000u);
+    duty.record(1000u, 2000000u);
+    TEST_ASSERT_EQUAL_UINT32(3000000u, duty.charged_us(1000u));
+
+    p1lora::DutyImage image{};
+    duty.save(image, 5000u);
+    TEST_ASSERT_EQUAL_UINT32(p1lora::kDutyMagic, image.magic);
+    TEST_ASSERT_EQUAL_UINT32(5000u, image.now_ms);
+
+    p1lora::Duty restored(360000u);
+    TEST_ASSERT_TRUE(restored.restore(image));
+    TEST_ASSERT_EQUAL_UINT32(3000000u, restored.charged_us(5000u));
+    TEST_ASSERT_EQUAL_UINT32(0u, restored.charged_us(3660000u));
+
+    p1lora::DutyImage broken = image;
+    broken.checksum ^= 1u;
+    p1lora::Duty rejected(360000u);
+    TEST_ASSERT_FALSE(rejected.restore(broken));
+    TEST_ASSERT_EQUAL_UINT32(0u, rejected.charged_us(5000u));
+
+    broken = image;
+    broken.magic = 0;
+    TEST_ASSERT_FALSE(rejected.restore(broken));
+
+    p1lora::Duty other_budget(36000u);
+    TEST_ASSERT_FALSE(other_budget.restore(image));
+}
+
 void test_counter_gap()
 {
     p1lora::Gap g = p1lora::counter_gap(10, 11);
@@ -526,6 +569,8 @@ int main()
     RUN_TEST(test_rejections);
     RUN_TEST(test_converter);
     RUN_TEST(test_duty);
+    RUN_TEST(test_power_clamp);
+    RUN_TEST(test_duty_image);
     RUN_TEST(test_counter_gap);
     RUN_TEST(test_optionals);
     RUN_TEST(test_self_test);

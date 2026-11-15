@@ -23,6 +23,7 @@ struct Profile {
     std::uint32_t duty_ms_per_hour;
     std::uint8_t step_count;
     Step steps[7];
+    std::uint8_t sync_word;
 };
 
 const Profile& profile(ProfileId id);
@@ -36,6 +37,26 @@ std::uint32_t airtime_us(ProfileId id, std::uint8_t step, std::uint16_t payload_
 // Reading interval in tenths of a second, rounded from airtime / duty fraction.
 std::uint16_t reading_interval_tenths(std::uint32_t airtime_us, std::uint32_t duty_ms_per_hour);
 
+// Requested power above the profile maximum is cut down to it. A lower
+// request is left alone; the radio driver applies its own floor.
+std::int8_t clamp_tx_power(ProfileId id, std::int8_t requested_dbm);
+
+// Plain image of a Duty. The caller keeps it (RTC memory on the device).
+// A restored image is not aged: the reboot is treated as taking no time.
+constexpr int kDutySlots = 61;
+constexpr std::uint32_t kDutyMagic = 0x50314475u;
+
+struct DutyImage {
+    std::uint32_t magic;
+    std::uint32_t budget_us;
+    std::uint32_t bucket_us[kDutySlots];
+    std::uint32_t last_minute;
+    std::uint32_t now_ms;
+    std::uint8_t started;
+    std::uint8_t pad[3];
+    std::uint32_t checksum;
+};
+
 // Rolling 3600 s window of our own airtime. Per-minute sums: a minute that
 // still overlaps the window is counted in full, so this may hold a send
 // back a little long and must not let one through early.
@@ -47,9 +68,15 @@ public:
     void record(std::uint32_t now_ms, std::uint32_t airtime_us);
     // 0 if a send is allowed now. Otherwise how long to wait.
     std::uint32_t wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const;
+    // Airtime still charged inside the window, in microseconds.
+    std::uint32_t charged_us(std::uint32_t now_ms) const;
+    // now_ms is the clock value the buckets were recorded against.
+    void save(DutyImage& out, std::uint32_t now_ms) const;
+    // False if the magic, checksum or budget does not match. State is unchanged then.
+    bool restore(const DutyImage& in);
 
 private:
-    static constexpr int kSlots = 61;
+    static constexpr int kSlots = kDutySlots;
 
     void roll(std::uint32_t now_ms);
     std::uint32_t used_us(std::uint32_t now_ms);

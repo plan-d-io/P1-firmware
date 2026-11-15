@@ -1,9 +1,10 @@
 # Third-party licences in the firmware image
 
-This lists the libraries that are linked into a dongle build of this
+This lists the libraries that are linked into a firmware image of this
 project, as produced by PlatformIO with pioarduino Espressif32 55.03.37
 (Arduino 3.3.7, ESP-IDF 5.5). Licence names and texts were read from the
-packages on this machine, not from memory.
+packages on this machine, not from memory. RadioLib is linked by the
+LoRa transmitter and receiver only. The dongle image does not link it.
 
 Host-only test code (Unity) is not in the firmware and is omitted.
 
@@ -16,10 +17,37 @@ Host-only test code (Unity) is not in the firmware and is omitted.
 | ESP-IDF (precompiled libs used by Arduino-esp32) | 5.5.0, git 87912cd291 (`versions.txt`) | Apache-2.0 | SPDX on headers, e.g. `esp_http_server.h` |
 | esp_http_server | ESP-IDF 5.5 | Apache-2.0 | SPDX-License-Identifier in `esp_http_server.h` |
 | mbedTLS | 3.6.5, bundled with ESP-IDF 5.5 | Apache-2.0 OR GPL-2.0-or-later | `MBEDTLS_VERSION_STRING` in `mbedtls/build_info.h`. Arduino-esp32 builds this as Apache-2.0. `P1LoRa` calls this copy. |
+| RadioLib | 7.8.1 | MIT | `.pio/libdeps/lora-transmitter/RadioLib/license.txt` and `library.properties`. Linked by the LoRa images, not by the dongle. |
 | esp-mqtt (`mqtt_client.h`) | bundled with ESP-IDF 5.5 | see note | The header says it is subject to a `LICENSE` file in its source package. That file is not present in the precompiled Arduino-esp32-libs snapshot. |
 | joltwallet littlefs | 1.20.4 | not in this snapshot | `esp_littlefs.h` states version 1.20.4. No LICENSE file is shipped in the precompiled include tree. |
 | lwIP | bundled with ESP-IDF 5.5 | BSD-style (three-clause), SICS | copyright block in `lwip/init.h` |
 | libb64 (Arduino core) | Arduino-esp32 3.3.7 | public-domain dedication | `cores/esp32/libb64/LICENSE` |
+
+## RadioLib — MIT
+
+From `.pio/libdeps/lora-transmitter/RadioLib/license.txt`, version 7.8.1:
+
+MIT License
+
+Copyright (c) 2018 Jan Gromeš
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## dsmr_parser — MIT
 

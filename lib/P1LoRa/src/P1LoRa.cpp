@@ -242,6 +242,7 @@ const Profile kA = {
         {7, 125000u},
         {0, 0},
     },
+    0x2B,
 };
 
 // Profile B's ceiling is written as about 12–13 dBm. 13 is the top of that range.
@@ -260,6 +261,7 @@ const Profile kB = {
         {8, 250000u},
         {7, 250000u},
     },
+    0x2B,
 };
 
 }  // namespace
@@ -295,6 +297,12 @@ std::uint32_t airtime_us(ProfileId id, std::uint8_t step, std::uint16_t payload_
         return 0;
     }
     return airtime_us(p.steps[step].sf, p.steps[step].bw_hz, payload_len);
+}
+
+std::int8_t clamp_tx_power(ProfileId id, std::int8_t requested_dbm)
+{
+    const std::int8_t cap = profile(id).max_dbm;
+    return requested_dbm > cap ? cap : requested_dbm;
 }
 
 std::uint16_t reading_interval_tenths(std::uint32_t airtime_us, std::uint32_t duty_ms_per_hour)
@@ -369,6 +377,57 @@ void Duty::record(std::uint32_t now_ms, std::uint32_t airtime_us)
     } else {
         slot += airtime_us;
     }
+}
+
+std::uint32_t Duty::charged_us(std::uint32_t now_ms) const
+{
+    Duty copy(*this);
+    return copy.used_us(now_ms);
+}
+
+std::uint32_t duty_checksum(const DutyImage& image)
+{
+    std::uint32_t sum = 0x811C9DC5u;
+    auto mix = [&](std::uint32_t v) {
+        sum ^= v;
+        sum *= 16777619u;
+    };
+    mix(image.magic);
+    mix(image.budget_us);
+    for (std::uint32_t bucket : image.bucket_us) {
+        mix(bucket);
+    }
+    mix(image.last_minute);
+    mix(image.now_ms);
+    mix(image.started);
+    return sum;
+}
+
+void Duty::save(DutyImage& out, std::uint32_t now_ms) const
+{
+    out = {};
+    out.magic = kDutyMagic;
+    out.budget_us = budget_us_;
+    for (int i = 0; i < kSlots; ++i) {
+        out.bucket_us[i] = bucket_us_[i];
+    }
+    out.last_minute = last_minute_;
+    out.now_ms = now_ms;
+    out.started = started_ ? 1 : 0;
+    out.checksum = duty_checksum(out);
+}
+
+bool Duty::restore(const DutyImage& in)
+{
+    if (in.magic != kDutyMagic || in.budget_us != budget_us_ || in.checksum != duty_checksum(in)) {
+        return false;
+    }
+    for (int i = 0; i < kSlots; ++i) {
+        bucket_us_[i] = in.bucket_us[i];
+    }
+    last_minute_ = in.last_minute;
+    started_ = in.started != 0;
+    return true;
 }
 
 std::uint32_t Duty::wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const
