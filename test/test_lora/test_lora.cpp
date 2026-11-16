@@ -368,7 +368,7 @@ void test_rejections()
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::WrongNetwork), static_cast<int>(d.status));
 
     frame[0] = 0x6b;
-    frame[2] = 0x05;
+    frame[2] = 0x06;
     d = p1lora::decode(key, frame.data(), frame.size());
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::UnknownType), static_cast<int>(d.status));
 
@@ -522,6 +522,133 @@ void test_counter_gap()
     TEST_ASSERT_EQUAL_UINT8(55, g.loss);
 }
 
+void test_status_frame()
+{
+    const p1lora::Key key = sample_key();
+    p1lora::MeterStatus meter;
+    meter.reason = 2;
+    meter.since_s = 600;
+    meter.rejected = 0;
+    std::uint8_t frame[16];
+    std::size_t len = 0;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_status(key, 3, meter, frame, sizeof frame, len)));
+    const auto expect = parse_hex("6b0b05010302580200");
+    TEST_ASSERT_EQUAL_UINT(expect.size(), len);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(frame, expect.data(), len));
+
+    const p1lora::Decoded back = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok), static_cast<int>(back.status));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Kind::Status), static_cast<int>(back.kind));
+    TEST_ASSERT_EQUAL_UINT8(0x05, back.type);
+    TEST_ASSERT_EQUAL_UINT8(3, back.counter);
+    TEST_ASSERT_EQUAL_UINT8(2, back.meter.reason);
+    TEST_ASSERT_EQUAL_UINT16(600, back.meter.since_s);
+    TEST_ASSERT_EQUAL_UINT8(0, back.meter.rejected);
+
+    meter.since_s = 0xFFFE;
+    meter.rejected = 0xFF;
+    meter.reason = 3;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_status(key, 4, meter, frame, sizeof frame, len)));
+    const p1lora::Decoded sat = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL_UINT8(3, sat.meter.reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFFFE, sat.meter.since_s);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, sat.meter.rejected);
+
+    meter.since_s = 0xFFFF;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_status(key, 5, meter, frame, sizeof frame, len)));
+    const p1lora::Decoded never = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL_UINT16(0xFFFF, never.meter.since_s);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::WrongLength),
+                      static_cast<int>(p1lora::decode(key, frame, 8).status));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::WrongLength),
+                      static_cast<int>(p1lora::decode(key, frame, 10).status));
+}
+
+void test_status_interval()
+{
+    // 9-byte SF12/125 airtime is 991232 us.
+    // Profile A duty is 10%: 4 * 991232 us / 0.1 = 39.649 s, which rounds up to
+    // 40 s and is then held at the 60 s floor.
+    // Profile B duty is 1%: 4 * 991232 us / 0.01 = 396.493 s, which rounds up to 397 s.
+    for (std::uint8_t step = 0; step < 6; ++step) {
+        TEST_ASSERT_EQUAL_UINT32(60u, p1lora::status_interval_s(p1lora::ProfileId::A, step));
+    }
+    TEST_ASSERT_EQUAL_UINT32(397u, p1lora::status_interval_s(p1lora::ProfileId::B, 0));
+}
+
+void test_stale_gate()
+{
+    p1lora::MeterGate boot;
+    p1lora::SendPlan plan = boot.plan(0, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    TEST_ASSERT_EQUAL_UINT8(1, plan.meter.reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFFFF, plan.meter.since_s);
+    boot.status_sent(0);
+    plan = boot.plan(59999u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Wait), static_cast<int>(plan.choice));
+    plan = boot.plan(60000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    TEST_ASSERT_EQUAL_UINT8(1, plan.meter.reason);
+
+    p1lora::MeterGate fresh;
+    fresh.note_valid(1000u);
+    plan = fresh.plan(10999u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Reading), static_cast<int>(plan.choice));
+    plan = fresh.plan(11000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    TEST_ASSERT_EQUAL_UINT8(2, plan.meter.reason);
+    TEST_ASSERT_EQUAL_UINT16(10, plan.meter.since_s);
+    fresh.status_sent(11000u);
+    plan = fresh.plan(70999u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Wait), static_cast<int>(plan.choice));
+    plan = fresh.plan(71000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+
+    p1lora::MeterGate rejected;
+    rejected.note_valid(0);
+    rejected.note_reject(5000u);
+    plan = rejected.plan(10000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    TEST_ASSERT_EQUAL_UINT8(3, plan.meter.reason);
+    TEST_ASSERT_EQUAL_UINT8(1, plan.meter.rejected);
+    TEST_ASSERT_EQUAL_UINT16(10, plan.meter.since_s);
+    plan = rejected.plan(15000u, 60000u);
+    TEST_ASSERT_EQUAL_UINT8(2, plan.meter.reason);
+    TEST_ASSERT_EQUAL_UINT8(1, plan.meter.rejected);
+
+    p1lora::MeterGate flooded;
+    for (int i = 0; i < 300; ++i) {
+        flooded.note_reject(1000u);
+    }
+    plan = flooded.plan(1000u, 60000u);
+    TEST_ASSERT_EQUAL_UINT8(3, plan.meter.reason);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, plan.meter.rejected);
+    TEST_ASSERT_EQUAL_UINT16(0xFFFF, plan.meter.since_s);
+
+    p1lora::MeterGate old;
+    old.note_valid(0);
+    plan = old.plan(65535000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    TEST_ASSERT_EQUAL_UINT8(2, plan.meter.reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFFFE, plan.meter.since_s);
+
+    p1lora::MeterGate again;
+    again.note_valid(0);
+    plan = again.plan(10000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    again.status_sent(10000u);
+    again.note_valid(20000u);
+    plan = again.plan(29999u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Reading), static_cast<int>(plan.choice));
+    plan = again.plan(30000u, 60000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::SendChoice::Status), static_cast<int>(plan.choice));
+    TEST_ASSERT_EQUAL_UINT8(2, plan.meter.reason);
+}
+
 void test_optionals()
 {
     p1lora::Optionals opt;
@@ -572,6 +699,9 @@ int main()
     RUN_TEST(test_power_clamp);
     RUN_TEST(test_duty_image);
     RUN_TEST(test_counter_gap);
+    RUN_TEST(test_status_frame);
+    RUN_TEST(test_status_interval);
+    RUN_TEST(test_stale_gate);
     RUN_TEST(test_optionals);
     RUN_TEST(test_self_test);
     return UNITY_END();

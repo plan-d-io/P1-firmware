@@ -64,6 +64,7 @@ bool known_type(std::uint8_t type)
     case kTypeSingle:
     case kTypeThree:
     case kTypeProbe:
+    case kTypeStatus:
     case kTypeAck:
     case kTypeOffer:
     case kTypeConfirm:
@@ -312,6 +313,28 @@ std::uint16_t reading_interval_tenths(std::uint32_t airtime_us, std::uint32_t du
     }
     const std::uint64_t num = static_cast<std::uint64_t>(airtime_us) * 36ull + duty_ms_per_hour / 2u;
     return static_cast<std::uint16_t>(num / duty_ms_per_hour);
+}
+
+std::uint32_t status_interval_s(ProfileId id, std::uint8_t step)
+{
+    const Profile& p = profile(id);
+    if (step >= p.step_count || p.duty_ms_per_hour == 0) {
+        return 0;
+    }
+    // 9 bytes on air: header plus the 4-byte plaintext status payload.
+    const std::uint32_t air = airtime_us(id, step, 9);
+    if (air == 0) {
+        return 0;
+    }
+    // 4 * airtime / duty fraction, in microseconds, rounded up to a whole second.
+    // duty fraction = duty_ms_per_hour / 3_600_000.
+    const std::uint64_t duty = p.duty_ms_per_hour;
+    const std::uint64_t us = (4ull * static_cast<std::uint64_t>(air) * 3600000ull + duty - 1ull) / duty;
+    std::uint32_t sec = static_cast<std::uint32_t>((us + 999999ull) / 1000000ull);
+    if (sec < 60u) {
+        sec = 60u;
+    }
+    return sec;
 }
 
 Duty::Duty(std::uint32_t budget_ms_per_hour)
@@ -625,6 +648,20 @@ Status pack_confirm(const Key& key, std::uint8_t counter, std::uint8_t step,
     return Status::Ok;
 }
 
+Status pack_status(const Key& key, std::uint8_t counter, const MeterStatus& meter,
+                   std::uint8_t* out, std::size_t cap, std::size_t& len)
+{
+    if (out == nullptr || cap < 9) {
+        return Status::WrongLength;
+    }
+    write_header(out, key, kTypeStatus, counter);
+    out[5] = meter.reason;
+    put_u16(out + 6, meter.since_s);
+    out[8] = meter.rejected;
+    len = 9;
+    return Status::Ok;
+}
+
 Decoded decode(const Key& key, const std::uint8_t* frame, std::size_t len)
 {
     Decoded out;
@@ -692,6 +729,18 @@ Decoded decode(const Key& key, const std::uint8_t* frame, std::size_t len)
         out.status = Status::Ok;
         return out;
     }
+    if (type == kTypeStatus) {
+        if (pay != 4) {
+            out.status = Status::WrongLength;
+            return out;
+        }
+        out.kind = Kind::Status;
+        out.meter.reason = frame[5];
+        out.meter.since_s = get_u16(frame + 6);
+        out.meter.rejected = frame[8];
+        out.status = Status::Ok;
+        return out;
+    }
     if (pay != 1) {
         out.status = Status::WrongLength;
         return out;
@@ -699,6 +748,66 @@ Decoded decode(const Key& key, const std::uint8_t* frame, std::size_t len)
     out.kind = type == kTypeOffer ? Kind::Offer : Kind::Confirm;
     out.step = frame[5];
     out.status = Status::Ok;
+    return out;
+}
+
+void MeterGate::note_valid(std::uint32_t now_ms)
+{
+    ever_ = true;
+    last_valid_ms_ = now_ms;
+    status_armed_ = false;
+    rejects_since_valid_ = 0;
+}
+
+void MeterGate::note_reject(std::uint32_t now_ms)
+{
+    have_reject_ = true;
+    last_reject_ms_ = now_ms;
+    if (rejects_ < 0xFF) {
+        ++rejects_;
+    }
+    if (rejects_since_valid_ < 0xFF) {
+        ++rejects_since_valid_;
+    }
+}
+
+void MeterGate::status_sent(std::uint32_t now_ms)
+{
+    status_armed_ = true;
+    last_status_ms_ = now_ms;
+    rejects_ = 0;
+}
+
+SendPlan MeterGate::plan(std::uint32_t now_ms, std::uint32_t status_interval_ms) const
+{
+    SendPlan out;
+    const bool fresh = ever_ && (now_ms - last_valid_ms_) < kFreshMs;
+    if (!ever_) {
+        out.meter.since_s = kSinceNever;
+    } else {
+        const std::uint32_t sec = (now_ms - last_valid_ms_) / 1000u;
+        out.meter.since_s = sec > kSinceMax ? kSinceMax : static_cast<std::uint16_t>(sec);
+    }
+    out.meter.rejected = rejects_;
+    if (fresh) {
+        out.choice = SendChoice::Reading;
+        return out;
+    }
+    // Reason 3 only while rejected telegrams are still arriving. A reject
+    // older than the fresh window, or a valid telegram after it, is silence.
+    const bool rejecting = have_reject_ && rejects_since_valid_ > 0 && (now_ms - last_reject_ms_) < kFreshMs;
+    if (rejecting) {
+        out.meter.reason = kStatusRejected;
+    } else if (!ever_) {
+        out.meter.reason = kStatusNoneSinceBoot;
+    } else {
+        out.meter.reason = kStatusNoneForAWhile;
+    }
+    if (!status_armed_ || status_interval_ms == 0 || (now_ms - last_status_ms_) >= status_interval_ms) {
+        out.choice = SendChoice::Status;
+        return out;
+    }
+    out.choice = SendChoice::Wait;
     return out;
 }
 

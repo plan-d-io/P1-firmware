@@ -1,5 +1,5 @@
-// P1 LoRa receiver. Locked mode only: decode a reading and ACK it
-// unless this radio's own duty budget would be exceeded.
+// P1 LoRa receiver. Locked mode only: decode a reading or a status frame
+// and ACK it unless this radio's own duty budget would be exceeded.
 //
 // User settings. An empty pair key does not transmit (and so sends no ACK).
 // Desk builds inject the key and the power with PLATFORMIO_BUILD_FLAGS.
@@ -49,6 +49,8 @@ uint8_t g_tx_counter = 0;
 bool g_have_last = false;
 uint8_t g_last_counter = 0;
 uint32_t g_frames = 0;
+uint32_t g_readings = 0;
+uint32_t g_status = 0;
 uint32_t g_lost = 0;
 uint32_t g_network = 0;
 uint32_t g_key_fail = 0;
@@ -169,10 +171,13 @@ void poll_led()
 
 void print_summary()
 {
-    Serial.printf("rx summary frames=%u loss=", g_frames);
+    Serial.printf("rx summary readings=%u status=%u loss=", static_cast<unsigned>(g_readings),
+                  static_cast<unsigned>(g_status));
     print_loss_pct();
-    Serial.printf(" network=%u key=%u length=%u crc=%u type=%u version=%u ack_sent=%u ack_skip=%u duty=", g_network,
-                  g_key_fail, g_length, g_crc, g_type, g_version, g_ack_sent, g_ack_skip);
+    Serial.printf(" network=%u key=%u length=%u crc=%u type=%u version=%u ack_sent=%u ack_skip=%u duty=",
+                  static_cast<unsigned>(g_network), static_cast<unsigned>(g_key_fail), static_cast<unsigned>(g_length),
+                  static_cast<unsigned>(g_crc), static_cast<unsigned>(g_type), static_cast<unsigned>(g_version),
+                  static_cast<unsigned>(g_ack_sent), static_cast<unsigned>(g_ack_skip));
     print_duty();
     Serial.println();
 }
@@ -273,6 +278,58 @@ bool send_ack(uint8_t frame_counter, float snr_db)
     return true;
 }
 
+void print_u32_field(const char* name, uint32_t value, bool absent)
+{
+    Serial.print(' ');
+    Serial.print(name);
+    Serial.print('=');
+    if (absent) {
+        Serial.print('-');
+    } else {
+        Serial.print(value);
+    }
+}
+
+void print_u16_field(const char* name, uint16_t value)
+{
+    print_u32_field(name, value, value == p1lora::kAbsent16);
+}
+
+void print_reading(const p1lora::Reading& reading)
+{
+    print_u32_field("t1", reading.t1_wh, reading.t1_wh == p1lora::kAbsent32);
+    print_u32_field("t2", reading.t2_wh, reading.t2_wh == p1lora::kAbsent32);
+    print_u32_field("inj1", reading.inj1_wh, reading.inj1_wh == p1lora::kAbsent32);
+    print_u32_field("inj2", reading.inj2_wh, reading.inj2_wh == p1lora::kAbsent32);
+    print_u16_field("p", reading.power_w);
+    print_u16_field("inj", reading.inject_w);
+    print_u16_field("dem", reading.demand_w);
+    print_u16_field("p1", reading.p_plus_w[0]);
+    print_u16_field("p2", reading.p_plus_w[1]);
+    print_u16_field("p3", reading.p_plus_w[2]);
+    print_u16_field("q1", reading.p_minus_w[0]);
+    print_u16_field("q2", reading.p_minus_w[1]);
+    print_u16_field("q3", reading.p_minus_w[2]);
+    print_u16_field("v1", reading.v_dv[0]);
+    print_u16_field("v2", reading.v_dv[1]);
+    print_u16_field("v3", reading.v_dv[2]);
+    print_u16_field("i1", reading.i_ca[0]);
+    print_u16_field("i2", reading.i_ca[1]);
+    print_u16_field("i3", reading.i_ca[2]);
+    Serial.printf(" tariff=%u", (reading.flags & p1lora::kFlagTariff2) != 0 ? 2u : 1u);
+    if ((reading.flags & p1lora::kFlagGas) != 0) {
+        print_u32_field("gas", reading.gas_dm3, false);
+    } else {
+        Serial.print(" gas=-");
+    }
+    if ((reading.flags & p1lora::kFlagPeak) != 0) {
+        print_u16_field("peak", reading.peak_w);
+        print_u32_field("peak_t", reading.peak_time, false);
+    } else {
+        Serial.print(" peak=-");
+    }
+}
+
 void on_packet(const uint8_t* buf, size_t len, float rssi, float snr)
 {
     const p1lora::Decoded decoded = p1lora::decode(g_key, buf, len);
@@ -296,7 +353,7 @@ void on_packet(const uint8_t* buf, size_t len, float rssi, float snr)
         Serial.printf("rx reject %s\n", why);
         return;
     }
-    if (decoded.kind != p1lora::Kind::Reading) {
+    if (decoded.kind != p1lora::Kind::Reading && decoded.kind != p1lora::Kind::Status) {
         ++g_type;
         Serial.println("rx reject type");
         return;
@@ -316,6 +373,21 @@ void on_packet(const uint8_t* buf, size_t len, float rssi, float snr)
     g_last_counter = decoded.counter;
     ++g_frames;
     const bool acked = send_ack(decoded.counter, snr);
+    if (decoded.kind == p1lora::Kind::Status) {
+        ++g_status;
+        Serial.printf("rx #%u 0x05 status reason=%u since=", decoded.counter, decoded.meter.reason);
+        if (decoded.meter.since_s == p1lora::kSinceNever) {
+            Serial.print("never");
+        } else {
+            Serial.printf("%us", decoded.meter.since_s);
+        }
+        Serial.printf(" rejected=%u ack=%s rssi=%d snr=", decoded.meter.rejected, acked ? "sent" : "skipped",
+                      static_cast<int>(rssi));
+        print_quarters(snr);
+        Serial.println();
+        return;
+    }
+    ++g_readings;
     Serial.printf("rx #%u 0x%02X rssi=%d snr=", decoded.counter, decoded.type, static_cast<int>(rssi));
     print_quarters(snr);
     Serial.print(" key=ok loss=");
@@ -326,7 +398,9 @@ void on_packet(const uint8_t* buf, size_t len, float rssi, float snr)
     }
     Serial.print(" total=");
     print_loss_pct();
-    Serial.printf(" ack=%s t1=%u\n", acked ? "sent" : "skipped", decoded.reading.t1_wh);
+    Serial.printf(" ack=%s", acked ? "sent" : "skipped");
+    print_reading(decoded.reading);
+    Serial.println();
 }
 
 }  // namespace

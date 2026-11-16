@@ -37,6 +37,10 @@ std::uint32_t airtime_us(ProfileId id, std::uint8_t step, std::uint16_t payload_
 // Reading interval in tenths of a second, rounded from airtime / duty fraction.
 std::uint16_t reading_interval_tenths(std::uint32_t airtime_us, std::uint32_t duty_ms_per_hour);
 
+// Seconds between status frames. At least 60, and at least four times the
+// 9-byte status airtime divided by the profile's duty fraction, rounded up.
+std::uint32_t status_interval_s(ProfileId id, std::uint8_t step);
+
 // Requested power above the profile maximum is cut down to it. A lower
 // request is left alone; the radio driver applies its own floor.
 std::int8_t clamp_tx_power(ProfileId id, std::int8_t requested_dbm);
@@ -109,9 +113,19 @@ constexpr std::uint8_t kFlagAccepted = 0x10;
 constexpr std::uint8_t kTypeSingle = 0x41;
 constexpr std::uint8_t kTypeThree = 0x42;
 constexpr std::uint8_t kTypeProbe = 0x04;
+constexpr std::uint8_t kTypeStatus = 0x05;
 constexpr std::uint8_t kTypeAck = 0x81;
 constexpr std::uint8_t kTypeOffer = 0x82;
 constexpr std::uint8_t kTypeConfirm = 0x83;
+
+// Status payload: why the transmitter has no reading to send.
+constexpr std::uint8_t kStatusNoneSinceBoot = 1;
+constexpr std::uint8_t kStatusNoneForAWhile = 2;
+constexpr std::uint8_t kStatusRejected = 3;
+constexpr std::uint16_t kSinceNever = 0xFFFF;
+constexpr std::uint16_t kSinceMax = 0xFFFE;
+// A reading is sent only while the last valid telegram is younger than this.
+constexpr std::uint32_t kFreshMs = 10000;
 
 enum class Status : std::uint8_t {
     Ok,
@@ -152,7 +166,13 @@ struct Ack {
     std::uint8_t fallback = 0;     // 0 = off, else minutes / 10
 };
 
-enum class Kind : std::uint8_t { None, Reading, Probe, Ack, Offer, Confirm };
+enum class Kind : std::uint8_t { None, Reading, Probe, Ack, Offer, Confirm, Status };
+
+struct MeterStatus {
+    std::uint8_t reason = 0;
+    std::uint16_t since_s = kSinceNever;
+    std::uint8_t rejected = 0;
+};
 
 struct Decoded {
     Status status = Status::WrongLength;
@@ -164,6 +184,34 @@ struct Decoded {
     std::uint8_t probe_len = 0;
     Ack ack{};
     std::uint8_t step = 0;
+    MeterStatus meter{};
+};
+
+enum class SendChoice : std::uint8_t { Wait, Reading, Status };
+
+struct SendPlan {
+    SendChoice choice = SendChoice::Wait;
+    MeterStatus meter{};
+};
+
+// Decides a reading versus a status frame from a free-running millisecond clock.
+// A status goes out as soon as the telegram is stale, then at status_interval_s.
+class MeterGate {
+public:
+    void note_valid(std::uint32_t now_ms);
+    void note_reject(std::uint32_t now_ms);
+    SendPlan plan(std::uint32_t now_ms, std::uint32_t status_interval_ms) const;
+    void status_sent(std::uint32_t now_ms);
+
+private:
+    bool ever_ = false;
+    bool status_armed_ = false;
+    bool have_reject_ = false;
+    std::uint32_t last_valid_ms_ = 0;
+    std::uint32_t last_status_ms_ = 0;
+    std::uint32_t last_reject_ms_ = 0;
+    std::uint8_t rejects_ = 0;
+    std::uint8_t rejects_since_valid_ = 0;
 };
 
 constexpr std::size_t kMaxFrame = 80;
@@ -188,6 +236,9 @@ Status pack_offer(const Key& key, std::uint8_t counter, std::uint8_t step,
 
 Status pack_confirm(const Key& key, std::uint8_t counter, std::uint8_t step,
                     std::uint8_t* out, std::size_t cap, std::size_t& len);
+
+Status pack_status(const Key& key, std::uint8_t counter, const MeterStatus& meter,
+                   std::uint8_t* out, std::size_t cap, std::size_t& len);
 
 Decoded decode(const Key& key, const std::uint8_t* frame, std::size_t len);
 

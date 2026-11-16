@@ -1,5 +1,6 @@
-// P1 LoRa transmitter. Locked mode only: a three-phase test reading,
-// paced to the steady interval, with ACKs listened for after each send.
+// P1 LoRa transmitter. Locked mode: read DSMR on GPIO 34 and send the latest
+// values, paced to the steady interval, with ACKs listened for after each send.
+// A telegram older than 10 s is not sent; a small status frame goes instead.
 //
 // User settings. An empty pair key does not transmit.
 // Desk builds inject the key and the power with PLATFORMIO_BUILD_FLAGS.
@@ -16,14 +17,20 @@
 
 #include <Arduino.h>
 
+#include <P1DSMR.h>
 #include <P1LoRa.h>
 #include <P1LoRaRadio.h>
+#include <from_telegram.h>
 
 #include <esp_attr.h>
 #include <esp_system.h>
+#include <soc/uart_reg.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 namespace {
 
@@ -34,7 +41,12 @@ static_assert(sizeof(kPairKey) == 33, "desk pair key must be 32 hex characters")
 constexpr int8_t kPowerDbm = P1_TX_DBM;
 constexpr uint8_t kLockedStep = P1_LOCKED_STEP;
 constexpr uint32_t kAckMarginMs = 100;
+constexpr uint32_t kSummaryMs = 60000;
+constexpr uint32_t kSilenceMs = 10000;
 constexpr int kLed = 25;
+// Input-only. No internal pull: the interface board's 2.2 kΩ to 3.3 V is the pull-up.
+constexpr int kP1Rx = 34;
+constexpr int kP1Tx = -1;
 
 const p1lora::RadioPins kPins{5, 19, 27, 18, 26, 23, 33};
 
@@ -42,18 +54,37 @@ p1lora::Radio g_radio(kPins);
 p1lora::Duty g_duty(p1lora::profile(p1lora::ProfileId::A).duty_ms_per_hour);
 p1lora::Key g_key;
 p1lora::Optionals g_opt;
+p1lora::MeterGate g_gate;
+p1dsmr::Reader g_reader;
+p1lora::Reading g_reading;
 RTC_NOINIT_ATTR p1lora::DutyImage g_duty_image;
 
 uint32_t g_duty_origin = 0;
 uint8_t g_step = kLockedStep;
 uint32_t g_seq = 0;
-uint32_t g_gas = 0;
-uint32_t g_last_send = 0;
-bool g_sent_once = false;
 uint32_t g_led_off = 0;
 bool g_radio_up = false;
 bool g_have_key = false;
+bool g_have_reading = false;
+bool g_was_fresh = false;
+bool g_silence_on = false;
 uint32_t g_nag = 0;
+uint32_t g_summary = 0;
+uint32_t g_silence_ms = 0;
+uint32_t g_next_reading_ms = 0;
+uint16_t g_pace_len = 69;
+uint32_t g_reading_gap_ms = 0;
+
+uint32_t g_ok = 0;
+uint32_t g_rejected = 0;
+uint32_t g_skipped = 0;
+uint32_t g_readings_sent = 0;
+uint32_t g_status_sent = 0;
+uint32_t g_stale_skips = 0;
+volatile uint32_t g_ovf = 0;
+volatile uint32_t g_full = 0;
+volatile uint32_t g_frm = 0;
+char g_reason[p1dsmr::Reader::kReasonMax] = {};
 
 uint32_t duty_clock()
 {
@@ -139,6 +170,13 @@ void poll_led()
     }
 }
 
+void recompute_gap()
+{
+    const p1lora::Profile& profile = p1lora::profile(p1lora::ProfileId::A);
+    const uint32_t air = p1lora::airtime_us(p1lora::ProfileId::A, g_step, g_pace_len);
+    g_reading_gap_ms = static_cast<uint32_t>(p1lora::reading_interval_tenths(air, profile.duty_ms_per_hour)) * 100u;
+}
+
 int hex_nibble(char c)
 {
     if (c >= '0' && c <= '9') {
@@ -161,6 +199,7 @@ void apply_step(uint8_t step)
         return;
     }
     g_step = step;
+    recompute_gap();
     Serial.printf("step %u SF%u\n", step, profile.steps[step].sf);
 }
 
@@ -227,40 +266,96 @@ void poll_commands()
 void poll_commands() {}
 #endif
 
-p1lora::Reading make_reading(uint32_t seq)
+void keep_reason(std::string_view reason)
 {
-    p1lora::Reading reading;
-    reading.three_phase = true;
-    reading.flags = static_cast<uint8_t>(p1lora::kFlagTariff2 | p1lora::kFlagGas | p1lora::kFlagPeak);
-    reading.t1_wh = 182077u + seq;
-    reading.t2_wh = 199084;
-    reading.inj1_wh = 23;
-    reading.inj2_wh = 134;
-    reading.power_w = static_cast<uint16_t>(289 + (seq % 30u));
-    reading.inject_w = 0;
-    reading.demand_w = 260;
-    reading.p_plus_w[0] = 75;
-    reading.p_plus_w[1] = 15;
-    reading.p_plus_w[2] = 198;
-    reading.p_minus_w[0] = reading.p_minus_w[1] = reading.p_minus_w[2] = 0;
-    reading.v_dv[0] = 2421;
-    reading.v_dv[1] = 2417;
-    reading.v_dv[2] = 2403;
-    reading.i_ca[0] = 53;
-    reading.i_ca[1] = 7;
-    reading.i_ca[2] = 97;
-    if ((seq % 20u) == 0) {
-        g_gas = 1000u + seq / 20u;
+    std::size_t n = reason.size();
+    if (n >= sizeof g_reason) {
+        n = sizeof g_reason - 1;
     }
-    reading.gas_dm3 = g_gas;
-    reading.peak_time = 0xAC6DB4C0u;
-    reading.peak_w = 2396;
-    return reading;
+    if (n == 0) {
+        g_reason[0] = '\0';
+        return;
+    }
+    std::memcpy(g_reason, reason.data(), n);
+    g_reason[n] = '\0';
 }
+
+void on_uart_err(hardwareSerial_error_t err)
+{
+    switch (err) {
+    case UART_FIFO_OVF_ERROR:
+        g_ovf = g_ovf + 1;
+        break;
+    case UART_BUFFER_FULL_ERROR:
+        g_full = g_full + 1;
+        break;
+    case UART_FRAME_ERROR:
+        g_frm = g_frm + 1;
+        break;
+    default:
+        break;
+    }
+}
+
+void on_telegram(const p1dsmr::Data& data)
+{
+    g_reading = p1lora::from_telegram(data);
+    g_have_reading = true;
+    const bool gas = (g_reading.flags & p1lora::kFlagGas) != 0;
+    const bool peak = (g_reading.flags & p1lora::kFlagPeak) != 0;
+    g_opt.observe(gas, g_reading.gas_dm3, peak, g_reading.peak_time, g_reading.peak_w);
+    g_gate.note_valid(millis());
+}
+
+void drain_p1()
+{
+    std::uint8_t buf[256];
+    std::size_t drained = 0;
+    while (Serial1.available() > 0 && drained < p1dsmr::Reader::kBufferSize) {
+        std::size_t want = sizeof buf;
+        const std::size_t room = p1dsmr::Reader::kBufferSize - drained;
+        if (want > room) {
+            want = room;
+        }
+        const size_t n = Serial1.read(buf, want);
+        if (n == 0) {
+            break;
+        }
+        drained += n;
+        for (size_t i = 0; i < n; ++i) {
+            const auto st = g_reader.feed(buf[i]);
+            if (st == p1dsmr::Reader::Status::Ok) {
+                ++g_ok;
+                g_skipped += static_cast<uint32_t>(g_reader.last_skipped_count());
+                on_telegram(g_reader.data());
+            } else if (st == p1dsmr::Reader::Status::Rejected) {
+                ++g_rejected;
+                keep_reason(g_reader.last_reject_reason());
+                g_gate.note_reject(millis());
+            }
+        }
+    }
+}
+
+bool reading_due(uint32_t now)
+{
+    return g_next_reading_ms == 0 || static_cast<int32_t>(now - g_next_reading_ms) >= 0;
+}
+
+void arm_reading(uint32_t now)
+{
+    g_next_reading_ms = now + g_reading_gap_ms;
+}
+
+struct AirResult {
+    bool acked = false;
+    int8_t snr_q = 0;
+    uint32_t air_us = 0;
+    uint32_t measured = 0;
+};
 
 bool take_ack(uint8_t counter, int8_t& snr_q)
 {
-    const p1lora::Profile& profile = p1lora::profile(p1lora::ProfileId::A);
     const uint32_t ack_us = p1lora::airtime_us(p1lora::ProfileId::A, g_step, 8);
     const uint32_t window_ms = (ack_us + 500u) / 1000u + kAckMarginMs;
     if (!g_radio.listen()) {
@@ -271,6 +366,7 @@ bool take_ack(uint8_t counter, int8_t& snr_q)
     while (static_cast<uint32_t>(millis() - started) < window_ms) {
         poll_commands();
         poll_led();
+        drain_p1();
         size_t len = 0;
         float rssi = 0;
         float snr = 0;
@@ -282,18 +378,101 @@ bool take_ack(uint8_t counter, int8_t& snr_q)
         if (decoded.status == p1lora::Status::Ok && decoded.kind == p1lora::Kind::Ack &&
             decoded.ack.counter == counter) {
             snr_q = decoded.ack.snr;
-            (void)profile;
             return true;
         }
     }
     return false;
 }
 
-void send_once()
+bool radio_send(const uint8_t* frame, size_t len, AirResult& out)
+{
+    out.air_us = p1lora::airtime_us(p1lora::ProfileId::A, g_step, static_cast<uint16_t>(len));
+    if (!g_duty.can_send(duty_clock(), out.air_us)) {
+        return false;
+    }
+    flash_led();
+    if (!g_radio.send(frame, len, out.measured)) {
+        Serial.printf("tx send failed %d\n", g_radio.last_status());
+        return false;
+    }
+    const uint32_t charge = out.measured > out.air_us ? out.measured : out.air_us;
+    g_duty.record(duty_clock(), charge);
+    remember_duty();
+    return true;
+}
+
+void print_air(uint8_t counter, size_t len, const AirResult& air, bool acked_known)
 {
     const p1lora::Profile& profile = p1lora::profile(p1lora::ProfileId::A);
-    const p1lora::Reading reading = make_reading(g_seq);
-    g_opt.observe(true, reading.gas_dm3, true, reading.peak_time, reading.peak_w);
+    Serial.printf("tx #%u step%u SF%u %uB air=%ums meas=%ums duty=", counter, g_step, profile.steps[g_step].sf,
+                  static_cast<unsigned>(len), (air.air_us + 500u) / 1000u, (air.measured + 500u) / 1000u);
+    print_pct(g_duty.charged_us(duty_clock()));
+    if (!acked_known) {
+        return;
+    }
+    Serial.print(air.acked ? " ack=ok snr_at_rx=" : " ack=none");
+    if (air.acked) {
+        print_quarters(air.snr_q);
+    }
+}
+
+void print_u32(const char* name, uint32_t value, bool absent)
+{
+    Serial.print(' ');
+    Serial.print(name);
+    Serial.print('=');
+    if (absent) {
+        Serial.print('-');
+    } else {
+        Serial.print(value);
+    }
+}
+
+void print_u16(const char* name, uint16_t value)
+{
+    print_u32(name, value, value == p1lora::kAbsent16);
+}
+
+void print_sent_values(const p1lora::Reading& reading)
+{
+    print_u32("t1", reading.t1_wh, reading.t1_wh == p1lora::kAbsent32);
+    print_u32("t2", reading.t2_wh, reading.t2_wh == p1lora::kAbsent32);
+    print_u32("inj1", reading.inj1_wh, reading.inj1_wh == p1lora::kAbsent32);
+    print_u32("inj2", reading.inj2_wh, reading.inj2_wh == p1lora::kAbsent32);
+    print_u16("p", reading.power_w);
+    print_u16("inj", reading.inject_w);
+    print_u16("dem", reading.demand_w);
+    print_u16("v1", reading.v_dv[0]);
+    print_u16("v2", reading.v_dv[1]);
+    print_u16("v3", reading.v_dv[2]);
+    print_u16("i1", reading.i_ca[0]);
+    print_u16("i2", reading.i_ca[1]);
+    print_u16("i3", reading.i_ca[2]);
+    if ((reading.flags & p1lora::kFlagGas) != 0) {
+        print_u32("gas", reading.gas_dm3, false);
+    } else {
+        Serial.print(" gas=-");
+    }
+    if ((reading.flags & p1lora::kFlagPeak) != 0) {
+        print_u16("peak", reading.peak_w);
+        print_u32("peak_t", reading.peak_time, false);
+    } else {
+        Serial.print(" peak=-");
+    }
+    Serial.printf(" tariff=%u", (reading.flags & p1lora::kFlagTariff2) != 0 ? 2u : 1u);
+}
+
+void send_reading()
+{
+    p1lora::Reading reading = g_reading;
+    const bool gas = g_opt.gas_pending() && (reading.flags & p1lora::kFlagGas) != 0;
+    const bool peak = g_opt.peak_pending() && (reading.flags & p1lora::kFlagPeak) != 0;
+    if (!gas) {
+        reading.flags = static_cast<uint8_t>(reading.flags & ~p1lora::kFlagGas);
+    }
+    if (!peak) {
+        reading.flags = static_cast<uint8_t>(reading.flags & ~p1lora::kFlagPeak);
+    }
     uint8_t frame[p1lora::kMaxFrame];
     size_t len = 0;
     const uint8_t counter = static_cast<uint8_t>(g_seq);
@@ -301,37 +480,106 @@ void send_once()
         Serial.println("tx pack failed");
         return;
     }
-    const uint32_t air_us = p1lora::airtime_us(p1lora::ProfileId::A, g_step, static_cast<uint16_t>(len));
-    const uint32_t now = duty_clock();
-    if (!g_duty.can_send(now, air_us)) {
+    AirResult air;
+    if (!radio_send(frame, len, air)) {
         return;
     }
-    uint32_t measured = 0;
-    flash_led();
-    if (!g_radio.send(frame, len, measured)) {
-        Serial.printf("tx send failed %d\n", g_radio.last_status());
-        return;
-    }
-    const uint32_t charge = measured > air_us ? measured : air_us;
-    g_duty.record(duty_clock(), charge);
-    remember_duty();
-    g_opt.sent(counter, true, true);
-    int8_t snr_q = 0;
-    const bool acked = take_ack(counter, snr_q);
-    if (acked) {
+    // Record the generation before the ACK window. A telegram that arrives
+    // while listening must not be the one this frame is credited with.
+    g_opt.sent(counter, gas, peak);
+    air.acked = take_ack(counter, air.snr_q);
+    if (air.acked) {
         g_opt.ack(counter);
     }
-    Serial.printf("tx #%u step%u SF%u %uB air=%ums meas=%ums duty=", counter, g_step, profile.steps[g_step].sf,
-                  static_cast<unsigned>(len), (air_us + 500u) / 1000u, (measured + 500u) / 1000u);
-    print_pct(g_duty.charged_us(duty_clock()));
-    Serial.print(acked ? " ack=ok snr_at_rx=" : " ack=none");
-    if (acked) {
-        print_quarters(snr_q);
-    }
-    Serial.printf(" gas=%s\n", g_opt.gas_pending() ? "pending" : "clear");
-    g_last_send = millis();
-    g_sent_once = true;
+    g_pace_len = static_cast<uint16_t>(len);
+    recompute_gap();
+    arm_reading(millis());
+    ++g_readings_sent;
     ++g_seq;
+    print_air(counter, len, air, true);
+    Serial.printf(" gas=%s peak=%s", g_opt.gas_pending() ? "pending" : "clear",
+                  g_opt.peak_pending() ? "pending" : "clear");
+    print_sent_values(reading);
+    Serial.println();
+}
+
+void send_status(const p1lora::MeterStatus& meter)
+{
+    uint8_t frame[16];
+    size_t len = 0;
+    const uint8_t counter = static_cast<uint8_t>(g_seq);
+    if (p1lora::pack_status(g_key, counter, meter, frame, sizeof frame, len) != p1lora::Status::Ok) {
+        Serial.println("tx pack failed");
+        return;
+    }
+    AirResult air;
+    if (!radio_send(frame, len, air)) {
+        return;
+    }
+    // Clear the reported reject count before the ACK window, so a reject
+    // that arrives while listening is counted on the next status frame.
+    g_gate.status_sent(millis());
+    air.acked = take_ack(counter, air.snr_q);
+    ++g_status_sent;
+    ++g_seq;
+    print_air(counter, len, air, true);
+    Serial.print(" status reason=");
+    Serial.print(meter.reason);
+    Serial.print(" since=");
+    if (meter.since_s == p1lora::kSinceNever) {
+        Serial.print("never");
+    } else {
+        Serial.print(meter.since_s);
+        Serial.print('s');
+    }
+    Serial.printf(" rejected=%u\n", meter.rejected);
+}
+
+void print_summary()
+{
+    Serial.printf("tx summary ok=%u rejected=%u reason=%s skipped=%u ovf=%u full=%u frm=%u readings=%u status=%u stale_skips=%u\n",
+                  static_cast<unsigned>(g_ok), static_cast<unsigned>(g_rejected), g_reason[0] == '\0' ? "-" : g_reason,
+                  static_cast<unsigned>(g_skipped), static_cast<unsigned>(g_ovf), static_cast<unsigned>(g_full),
+                  static_cast<unsigned>(g_frm), static_cast<unsigned>(g_readings_sent), static_cast<unsigned>(g_status_sent),
+                  static_cast<unsigned>(g_stale_skips));
+}
+
+void note_silence(uint32_t now, const p1lora::SendPlan& plan)
+{
+    if (plan.choice == p1lora::SendChoice::Reading) {
+        g_silence_on = false;
+        return;
+    }
+    if (g_silence_on && static_cast<uint32_t>(now - g_silence_ms) < kSilenceMs) {
+        return;
+    }
+    Serial.print("no telegram for ");
+    if (plan.meter.since_s == p1lora::kSinceNever) {
+        Serial.println("never");
+    } else {
+        Serial.printf("%u s\n", static_cast<unsigned>(plan.meter.since_s));
+    }
+    g_silence_ms = now;
+    g_silence_on = true;
+}
+
+void start_p1_uart()
+{
+    const size_t rx = Serial1.setRxBufferSize(p1dsmr::Reader::kBufferSize);
+    Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
+    Serial1.onReceiveError(on_uart_err);
+    // Same clock as the dongle (src/main.cpp): the 3.x core selects REF_TICK
+    // at 115200, which runs fast. UART_TICK_REF_ALWAYS_ON selects APB, and the
+    // divider is APB / 115200. GPIO 34 has no internal pull; do not enable one.
+    // Serial1 is UART1, so these are the UART1 registers the dongle writes.
+    REG_SET_BIT(UART_CONF0_REG(1), UART_TICK_REF_ALWAYS_ON);
+    {
+        const uint32_t clk = static_cast<uint32_t>(getApbFrequency());
+        const uint32_t clkdiv = (clk << 4) / 115200u;
+        REG_WRITE(UART_CLKDIV_REG(1), ((clkdiv & 0xFu) << UART_CLKDIV_FRAG_S) | (clkdiv >> 4));
+    }
+    Serial1.setRxTimeout(3);
+    Serial.printf("p1 uart GPIO %d rx-only 115200 8N1 buf=%u apb\n", kP1Rx, static_cast<unsigned>(rx));
 }
 
 }  // namespace
@@ -346,6 +594,9 @@ void setup()
     Serial.printf("step %u SF%u power %d dBm sync 0x%02X\n", kLockedStep, profile.steps[kLockedStep].sf, kPowerDbm,
                   profile.sync_word);
     load_duty();
+    g_summary = millis();
+    recompute_gap();
+    start_p1_uart();
     g_have_key = p1lora::parse_key(kPairKey, sizeof kPairKey - 1, g_key) == p1lora::KeyStatus::Ok;
     if (!g_have_key) {
         Serial.println("no pair key set");
@@ -363,24 +614,41 @@ void loop()
 {
     poll_led();
     poll_commands();
+    drain_p1();
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - g_summary) >= kSummaryMs) {
+        print_summary();
+        g_summary = now;
+    }
     if (!g_have_key) {
-        if (millis() - g_nag >= 1000) {
+        if (now - g_nag >= 1000) {
             Serial.println("no pair key set");
-            g_nag = millis();
+            g_nag = now;
         }
         return;
     }
     if (!g_radio_up) {
         return;
     }
-    const p1lora::Profile& profile = p1lora::profile(p1lora::ProfileId::A);
-    const uint32_t air_us = p1lora::airtime_us(p1lora::ProfileId::A, g_step, 69);
-    const uint32_t interval = static_cast<uint32_t>(p1lora::reading_interval_tenths(air_us, profile.duty_ms_per_hour)) * 100u;
-    if (g_sent_once && static_cast<uint32_t>(millis() - g_last_send) < interval) {
+    const uint32_t status_ms = p1lora::status_interval_s(p1lora::ProfileId::A, g_step) * 1000u;
+    const p1lora::SendPlan plan = g_gate.plan(now, status_ms);
+    note_silence(now, plan);
+    const bool fresh = plan.choice == p1lora::SendChoice::Reading && g_have_reading;
+    if (fresh && !g_was_fresh) {
+        g_next_reading_ms = 0;
+    }
+    g_was_fresh = fresh;
+    if (fresh) {
+        if (reading_due(now)) {
+            send_reading();
+        }
         return;
     }
-    if (!g_duty.can_send(duty_clock(), air_us)) {
-        return;
+    if (reading_due(now)) {
+        ++g_stale_skips;
+        arm_reading(now);
     }
-    send_once();
+    if (plan.choice == p1lora::SendChoice::Status) {
+        send_status(plan.meter);
+    }
 }
