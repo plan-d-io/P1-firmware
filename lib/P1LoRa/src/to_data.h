@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 
 namespace p1lora {
@@ -87,10 +88,14 @@ inline void put_u16(bool on, std::uint16_t raw, int scale, dsmr_parser::FixedVal
 }
 
 // timestamp and gas_timestamp are 13-character meter strings. Null leaves
-// that timestamp absent. A single-phase reading clears L2 and L3, so a
-// reused Data does not keep the previous phases.
+// that timestamp absent. The object is replaced on every call, so a reused
+// Data cannot keep a field this frame does not carry. Gas and the month
+// peak come back only when the reading still has them.
 inline void to_data(const Reading& r, p1dsmr::Data& d, const char* timestamp, const char* gas_timestamp)
 {
+    // ParsedData cannot be assigned. Reconstruct it in place.
+    std::destroy_at(&d);
+    std::construct_at(&d);
     if (timestamp != nullptr && timestamp[0] != '\0') {
         d.timestamp_present = true;
         d.timestamp = timestamp;

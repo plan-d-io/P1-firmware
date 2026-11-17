@@ -537,6 +537,19 @@ void test_reading_round_trip()
     round_trip_one("belgian-1phase-derived.p1");
 }
 
+void test_reused_data_drops_average_demand()
+{
+    p1dsmr::Data data;
+    p1lora::to_data(first_reading("belgian-3phase-fluvius.p1"), data, nullptr, nullptr);
+    TEST_ASSERT_TRUE(data.active_energy_import_current_average_demand_present);
+    data.equipment_id_present = true;
+    data.equipment_id = "stale";
+
+    p1lora::to_data(first_reading("dutch-3phase-esmr5-simulator.p1"), data, nullptr, nullptr);
+    TEST_ASSERT_FALSE(data.active_energy_import_current_average_demand_present);
+    TEST_ASSERT_FALSE(data.equipment_id_present);
+}
+
 void test_single_phase_clears_reused_data()
 {
     p1dsmr::Data data;
@@ -917,6 +930,7 @@ int main()
     RUN_TEST(test_rejections);
     RUN_TEST(test_converter);
     RUN_TEST(test_reading_round_trip);
+    RUN_TEST(test_reused_data_drops_average_demand);
     RUN_TEST(test_single_phase_clears_reused_data);
     RUN_TEST(test_duty);
     RUN_TEST(test_power_clamp);

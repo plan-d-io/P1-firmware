@@ -476,6 +476,8 @@ void deliver(const Heard& item)
     if (local_meter_time(g_reading_ts, sizeof(g_reading_ts))) {
         stamp = g_reading_ts;
     }
+    // Reused across frames. to_data clears it first. Gas and the month peak
+    // are the only values copied onto `reading` above.
     static p1dsmr::Data data;
     p1lora::to_data(reading, data, stamp, g_gas_ts[0] != '\0' ? g_gas_ts : nullptr);
     g_on_telegram(data, {});
