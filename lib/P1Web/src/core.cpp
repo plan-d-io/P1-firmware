@@ -249,6 +249,11 @@ std::size_t substitute_ap_name(const char* html, std::size_t len, const char* ap
         return len;
     }
     const std::size_t name_len = std::strlen(name);
+    // A shorter name can be written back into the same buffer. A longer name
+    // would overwrite bytes not yet read, so that case needs its own buffer.
+    if (html == out && name_len > kNeedleLen) {
+        return 0;
+    }
     std::size_t count = 0;
     for (std::size_t i = 0; i + kNeedleLen <= len;) {
         if (std::memcmp(html + i, kNeedle, kNeedleLen) == 0) {

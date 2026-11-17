@@ -58,13 +58,25 @@ bool gunzip_page(const std::uint8_t* src, std::size_t src_len, char* dst, std::s
     if (off + 8 >= src_len) {
         return false;
     }
-    const std::size_t n = tinfl_decompress_mem_to_mem(
-        dst, dst_cap - 1, src + off, src_len - off - 8, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-    if (n == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+    // The decompressor is about 12 KB. The HTTP task stack is 8 KB, so it
+    // lives on the heap for this one call.
+    auto* decomp = static_cast<tinfl_decompressor*>(malloc(sizeof(tinfl_decompressor)));
+    if (decomp == nullptr) {
         return false;
     }
-    dst[n] = '\0';
-    *out_len = n;
+    tinfl_init(decomp);
+    std::size_t in_len = src_len - off - 8;
+    std::size_t out_len_now = dst_cap - 1;
+    const tinfl_status st = tinfl_decompress(
+        decomp, src + off, &in_len, reinterpret_cast<mz_uint8*>(dst),
+        reinterpret_cast<mz_uint8*>(dst), &out_len_now,
+        TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    free(decomp);
+    if (st != TINFL_STATUS_DONE) {
+        return false;
+    }
+    dst[out_len_now] = '\0';
+    *out_len = out_len_now;
     return true;
 }
 
@@ -106,27 +118,27 @@ esp_err_t send_product_html(httpd_req_t* req, const std::uint8_t* gz, std::size_
     if (ap == nullptr || std::strcmp(ap, kApSsid) == 0) {
         return send_gzip(req, "text/html", gz, gz_len);
     }
-    char* raw = static_cast<char*>(malloc(raw_len + 1));
-    char* page = static_cast<char*>(malloc(raw_len + 64));
-    if (raw == nullptr || page == nullptr) {
-        free(raw);
-        free(page);
+    // One block. Two 48 KB blocks do not fit the largest free block once Wi-Fi
+    // is up, and the configuration page would be sent with the dongle name.
+    // The product name is shorter than "p1dongle", so the substitute fits
+    // back into the same buffer. A few extra bytes let the inflater finish
+    // when the output size is exact.
+    char* raw = static_cast<char*>(malloc(raw_len + 64));
+    if (raw == nullptr) {
         return send_gzip(req, "text/html", gz, gz_len);
     }
     std::size_t n = 0;
-    if (!gunzip_page(gz, gz_len, raw, raw_len + 1, &n)) {
+    if (!gunzip_page(gz, gz_len, raw, raw_len + 64, &n)) {
         free(raw);
-        free(page);
         return send_gzip(req, "text/html", gz, gz_len);
     }
-    const std::size_t m = substitute_ap_name(raw, n, ap, page, raw_len + 64);
-    free(raw);
+    const std::size_t m = substitute_ap_name(raw, n, ap, raw, raw_len + 64);
     if (m == 0) {
-        free(page);
+        free(raw);
         return send_gzip(req, "text/html", gz, gz_len);
     }
-    const esp_err_t err = send_html(req, page, m);
-    free(page);
+    const esp_err_t err = send_html(req, raw, m);
+    free(raw);
     return err;
 }
 
