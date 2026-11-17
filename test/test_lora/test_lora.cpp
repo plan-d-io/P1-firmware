@@ -1,5 +1,6 @@
 #include <P1LoRa.h>
 #include <from_telegram.h>
+#include <to_data.h>
 #include <P1DSMR.h>
 
 #include <unity.h>
@@ -408,6 +409,120 @@ void test_converter()
     TEST_ASSERT_TRUE(first_reading("belgian-3phase-fluvius.p1").three_phase);
 }
 
+void expect_fixed(const char* name, bool src_on, std::int32_t src, bool got_on, std::int32_t got)
+{
+    if (!src_on) {
+        TEST_ASSERT_FALSE_MESSAGE(got_on, name);
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(got_on, name);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(src, got, name);
+}
+
+void round_trip_one(const char* fixture)
+{
+    const auto bytes = load_fixture(fixture);
+    p1dsmr::Reader reader;
+    bool have = false;
+    reader.feed(std::span<const std::uint8_t>(bytes.data(), bytes.size()), [&](const p1dsmr::Data& src) {
+        if (have) {
+            return;
+        }
+        have = true;
+        const p1lora::Reading reading = p1lora::from_telegram(src);
+        p1dsmr::Data back;
+        p1lora::to_data(reading, back, nullptr, nullptr);
+
+        TEST_ASSERT_FALSE(back.timestamp_present);
+        TEST_ASSERT_FALSE(back.identification_present);
+        TEST_ASSERT_FALSE(back.equipment_id_present);
+        TEST_ASSERT_FALSE(back.water_delivered_present);
+        TEST_ASSERT_FALSE(back.gas_delivered_present);
+
+        expect_fixed("t1", src.energy_delivered_tariff1_present, src.energy_delivered_tariff1.int_val(),
+                     back.energy_delivered_tariff1_present, back.energy_delivered_tariff1.int_val());
+        expect_fixed("t2", src.energy_delivered_tariff2_present, src.energy_delivered_tariff2.int_val(),
+                     back.energy_delivered_tariff2_present, back.energy_delivered_tariff2.int_val());
+        expect_fixed("inj1", src.energy_returned_tariff1_present, src.energy_returned_tariff1.int_val(),
+                     back.energy_returned_tariff1_present, back.energy_returned_tariff1.int_val());
+        expect_fixed("inj2", src.energy_returned_tariff2_present, src.energy_returned_tariff2.int_val(),
+                     back.energy_returned_tariff2_present, back.energy_returned_tariff2.int_val());
+        expect_fixed("p", src.power_delivered_present, src.power_delivered.int_val(),
+                     back.power_delivered_present, back.power_delivered.int_val());
+        expect_fixed("inj", src.power_returned_present, src.power_returned.int_val(),
+                     back.power_returned_present, back.power_returned.int_val());
+        expect_fixed("dem", src.active_energy_import_current_average_demand_present,
+                     src.active_energy_import_current_average_demand.int_val(),
+                     back.active_energy_import_current_average_demand_present,
+                     back.active_energy_import_current_average_demand.int_val());
+        expect_fixed("v1", src.voltage_l1_present, src.voltage_l1.int_val(), back.voltage_l1_present,
+                     back.voltage_l1.int_val());
+        expect_fixed("v2", src.voltage_l2_present, src.voltage_l2.int_val(), back.voltage_l2_present,
+                     back.voltage_l2.int_val());
+        expect_fixed("v3", src.voltage_l3_present, src.voltage_l3.int_val(), back.voltage_l3_present,
+                     back.voltage_l3.int_val());
+        expect_fixed("i1", src.current_l1_present, src.current_l1.int_val(), back.current_l1_present,
+                     back.current_l1.int_val());
+        expect_fixed("i2", src.current_l2_present, src.current_l2.int_val(), back.current_l2_present,
+                     back.current_l2.int_val());
+        expect_fixed("i3", src.current_l3_present, src.current_l3.int_val(), back.current_l3_present,
+                     back.current_l3.int_val());
+        // Phase power is only in the frame on a three-phase reading. A single-phase
+        // telegram can still carry L1 power; the frame leaves that slot absent.
+        const auto carried16 = [&](const char* name, std::uint16_t raw, int scale, bool got_on,
+                                   std::int32_t got) {
+            const bool on = raw != p1lora::kAbsent16;
+            expect_fixed(name, on, on ? static_cast<std::int32_t>(raw) * scale : 0, got_on, got);
+        };
+        carried16("p1", reading.p_plus_w[0], 1, back.power_delivered_l1_present,
+                  back.power_delivered_l1.int_val());
+        carried16("p2", reading.p_plus_w[1], 1, back.power_delivered_l2_present,
+                  back.power_delivered_l2.int_val());
+        carried16("p3", reading.p_plus_w[2], 1, back.power_delivered_l3_present,
+                  back.power_delivered_l3.int_val());
+        carried16("q1", reading.p_minus_w[0], 1, back.power_returned_l1_present,
+                  back.power_returned_l1.int_val());
+        carried16("q2", reading.p_minus_w[1], 1, back.power_returned_l2_present,
+                  back.power_returned_l2.int_val());
+        carried16("q3", reading.p_minus_w[2], 1, back.power_returned_l3_present,
+                  back.power_returned_l3.int_val());
+
+        if (src.gas_delivered_be_present) {
+            TEST_ASSERT_TRUE(back.gas_delivered_be_present);
+            TEST_ASSERT_EQUAL_INT32(src.gas_delivered_be.int_val(), back.gas_delivered_be.int_val());
+        } else {
+            TEST_ASSERT_FALSE(back.gas_delivered_be_present);
+        }
+        if (src.active_energy_import_maximum_demand_running_month_present) {
+            TEST_ASSERT_TRUE(back.active_energy_import_maximum_demand_running_month_present);
+            TEST_ASSERT_EQUAL_INT32(src.active_energy_import_maximum_demand_running_month.int_val(),
+                                    back.active_energy_import_maximum_demand_running_month.int_val());
+            TEST_ASSERT_EQUAL_UINT32(
+                static_cast<unsigned>(src.active_energy_import_maximum_demand_running_month.timestamp.size()),
+                static_cast<unsigned>(back.active_energy_import_maximum_demand_running_month.timestamp.size()));
+            TEST_ASSERT_EQUAL_MEMORY(
+                src.active_energy_import_maximum_demand_running_month.timestamp.data(),
+                back.active_energy_import_maximum_demand_running_month.timestamp.data(),
+                src.active_energy_import_maximum_demand_running_month.timestamp.size());
+        } else {
+            TEST_ASSERT_FALSE(back.active_energy_import_maximum_demand_running_month_present);
+        }
+        if (src.electricity_tariff_present) {
+            const int want = p1lora::tariff_number(src.electricity_tariff);
+            TEST_ASSERT_TRUE(back.electricity_tariff_present);
+            TEST_ASSERT_EQUAL_INT(want == 2 ? 2 : 1, p1lora::tariff_number(back.electricity_tariff));
+        }
+    });
+    TEST_ASSERT_TRUE(have);
+}
+
+void test_reading_round_trip()
+{
+    round_trip_one("belgian-3phase-fluvius.p1");
+    round_trip_one("belgian-mbus-gas-water-spec.p1");
+    round_trip_one("belgian-1phase-derived.p1");
+}
+
 void test_duty()
 {
     auto run = [](std::uint32_t budget_ms, int min_first_hour) {
@@ -695,6 +810,7 @@ int main()
     RUN_TEST(test_control_frames);
     RUN_TEST(test_rejections);
     RUN_TEST(test_converter);
+    RUN_TEST(test_reading_round_trip);
     RUN_TEST(test_duty);
     RUN_TEST(test_power_clamp);
     RUN_TEST(test_duty_image);
