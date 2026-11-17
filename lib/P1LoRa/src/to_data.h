@@ -87,8 +87,8 @@ inline void put_u16(bool on, std::uint16_t raw, int scale, dsmr_parser::FixedVal
 }
 
 // timestamp and gas_timestamp are 13-character meter strings. Null leaves
-// that timestamp absent. The Data must be a fresh object; this does not
-// clear fields it does not touch.
+// that timestamp absent. A single-phase reading clears L2 and L3, so a
+// reused Data does not keep the previous phases.
 inline void to_data(const Reading& r, p1dsmr::Data& d, const char* timestamp, const char* gas_timestamp)
 {
     if (timestamp != nullptr && timestamp[0] != '\0') {
@@ -123,6 +123,20 @@ inline void to_data(const Reading& r, p1dsmr::Data& d, const char* timestamp, co
         put_u16(true, r.v_dv[2], 100, d.voltage_l3, d.voltage_l3_present);
         put_u16(true, r.i_ca[1], 10, d.current_l2, d.current_l2_present);
         put_u16(true, r.i_ca[2], 10, d.current_l3, d.current_l3_present);
+    } else {
+        // A single-phase frame has no per-phase power. L1 follows the total
+        // so the receiver can publish the L1 sensors. L2 and L3 are cleared
+        // because the receiver reuses one Data object.
+        put_u16(true, r.power_w, 1, d.power_delivered_l1, d.power_delivered_l1_present);
+        put_u16(true, r.inject_w, 1, d.power_returned_l1, d.power_returned_l1_present);
+        put_u16(false, 0, 1, d.power_delivered_l2, d.power_delivered_l2_present);
+        put_u16(false, 0, 1, d.power_delivered_l3, d.power_delivered_l3_present);
+        put_u16(false, 0, 1, d.power_returned_l2, d.power_returned_l2_present);
+        put_u16(false, 0, 1, d.power_returned_l3, d.power_returned_l3_present);
+        put_u16(false, 0, 100, d.voltage_l2, d.voltage_l2_present);
+        put_u16(false, 0, 100, d.voltage_l3, d.voltage_l3_present);
+        put_u16(false, 0, 10, d.current_l2, d.current_l2_present);
+        put_u16(false, 0, 10, d.current_l3, d.current_l3_present);
     }
 
     if ((r.flags & kFlagGas) != 0) {

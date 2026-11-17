@@ -3,9 +3,6 @@
 // application loop hears about the frame. WiFi, MQTT and HTTP run in
 // the loop and cannot hold an ACK.
 
-#ifndef P1_PAIR_KEY
-#define P1_PAIR_KEY ""
-#endif
 #ifndef P1_TX_DBM
 #define P1_TX_DBM 17
 #endif
@@ -21,7 +18,9 @@
 
 #include <Arduino.h>
 
+#include <bootloader_random.h>
 #include <esp_attr.h>
+#include <esp_random.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -37,12 +36,22 @@
 
 namespace {
 
-constexpr char kPairKey[] = P1_PAIR_KEY;
-#ifdef P1_DESK_TEST
-static_assert(sizeof(kPairKey) == 33, "desk pair key must be 32 hex characters");
-#endif
 constexpr int8_t kPowerDbm = P1_TX_DBM;
 constexpr uint8_t kLockedStep = P1_LOCKED_STEP;
+
+char g_key_text[33]{};
+char g_profile[4]{};
+char g_step_text[4]{};
+constexpr char kKeyConfirm[] = "The transmitter must be reflashed with the new key.";
+p1cfg::ExtraSetting g_settings[] = {
+    {"LORA_KEY", "Pair key", p1cfg::CfgType::Str,
+     p1cfg::CFG_IN_API | p1cfg::CFG_SECRET | p1cfg::CFG_REBOOT, g_key_text, sizeof(g_key_text), "",
+     "LoRa", kKeyConfirm, p1lora::normalise_pair_key},
+    {"LORA_PROFILE", "Profile", p1cfg::CfgType::Str, p1cfg::CFG_IN_API | p1cfg::CFG_READONLY,
+     g_profile, sizeof(g_profile), "A", "LoRa", nullptr, nullptr},
+    {"LORA_STEP", "Step", p1cfg::CfgType::Str, p1cfg::CFG_IN_API | p1cfg::CFG_READONLY, g_step_text,
+     sizeof(g_step_text), "3", "LoRa", nullptr, nullptr},
+};
 constexpr int kLed = 25;
 constexpr int kButton = 4;
 constexpr int kRadioIrq = 26;
@@ -513,8 +522,11 @@ void source_begin(p1app::Product::OnTelegram on_telegram, p1app::Product::LogFn 
     uart.heap_before = static_cast<unsigned>(ESP.getFreeHeap());
     uart.heap_after = uart.heap_before;
     uart.rx_buf = 0;
+}
 
-    g_have_key = p1lora::parse_key(kPairKey, sizeof kPairKey - 1, g_key) == p1lora::KeyStatus::Ok;
+void start_radio()
+{
+    g_have_key = p1lora::parse_key(g_key_text, std::strlen(g_key_text), g_key) == p1lora::KeyStatus::Ok;
     if (!g_have_key) {
         if (g_log != nullptr) {
             g_log(p1log::Level::Info, "no pair key set");
@@ -536,6 +548,29 @@ void source_begin(p1app::Product::OnTelegram on_telegram, p1app::Product::LogFn 
     g_heard = xQueueCreateStatic(kQueueSlots, sizeof(Heard), g_heard_storage, &g_heard_buf);
     attachInterrupt(digitalPinToInterrupt(kRadioIrq), dio0_isr, RISING);
     xTaskCreateStatic(radio_task, "lora", sizeof(g_radio_stack), nullptr, 2, g_radio_stack, &g_radio_tcb);
+}
+
+bool after_settings()
+{
+    std::snprintf(g_profile, sizeof(g_profile), "A");
+    std::snprintf(g_step_text, sizeof(g_step_text), "%u", static_cast<unsigned>(kLockedStep));
+    bool generated = false;
+    if (g_key_text[0] == '\0') {
+        // The hardware generator is only a true random source while WiFi or
+        // Bluetooth is running, or while the bootloader entropy source is on.
+        // WiFi has not started yet, so enable that source for this read only.
+        bootloader_random_enable();
+        std::uint8_t rnd[16];
+        esp_fill_random(rnd, sizeof(rnd));
+        bootloader_random_disable();
+        p1lora::format_pair_key(rnd, g_key_text, sizeof(g_key_text));
+        generated = g_key_text[0] != '\0';
+        if (generated && g_log != nullptr) {
+            g_log(p1log::Level::Info, "pair key generated");
+        }
+    }
+    start_radio();
+    return generated;
 }
 
 void source_request(std::uint32_t, std::uint32_t, bool) {}
@@ -709,6 +744,13 @@ const p1app::Product kProduct = {
     dump_none,
     dump_none,
     serial_cmd,
+    "LoRa receiver",
+    "data/devices/lora_receiver/",
+    "https://github.com/plan-d-io/P1-firmware",
+    "LORA_KEY",
+    g_settings,
+    sizeof(g_settings) / sizeof(g_settings[0]),
+    after_settings,
 };
 
 }  // namespace

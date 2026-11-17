@@ -508,6 +508,45 @@ KeyStatus parse_key(const char* hex, std::size_t len, Key& out)
     return KeyStatus::Ok;
 }
 
+bool normalise_pair_key(char* value)
+{
+    if (value == nullptr) {
+        return false;
+    }
+    if (value[0] == '\0') {
+        return true;
+    }
+    if (std::strlen(value) != 32) {
+        return false;
+    }
+    for (std::size_t i = 0; i < 32; ++i) {
+        const char c = value[i];
+        if (c >= 'A' && c <= 'F') {
+            value[i] = static_cast<char>(c - 'A' + 'a');
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void format_pair_key(const std::uint8_t* rnd16, char* out, std::size_t cap)
+{
+    if (out == nullptr || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (rnd16 == nullptr || cap < 33) {
+        return;
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    for (std::size_t i = 0; i < 16; ++i) {
+        out[2 * i] = kHex[rnd16[i] >> 4];
+        out[2 * i + 1] = kHex[rnd16[i] & 0x0f];
+    }
+    out[32] = '\0';
+}
+
 std::size_t write_reading_plain(const Reading& reading, std::uint8_t* out, std::size_t cap)
 {
     const std::size_t n = plain_len(reading);

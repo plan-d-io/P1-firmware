@@ -102,6 +102,12 @@ struct Key {
 // is rejected. The AES key and the network ID are derived here.
 KeyStatus parse_key(const char* hex, std::size_t len, Key& out);
 
+// Empty is kept. 32 hex characters are stored in lower case. Anything else
+// is rejected. Used when the key is typed on the page or the serial console.
+bool normalise_pair_key(char* value);
+// 16 random bytes as 32 lower-case hex characters. cap must be at least 33.
+void format_pair_key(const std::uint8_t* rnd16, char* out, std::size_t cap);
+
 constexpr std::uint16_t kAbsent16 = 0xFFFF;
 constexpr std::uint32_t kAbsent32 = 0xFFFFFFFFu;
 constexpr std::uint8_t kFlagTariff2 = 0x01;

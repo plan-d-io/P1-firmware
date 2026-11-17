@@ -1,4 +1,6 @@
+#include <P1Config.h>
 #include <P1LoRa.h>
+#include <P1Mqtt.h>
 #include <from_telegram.h>
 #include <to_data.h>
 #include <P1DSMR.h>
@@ -11,6 +13,7 @@
 #include <iterator>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -467,25 +470,36 @@ void round_trip_one(const char* fixture)
                      back.current_l2.int_val());
         expect_fixed("i3", src.current_l3_present, src.current_l3.int_val(), back.current_l3_present,
                      back.current_l3.int_val());
-        // Phase power is only in the frame on a three-phase reading. A single-phase
-        // telegram can still carry L1 power; the frame leaves that slot absent.
+        // Three-phase power is carried per phase. A single-phase frame has no
+        // phase power, so L1 is filled from the total and L2/L3 stay absent.
         const auto carried16 = [&](const char* name, std::uint16_t raw, int scale, bool got_on,
                                    std::int32_t got) {
             const bool on = raw != p1lora::kAbsent16;
             expect_fixed(name, on, on ? static_cast<std::int32_t>(raw) * scale : 0, got_on, got);
         };
-        carried16("p1", reading.p_plus_w[0], 1, back.power_delivered_l1_present,
-                  back.power_delivered_l1.int_val());
-        carried16("p2", reading.p_plus_w[1], 1, back.power_delivered_l2_present,
-                  back.power_delivered_l2.int_val());
-        carried16("p3", reading.p_plus_w[2], 1, back.power_delivered_l3_present,
-                  back.power_delivered_l3.int_val());
-        carried16("q1", reading.p_minus_w[0], 1, back.power_returned_l1_present,
-                  back.power_returned_l1.int_val());
-        carried16("q2", reading.p_minus_w[1], 1, back.power_returned_l2_present,
-                  back.power_returned_l2.int_val());
-        carried16("q3", reading.p_minus_w[2], 1, back.power_returned_l3_present,
-                  back.power_returned_l3.int_val());
+        if (reading.three_phase) {
+            carried16("p1", reading.p_plus_w[0], 1, back.power_delivered_l1_present,
+                      back.power_delivered_l1.int_val());
+            carried16("p2", reading.p_plus_w[1], 1, back.power_delivered_l2_present,
+                      back.power_delivered_l2.int_val());
+            carried16("p3", reading.p_plus_w[2], 1, back.power_delivered_l3_present,
+                      back.power_delivered_l3.int_val());
+            carried16("q1", reading.p_minus_w[0], 1, back.power_returned_l1_present,
+                      back.power_returned_l1.int_val());
+            carried16("q2", reading.p_minus_w[1], 1, back.power_returned_l2_present,
+                      back.power_returned_l2.int_val());
+            carried16("q3", reading.p_minus_w[2], 1, back.power_returned_l3_present,
+                      back.power_returned_l3.int_val());
+        } else {
+            carried16("p1", reading.power_w, 1, back.power_delivered_l1_present,
+                      back.power_delivered_l1.int_val());
+            carried16("q1", reading.inject_w, 1, back.power_returned_l1_present,
+                      back.power_returned_l1.int_val());
+            TEST_ASSERT_FALSE(back.power_delivered_l2_present);
+            TEST_ASSERT_FALSE(back.power_delivered_l3_present);
+            TEST_ASSERT_FALSE(back.power_returned_l2_present);
+            TEST_ASSERT_FALSE(back.power_returned_l3_present);
+        }
 
         if (src.gas_delivered_be_present) {
             TEST_ASSERT_TRUE(back.gas_delivered_be_present);
@@ -521,6 +535,34 @@ void test_reading_round_trip()
     round_trip_one("belgian-3phase-fluvius.p1");
     round_trip_one("belgian-mbus-gas-water-spec.p1");
     round_trip_one("belgian-1phase-derived.p1");
+}
+
+void test_single_phase_clears_reused_data()
+{
+    p1dsmr::Data data;
+    p1lora::to_data(three_phase_reading(), data, nullptr, nullptr);
+    TEST_ASSERT_TRUE(data.power_delivered_l2_present);
+    TEST_ASSERT_TRUE(data.voltage_l3_present);
+
+    p1lora::Reading one;
+    one.three_phase = false;
+    one.power_w = 2300;
+    one.inject_w = 0;
+    one.v_dv[0] = 2300;
+    one.i_ca[0] = 1000;
+    p1lora::to_data(one, data, nullptr, nullptr);
+    TEST_ASSERT_TRUE(data.power_delivered_l1_present);
+    TEST_ASSERT_EQUAL_INT32(2300, data.power_delivered_l1.int_val());
+    TEST_ASSERT_TRUE(data.power_returned_l1_present);
+    TEST_ASSERT_EQUAL_INT32(0, data.power_returned_l1.int_val());
+    TEST_ASSERT_FALSE(data.power_delivered_l2_present);
+    TEST_ASSERT_FALSE(data.power_delivered_l3_present);
+    TEST_ASSERT_FALSE(data.power_returned_l2_present);
+    TEST_ASSERT_FALSE(data.power_returned_l3_present);
+    TEST_ASSERT_FALSE(data.voltage_l2_present);
+    TEST_ASSERT_FALSE(data.voltage_l3_present);
+    TEST_ASSERT_FALSE(data.current_l2_present);
+    TEST_ASSERT_FALSE(data.current_l3_present);
 }
 
 void test_duty()
@@ -795,6 +837,70 @@ void test_self_test()
     TEST_ASSERT_NULL(p1lora::crypto_self_test());
 }
 
+void test_pair_key_text_and_masking()
+{
+    const std::uint8_t rnd[16] = {0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11,
+                                  0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19};
+    char formatted[33];
+    p1lora::format_pair_key(rnd, formatted, sizeof(formatted));
+    TEST_ASSERT_EQUAL_UINT(32, std::strlen(formatted));
+    TEST_ASSERT_EQUAL_STRING("0a0b0c0d0e0f10111213141516171819", formatted);
+    for (const char c : std::string_view(formatted)) {
+        const bool lower = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        TEST_ASSERT_TRUE(lower);
+    }
+
+    char mixed[] = "0A0B0C0D0E0F10111213141516171819";
+    TEST_ASSERT_TRUE(p1lora::normalise_pair_key(mixed));
+    TEST_ASSERT_EQUAL_STRING(formatted, mixed);
+    char empty[] = "";
+    TEST_ASSERT_TRUE(p1lora::normalise_pair_key(empty));
+    char bad[] = "nope";
+    TEST_ASSERT_FALSE(p1lora::normalise_pair_key(bad));
+    char odd[] = "0a0b0c0d0e0f1011121314151617181g";
+    TEST_ASSERT_FALSE(p1lora::normalise_pair_key(odd));
+
+    char secret[33];
+    const p1cfg::ExtraSetting extra[] = {{
+        "LORA_KEY",
+        "Pair key",
+        p1cfg::CfgType::Str,
+        p1cfg::CFG_IN_API | p1cfg::CFG_SECRET | p1cfg::CFG_REBOOT,
+        secret,
+        sizeof(secret),
+        formatted,
+        "LoRa",
+        "The transmitter must be reflashed with the new key.",
+        p1lora::normalise_pair_key,
+    }};
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    TEST_ASSERT_TRUE(cfg.add_settings(extra, 1));
+    cfg.set_reveal_key("LORA_KEY");
+    cfg.load();
+
+    char json[p1cfg::kToJsonBufMin];
+    TEST_ASSERT_TRUE(cfg.to_json(json, sizeof(json)) > 0);
+    TEST_ASSERT_NULL(std::strstr(json, formatted));
+    TEST_ASSERT_NOT_NULL(std::strstr(json, "\"set\":true"));
+
+    char snap[4096];
+    TEST_ASSERT_TRUE(p1mqtt::config_snapshot(cfg, "P1AABBCC", "3.00", snap, sizeof(snap)) > 0);
+    TEST_ASSERT_NULL(std::strstr(snap, formatted));
+    TEST_ASSERT_NULL(std::strstr(snap, "LORA_KEY"));
+
+    char shown[40];
+    TEST_ASSERT_TRUE(cfg.reveal("LORA_KEY", shown, sizeof(shown)));
+    TEST_ASSERT_EQUAL_STRING(formatted, shown);
+    TEST_ASSERT_EQUAL(p1cfg::JsonStatus::Invalid, cfg.apply_json(R"({"LORA_KEY":"nope"})"));
+    TEST_ASSERT_EQUAL(p1cfg::JsonStatus::Ok,
+                      cfg.apply_json(R"({"LORA_KEY":"000102030405060708090A0B0C0D0E0F"})"));
+    TEST_ASSERT_TRUE(cfg.reveal("LORA_KEY", shown, sizeof(shown)));
+    TEST_ASSERT_EQUAL_STRING("000102030405060708090a0b0c0d0e0f", shown);
+    TEST_ASSERT_TRUE(cfg.to_json(json, sizeof(json)) > 0);
+    TEST_ASSERT_NULL(std::strstr(json, "000102030405060708090a0b0c0d0e0f"));
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -811,6 +917,7 @@ int main()
     RUN_TEST(test_rejections);
     RUN_TEST(test_converter);
     RUN_TEST(test_reading_round_trip);
+    RUN_TEST(test_single_phase_clears_reused_data);
     RUN_TEST(test_duty);
     RUN_TEST(test_power_clamp);
     RUN_TEST(test_duty_image);
@@ -820,5 +927,6 @@ int main()
     RUN_TEST(test_stale_gate);
     RUN_TEST(test_optionals);
     RUN_TEST(test_self_test);
+    RUN_TEST(test_pair_key_text_and_masking);
     return UNITY_END();
 }
