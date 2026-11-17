@@ -146,6 +146,7 @@ struct ScanCache {
 };
 
 struct StatusView {
+    const char* product = "";
     const char* device_id = "";
     const char* fw_ver = "";
     const char* ip = "";
@@ -177,6 +178,10 @@ struct StatusView {
     unsigned eid_interval = 0;
     unsigned eid_last_upload = 0;
     const char* eid_error = "";
+    // Extra status-page markup. Empty leaves the page as the dongle renders it.
+    const char* source_html = "";
+    // Plain text for /api/status. Omitted from the JSON when empty.
+    const char* source_text = "";
 };
 
 struct FieldReading {

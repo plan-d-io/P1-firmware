@@ -342,10 +342,14 @@ std::size_t render_status_page(const StatusView& v, char* out, std::size_t cap)
         src = out;
         return true;
     };
-    const bool ok = step("{{DEVICE_ID}}", v.device_id) && step("{{FW_VER}}", v.fw_ver) &&
-                    step("{{IP}}", v.ip) && step("{{UPTIME}}", v.uptime) &&
-                    step("{{HEAP}}", v.heap) && step("{{RSSI}}", v.rssi) &&
-                    step("{{MQTT}}", v.mqtt) && step("{{TELEGRAMS}}", v.telegrams);
+    // The title and the brand both carry the product name, and replace_one
+    // swaps a single occurrence.
+    const bool ok = step("{{PRODUCT}}", v.product) && step("{{PRODUCT}}", v.product) &&
+                    step("{{DEVICE_ID}}", v.device_id) &&
+                    step("{{FW_VER}}", v.fw_ver) && step("{{IP}}", v.ip) &&
+                    step("{{UPTIME}}", v.uptime) && step("{{HEAP}}", v.heap) &&
+                    step("{{RSSI}}", v.rssi) && step("{{MQTT}}", v.mqtt) &&
+                    step("{{TELEGRAMS}}", v.telegrams) && step("{{SOURCE}}", v.source_html);
     std::free(scratch);
     return ok ? std::strlen(out) : 0;
 }
@@ -408,7 +412,10 @@ std::size_t render_api_status(const StatusView& v, char* out, std::size_t cap)
         !put(",") || !put_str("eid_record", v.eid_record) || !put(",") ||
         !put_u("eid_interval", v.eid_interval) || !put(",") ||
         !put_u("eid_last_upload", v.eid_last_upload) || !put(",") ||
-        !put_str("eid_error", v.eid_error) || !put("}")) {
+        !put_str("eid_error", v.eid_error) ||
+        (v.source_text != nullptr && v.source_text[0] != '\0' &&
+         (!put(",") || !put_str("source", v.source_text))) ||
+        !put("}")) {
         return 0;
     }
     out[n] = '\0';
