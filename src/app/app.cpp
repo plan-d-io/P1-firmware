@@ -25,7 +25,6 @@
 #include <nvs_flash.h>
 #include <fcntl.h>
 #include <eid_keys_gen.h>
-#include <fw_version.h>
 #include "app.h"
 #if defined(P1_TEST_RX_DUMP)
 #include "rx_line_dump.h"
@@ -62,7 +61,8 @@ static constexpr LedRgb kLedGreen{0x00, 0x40, 0x00};
 static constexpr LedRgb kLedRed{0x40, 0x00, 0x00};
 static constexpr LedRgb kLedOff{0x00, 0x00, 0x00};
 static const p1app::Product* g_product = nullptr;
-// Display / integer version: include/fw_version.h — bump both together.
+// Version string and number come from the product. The dongle's pair lives in
+// include/fw_version.h and must still move together.
 
 static void request_reboot(const char* reason);
 static void perform_factory_reset();
@@ -82,7 +82,7 @@ static p1pub::Builder g_builder;
 static p1mqtt::Mqtt g_mqtt;
 static p1cfg::NvsBackend g_nvs;
 static p1cfg::NvsBackend g_legacy_nvs{"cofy-config"};
-static p1cfg::Store g_cfg{g_nvs, &g_legacy_nvs};
+static p1cfg::Store g_cfg{g_nvs, nullptr};
 static p1log::LittleFsStore g_fs;
 static bool g_syslog_publish(std::string_view topic, std::string_view payload, void* /*ctx*/)
 {
@@ -120,6 +120,8 @@ static char g_status_uptime[24]{};
 static char g_status_heap[16]{};
 static char g_status_rssi[12]{};
 static char g_status_tele[72]{};
+static char g_status_source[768]{};
+static char g_status_source_text[320]{};
 static char g_mqtt_err[48]{};
 static bool g_upd_checked = false;
 static bool g_upd_available = false;
@@ -395,7 +397,7 @@ static void start_sta()
         g_scan_started = false;
         g_scan.scanning = false;
     }
-    WiFi.setHostname(p1web::kApSsid);
+    WiFi.setHostname(g_product->ap_ssid);
     WiFi.setAutoReconnect(true);
     if (g_wifi_started) {
         WiFi.disconnect(false, false);
@@ -436,7 +438,8 @@ static void start_sta()
     close_gw_sock();
     g_gw_check = GwCheck::Idle;
     char msg[96];
-    std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", net.wifi_ssid, p1web::kApSsid);
+    std::snprintf(msg, sizeof(msg), "WiFi begin ssid=%s hostname=%s", net.wifi_ssid,
+                  g_product->ap_ssid);
     g_log.log(p1log::Level::Info, msg);
 }
 
@@ -447,14 +450,14 @@ static void start_ap()
     }
     // AP+STA so scans and later join attempts keep the setup network up.
     WiFi.mode(WIFI_AP_STA);
-    if (!WiFi.softAP(p1web::kApSsid)) {
+    if (!WiFi.softAP(g_product->ap_ssid)) {
         g_log.log(p1log::Level::Error, "SoftAP start failed");
         return;
     }
     g_ap_up = true;
     const IPAddress ip = WiFi.softAPIP();
     char msg[64];
-    std::snprintf(msg, sizeof(msg), "SoftAP %s %u.%u.%u.%u", p1web::kApSsid, ip[0], ip[1], ip[2],
+    std::snprintf(msg, sizeof(msg), "SoftAP %s %u.%u.%u.%u", g_product->ap_ssid, ip[0], ip[1], ip[2],
                   ip[3]);
     g_log.log(p1log::Level::Info, msg);
     const std::uint32_t host =
@@ -541,6 +544,34 @@ static p1app::Product::MeterSnap meter_now()
     return snap;
 }
 
+static void fill_source_status()
+{
+    g_status_source[0] = '\0';
+    g_status_source_text[0] = '\0';
+    if (g_product->status_lines == nullptr) {
+        return;
+    }
+    p1app::Product::StatusLine lines[8]{};
+    const std::size_t n = g_product->status_lines(lines, 8);
+    std::size_t html = 0;
+    std::size_t text = 0;
+    for (std::size_t i = 0; i < n && i < 8; ++i) {
+        char row[160];
+        const int w = std::snprintf(row, sizeof(row), "\n    <dt>%s</dt><dd>%s</dd>", lines[i].label,
+                                    lines[i].value);
+        if (w > 0 && html + static_cast<std::size_t>(w) < sizeof(g_status_source)) {
+            std::memcpy(g_status_source + html, row, static_cast<std::size_t>(w));
+            html += static_cast<std::size_t>(w);
+            g_status_source[html] = '\0';
+        }
+        const int t = std::snprintf(g_status_source_text + text, sizeof(g_status_source_text) - text,
+                                    "%s%s %s", text == 0 ? "" : "; ", lines[i].label, lines[i].value);
+        if (t > 0 && text + static_cast<std::size_t>(t) < sizeof(g_status_source_text)) {
+            text += static_cast<std::size_t>(t);
+        }
+    }
+}
+
 static void refresh_status_view()
 {
     IPAddress ip;
@@ -559,8 +590,10 @@ static void refresh_status_view()
     const p1app::Product::MeterSnap meter = meter_now();
     std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u skipped=%u",
                   meter.ok, meter.rejected, meter.skipped);
+    fill_source_status();
+    g_status_view.product = g_product->name;
     g_status_view.device_id = g_device_id;
-    g_status_view.fw_ver = p1fw::kFwVer;
+    g_status_view.fw_ver = g_product->fw_ver;
     g_status_view.ip = g_status_ip;
     g_status_view.uptime = g_status_uptime;
     g_status_view.heap = g_status_heap;
@@ -568,6 +601,8 @@ static void refresh_status_view()
     g_status_view.mqtt = mqtt_state_name(g_mqtt.state());
     g_status_view.mqtt_err = g_mqtt_err;
     g_status_view.telegrams = g_status_tele;
+    g_status_view.source_html = g_status_source;
+    g_status_view.source_text = g_status_source_text;
     g_status_view.wifi = (WiFi.status() == WL_CONNECTED);
     g_status_view.meter =
         (meter.ok > 0) && (millis() - meter.last_ms < p1led::kMeterStaleMs);
@@ -889,10 +924,10 @@ static void ensure_mdns()
     if (g_mdns_started || !g_got_ip) {
         return;
     }
-    if (MDNS.begin(p1web::kApSsid)) {
+    if (MDNS.begin(g_product->ap_ssid)) {
         g_mdns_started = true;
         char msg[48];
-        std::snprintf(msg, sizeof(msg), "mDNS %s.local", p1web::kApSsid);
+        std::snprintf(msg, sizeof(msg), "mDNS %s.local", g_product->ap_ssid);
         g_log.log(p1log::Level::Info, msg);
     }
 }
@@ -1020,7 +1055,7 @@ static void publish_config_snapshot()
         return;
     }
     const std::size_t n =
-        p1mqtt::config_snapshot(g_cfg, g_device_id, p1fw::kFwVer, g_json, sizeof(g_json));
+        p1mqtt::config_snapshot(g_cfg, g_device_id, g_product->fw_ver, g_json, sizeof(g_json));
     if (n == 0) {
         return;
     }
@@ -1062,7 +1097,7 @@ static void publish_diagnostics()
     std::snprintf(quoted, sizeof(quoted), "\"%u.%u.%u.%u\"", ip[0], ip[1], ip[2], ip[3]);
     publish_one_diag("ip", "IP", quoted);
 
-    std::snprintf(quoted, sizeof(quoted), "\"%s\"", p1fw::kFwVer);
+    std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_product->fw_ver);
     publish_one_diag("firmware", "Firmware", quoted);
 
     std::snprintf(quoted, sizeof(quoted), "\"%s\"", g_cfg.values().rel_chan);
@@ -1082,6 +1117,15 @@ static void publish_diagnostics()
     publish_one_diag("last_reset_reason_fw", "Last reset reason (firmware)", quoted);
 
     publish_one_diag("reboot", "Reboot", "\"off\"");
+
+    if (g_product->diagnostics == nullptr) {
+        return;
+    }
+    p1app::Product::DiagPoint points[8]{};
+    const std::size_t nd = g_product->diagnostics(points, 8);
+    for (std::size_t i = 0; i < nd && i < 8; ++i) {
+        publish_one_diag(points[i].id, points[i].name, points[i].value_json, points[i].unit);
+    }
 }
 
 static void led_write(const LedRgb& c)
@@ -1227,8 +1271,9 @@ static bool publish_ha_meter(std::uint64_t include_mask, std::uint64_t stub_mask
     if (p1pub::slug(g_cfg.values().ha_device, slug_id, sizeof(slug_id)) > 0 &&
         p1pub::device_discovery_topic(slug_id, topic, sizeof(topic)) > 0) {
         const std::size_t n =
-            p1pub::meter_discovery(g_cfg, p1fw::kFwVer, config_url, include_mask, stub_mask, buf,
-                                   p1pub::kDiscoveryCap);
+            p1pub::meter_discovery(g_cfg, g_product->fw_ver, config_url, include_mask, stub_mask, buf,
+                                   p1pub::kDiscoveryCap, g_product->ha_origin,
+                                   g_product->ha_meter_model);
         ok = publish_discovery_buf(topic, buf, n);
     }
     delete[] buf;
@@ -1253,8 +1298,19 @@ static bool publish_ha_debug()
     fill_ha_config_url(config_url, sizeof(config_url));
     bool ok = false;
     if (p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
-        const std::size_t n = p1pub::dongle_discovery(g_cfg, g_device_id, p1fw::kFwVer, config_url,
-                                                     buf, p1pub::kDiscoveryCap);
+        p1pub::DiagSpec extra[8]{};
+        p1app::Product::DiagPoint points[8]{};
+        const std::size_t nd =
+            g_product->diagnostics != nullptr ? g_product->diagnostics(points, 8) : 0;
+        for (std::size_t i = 0; i < nd && i < 8; ++i) {
+            extra[i].id = points[i].id;
+            extra[i].name = points[i].name;
+            extra[i].unit = points[i].unit;
+            extra[i].dev_class = points[i].dev_class;
+        }
+        const std::size_t n = p1pub::dongle_discovery(
+            g_cfg, g_device_id, g_product->fw_ver, config_url, buf, p1pub::kDiscoveryCap,
+            g_product->ha_origin, g_product->ha_debug_model, nd > 0 ? extra : nullptr, nd);
         ok = publish_discovery_buf(topic, buf, n);
     }
     delete[] buf;
@@ -1656,7 +1712,7 @@ static void eid_do_hello()
     char ip_text[16];
     std::snprintf(ip_text, sizeof(ip_text), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
     const std::size_t n = p1eid::hello_body(body, sizeof(body), g_cfg.values().eidclaim,
-                                            g_cfg.values().uuid, p1fw::kFwVer, ip_text);
+                                            g_cfg.values().uuid, g_product->fw_ver, ip_text);
     if (n == 0) {
         eid_set_error("hello body overflow");
         g_log.log(p1log::Level::Warn, "EnergieID: hello body overflow");
@@ -1927,7 +1983,7 @@ static bool ota_auto_should_install(unsigned found)
     }
     const unsigned failed = g_cfg.has_ota_failed() ? g_cfg.ota_failed_ver() : 0;
     const std::uint32_t elapsed = g_cfg.has_ota_failed() ? ota_fail_elapsed_s() : 0;
-    if (p1ota::should_install(found, p1fw::kFwVerNum, failed, true, elapsed)) {
+    if (p1ota::should_install(found, g_product->fw_ver_num, failed, true, elapsed)) {
         if (failed != 0 && found == failed) {
             char disp[16];
             p1ota::format_version(found, disp, sizeof(disp));
@@ -2112,11 +2168,11 @@ static bool ota_check_now()
     std::snprintf(g_upd_channel, sizeof(g_upd_channel), "%s", g_cfg.values().rel_chan);
     char found_disp[16];
     p1ota::format_version(found, found_disp, sizeof(found_disp));
-    std::snprintf(msg, sizeof(msg), "OTA running %s (%u), online %s (%u)", p1fw::kFwVer,
-                  p1fw::kFwVerNum, found_disp, found);
+    std::snprintf(msg, sizeof(msg), "OTA running %s (%u), online %s (%u)", g_product->fw_ver,
+                  g_product->fw_ver_num, found_disp, found);
     g_log.log(p1log::Level::Info, msg);
 
-    if (found > p1fw::kFwVerNum) {
+    if (found > g_product->fw_ver_num) {
         g_upd_available = true;
         newer = true;
         g_log.log(p1log::Level::Info, "OTA update available");
@@ -2620,6 +2676,10 @@ static void handle_line(char* line)
         return;
     }
     if (std::strcmp(line, "legacy") == 0) {
+        if (!g_product->legacy_nvs_import) {
+            Serial.println("legacy off");
+            return;
+        }
         g_legacy_nvs.begin(true);
         Serial.printf("legacy WIFI_SSID=%d MQTT_HOST=%d\n",
                       g_legacy_nvs.has("WIFI_SSID") ? 1 : 0,
@@ -2802,6 +2862,9 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info)
 void p1app::app_setup(const p1app::Product& product)
 {
     g_product = &product;
+    if (product.legacy_nvs_import) {
+        g_cfg.set_legacy(&g_legacy_nvs);
+    }
     Serial.begin(115200);
     // Busy red before any blocking WiFi / filesystem work.
     led_show_busy_red();
@@ -2946,7 +3009,7 @@ void p1app::app_setup(const p1app::Product& product)
     const char* part = (running != nullptr && running->label[0] != '\0') ? running->label : "?";
     char boot[112];
     std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u part=%s",
-                  p1fw::kFwVer, g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
+                  g_product->fw_ver, g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
                   uart.rx_buf, part);
     g_log.log(p1log::Level::Info, boot);
     char uart_heap[80];

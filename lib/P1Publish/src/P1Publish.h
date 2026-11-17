@@ -84,14 +84,28 @@ bool reading_text(const p1dsmr::Data& data, std::string_view id, char* value,
 std::uint64_t discovery_field_mask(const p1dsmr::Data& data, const p1cfg::Store& cfg);
 std::uint64_t enabled_field_mask(const p1cfg::Store& cfg);
 
+// Extra sensors on the debug device. The dongle passes none, and the payload
+// is then the same bytes as before these arguments existed.
+struct DiagSpec {
+    const char* id;
+    const char* name;
+    const char* unit;
+    const char* dev_class;
+};
+
 // include_mask: full components. stub_mask: {"p":"sensor"} only (entity removal).
 // config_url is the device configuration_url (http://<ip>).
+// origin and meter_model are the product's strings. The defaults are the dongle's.
 std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const char* config_url,
                             std::uint64_t include_mask, std::uint64_t stub_mask, char* out,
-                            std::size_t cap);
+                            std::size_t cap, const char* origin = kOriginName,
+                            const char* meter_model = kMeterModel);
 
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
-                             const char* config_url, char* out, std::size_t cap);
+                             const char* config_url, char* out, std::size_t cap,
+                             const char* origin = kOriginName,
+                             const char* debug_model = kDongleModel,
+                             const DiagSpec* extra = nullptr, std::size_t extra_n = 0);
 
 // Old per-entity config topics. Meter: 50 catalogue labels. Debug: 11 sensors
 // + reboot switch under both device ids, and homeassistant/device/<legacy id>

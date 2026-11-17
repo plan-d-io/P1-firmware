@@ -158,6 +158,7 @@ void test_status_render()
     v.rssi = "-66";
     v.mqtt = "Connected";
     v.telegrams = "ok=10 rejected=1 skipped=2";
+    v.product = "P1 dongle";
     char page[p1web::kHtmlBuf];
     TEST_ASSERT_TRUE(p1web::render_status_page(v, page, sizeof(page)) > 0);
     TEST_ASSERT_NOT_NULL(std::strstr(page, "P1AABBCC"));
@@ -165,6 +166,12 @@ void test_status_render()
     TEST_ASSERT_NOT_NULL(std::strstr(page, "192.0.2.10"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "Connected"));
     TEST_ASSERT_NOT_NULL(std::strstr(page, "ok=10 rejected=1 skipped=2"));
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "<title>P1 dongle status</title>"));
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "<p class=\"brand\">P1 dongle</p>"));
+    TEST_ASSERT_NULL(std::strstr(page, "{{"));
+    v.source_html = "\n    <dt>Link RSSI</dt><dd>-90 dBm</dd>";
+    TEST_ASSERT_TRUE(p1web::render_status_page(v, page, sizeof(page)) > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(page, "<dt>Link RSSI</dt><dd>-90 dBm</dd>"));
 }
 
 void test_api_status_json()
@@ -206,6 +213,10 @@ void test_api_status_json()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"has_skipped_telegram\":false"));
     TEST_ASSERT_NULL(std::strstr(buf, "password"));
     TEST_ASSERT_NULL(std::strstr(buf, "secret"));
+    TEST_ASSERT_NULL(std::strstr(buf, "\"source\""));
+    v.source_text = "RSSI -90 dBm";
+    TEST_ASSERT_TRUE(p1web::render_api_status(v, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"source\":\"RSSI -90 dBm\""));
 }
 
 void test_api_status_json_max()

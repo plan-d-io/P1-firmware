@@ -1475,12 +1475,12 @@ const char kStatusHtmlTpl[] = R"p1web(<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="10">
-<title>P1 dongle status</title>
+<title>{{PRODUCT}} status</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header>
-  <p class="brand">P1 dongle</p>
+  <p class="brand">{{PRODUCT}}</p>
   <h1>Status</h1>
   <p class="lede">Read-only facts for support. Page refreshes every 10 seconds. The configuration UI is at <a href="/">/</a>.</p>
 </header>
@@ -1493,7 +1493,7 @@ const char kStatusHtmlTpl[] = R"p1web(<!DOCTYPE html>
     <dt>Free heap</dt><dd>{{HEAP}}</dd>
     <dt>WiFi RSSI</dt><dd>{{RSSI}}</dd>
     <dt>MQTT</dt><dd>{{MQTT}}</dd>
-    <dt>Telegrams</dt><dd>{{TELEGRAMS}}</dd>
+    <dt>Telegrams</dt><dd>{{TELEGRAMS}}</dd>{{SOURCE}}
   </dl>
 </main>
 </body>

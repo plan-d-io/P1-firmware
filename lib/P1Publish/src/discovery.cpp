@@ -134,13 +134,14 @@ constexpr LiveDiag kLiveDiag[] = {
     {"reboot", "Reboot", true, nullptr},
 };
 
-bool write_origin(Wr& w, const char* fw_ver, bool& first)
+bool write_origin(Wr& w, const char* fw_ver, const char* origin, bool& first)
 {
     if (!wr_key(w, "origin", first) || !wr_char(w, '{')) {
         return false;
     }
     bool f = true;
-    if (!wr_key(w, "name", f) || !wr_json_str(w, kOriginName) || !wr_key(w, "sw_version", f) ||
+    if (!wr_key(w, "name", f) || !wr_json_str(w, origin != nullptr ? origin : "") ||
+        !wr_key(w, "sw_version", f) ||
         !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_key(w, "support_url", f) ||
         !wr_json_str(w, kSupportUrl) || !wr_char(w, '}')) {
         return false;
@@ -339,7 +340,7 @@ const char* ha_unit(const p1cfg::Field& field)
 
 std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const char* config_url,
                             std::uint64_t include_mask, std::uint64_t stub_mask, char* out,
-                            std::size_t cap)
+                            std::size_t cap, const char* origin, const char* meter_model)
 {
     if (out == nullptr || cap == 0) {
         return 0;
@@ -353,8 +354,9 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const c
     if (slug(cfg.values().ha_device, slug_id, sizeof(slug_id)) == 0) {
         return 0;
     }
-    if (!write_device(w, cfg.values().ha_device, slug_id, kMeterModel, fw_ver, config_url, first) ||
-        !write_origin(w, fw_ver, first)) {
+    if (!write_device(w, cfg.values().ha_device, slug_id,
+                      meter_model != nullptr ? meter_model : "", fw_ver, config_url, first) ||
+        !write_origin(w, fw_ver, origin, first)) {
         return 0;
     }
     char avail[kTopicMax];
@@ -394,7 +396,8 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const c
 }
 
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
-                             const char* config_url, char* out, std::size_t cap)
+                             const char* config_url, char* out, std::size_t cap, const char* origin,
+                             const char* debug_model, const DiagSpec* extra, std::size_t extra_n)
 {
     if (device_id == nullptr || device_id[0] == '\0' || out == nullptr || cap == 0) {
         return 0;
@@ -404,8 +407,9 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
         return 0;
     }
     bool first = true;
-    if (!write_device(w, device_id, device_id, kDongleModel, fw_ver, config_url, first) ||
-        !write_origin(w, fw_ver, first)) {
+    if (!write_device(w, device_id, device_id, debug_model != nullptr ? debug_model : "", fw_ver,
+                      config_url, first) ||
+        !write_origin(w, fw_ver, origin, first)) {
         return 0;
     }
     char avail[kTopicMax];
@@ -476,6 +480,57 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
         }
         if (!wr_char(w, '}')) {
             return 0;
+        }
+    }
+    if (extra != nullptr) {
+        for (std::size_t i = 0; i < extra_n; ++i) {
+            const DiagSpec& d = extra[i];
+            if (d.id == nullptr || d.id[0] == '\0' || d.name == nullptr) {
+                return 0;
+            }
+            char uid[kUniqueIdMax];
+            Wr uw{uid, sizeof(uid)};
+            wr_append(uw, device_id);
+            wr_char(uw, '_');
+            wr_append(uw, d.id);
+            if (finish(uw) == 0) {
+                return 0;
+            }
+            if (!wr_key(w, uid, cfirst) || !wr_char(w, '{')) {
+                return 0;
+            }
+            bool f = true;
+            if (!wr_key(w, "p", f) || !wr_json_str(w, "sensor") || !wr_key(w, "uniq_id", f) ||
+                !wr_json_str(w, uid) || !wr_key(w, "name", f) || !wr_json_str(w, d.name)) {
+                return 0;
+            }
+            char state[kTopicMax];
+            Wr sw{state, sizeof(state)};
+            wr_append(sw, "sys/devices/");
+            wr_append(sw, device_id);
+            wr_char(sw, '/');
+            wr_append(sw, d.id);
+            if (finish(sw) == 0) {
+                return 0;
+            }
+            if (!wr_key(w, "stat_t", f) || !wr_json_str(w, state) || !wr_key(w, "val_tpl", f) ||
+                !wr_json_str(w, "{{ value_json.value }}") || !wr_key(w, "ent_cat", f) ||
+                !wr_json_str(w, "diagnostic")) {
+                return 0;
+            }
+            if (d.unit != nullptr && d.unit[0] != '\0') {
+                if (!wr_key(w, "unit_of_meas", f) || !wr_json_str(w, d.unit)) {
+                    return 0;
+                }
+            }
+            if (d.dev_class != nullptr && d.dev_class[0] != '\0') {
+                if (!wr_key(w, "dev_cla", f) || !wr_json_str(w, d.dev_class)) {
+                    return 0;
+                }
+            }
+            if (!wr_char(w, '}')) {
+                return 0;
+            }
         }
     }
     if (!wr_append(w, "}}")) {

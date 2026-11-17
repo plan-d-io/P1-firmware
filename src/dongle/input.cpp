@@ -3,8 +3,10 @@
 
 #include <Arduino.h>
 #include <P1DSMR.h>
+#include <P1Publish.h>
 #include <P1Syslog.h>
 #include <P1Web.h>
+#include <fw_version.h>
 #include <esp32-hal-rgb-led.h>
 #include <p1_data_request.h>
 #include <driver/gpio.h>
@@ -334,6 +336,16 @@ static void meter(p1app::Product::MeterSnap& out)
     out.has_skipped = g_keep_skip.len > 0;
 }
 
+static std::size_t no_diagnostics(p1app::Product::DiagPoint*, std::size_t)
+{
+    return 0;
+}
+
+static std::size_t no_status_lines(p1app::Product::StatusLine*, std::size_t)
+{
+    return 0;
+}
+
 static bool serial_cmd(char* line)
 {
     if (std::memcmp(line, "hold ", 5) == 0) {
@@ -372,6 +384,14 @@ static const p1app::Product kProduct = {
     true,
     true,
     true,
+    p1web::kApSsid,
+    p1fw::kFwVer,
+    p1fw::kFwVerNum,
+    p1pub::kOriginName,
+    p1pub::kMeterModel,
+    p1pub::kDongleModel,
+    no_diagnostics,
+    no_status_lines,
     board_begin,
     led_write,
     button_down,

@@ -330,6 +330,10 @@ public:
 
     explicit Store(StoreBackend& backend, StoreBackend* legacy = nullptr);
 
+    // Call before load(). A null backend means this product never opens the
+    // legacy namespace.
+    void set_legacy(StoreBackend* legacy) { legacy_ = legacy; }
+
     void apply_defaults();
     void load();
     void save();

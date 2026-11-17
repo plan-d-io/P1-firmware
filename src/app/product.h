@@ -22,6 +22,32 @@ struct Product {
     bool ha_2x_migration;
     bool legacy_nvs_import;
 
+    // Setup AP, WiFi hostname and mDNS name. Dongle: "p1dongle".
+    const char* ap_ssid;
+    const char* fw_ver;
+    unsigned fw_ver_num;
+    const char* ha_origin;
+    const char* ha_meter_model;
+    const char* ha_debug_model;
+
+    // Extra debug-device sensors. The dongle returns 0.
+    struct DiagPoint {
+        const char* id;
+        const char* name;
+        const char* unit;
+        const char* dev_class;
+        const char* value_json;
+    };
+    std::size_t (*diagnostics)(DiagPoint* out, std::size_t cap);
+
+    // Extra status-page lines. The dongle returns 0 and keeps its UART fields
+    // in MeterSnap. A radio fills link facts here.
+    struct StatusLine {
+        char label[24];
+        char value[64];
+    };
+    std::size_t (*status_lines)(StatusLine* out, std::size_t cap);
+
     void (*board_begin)();
     void (*led_write)(std::uint8_t r, std::uint8_t g, std::uint8_t b);
     bool (*button_down)();
