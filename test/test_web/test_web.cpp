@@ -720,6 +720,12 @@ void test_substitute_ap_name()
     TEST_ASSERT_EQUAL_STRING("http://p1lora.local and 'p1lora'", out);
     TEST_ASSERT_EQUAL_UINT(std::strlen(out), changed);
     TEST_ASSERT_NULL(std::strstr(out, "p1dongle"));
+
+    char same_buf[] = "http://p1dongle.local and 'p1dongle'";
+    const std::size_t inplace =
+        p1web::substitute_ap_name(same_buf, sizeof(same_buf) - 1, "p1lora", same_buf, sizeof(same_buf));
+    TEST_ASSERT_EQUAL_STRING("http://p1lora.local and 'p1lora'", same_buf);
+    TEST_ASSERT_EQUAL_UINT(std::strlen(same_buf), inplace);
 }
 
 extern "C" void setUp() {}
