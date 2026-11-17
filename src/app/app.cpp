@@ -23,14 +23,10 @@
 #include <esp_system.h>
 #include <nvs.h>
 #include <nvs_flash.h>
-#include <esp32-hal-rgb-led.h>
 #include <fcntl.h>
 #include <eid_keys_gen.h>
 #include <fw_version.h>
-#include <p1_data_request.h>
-#include <driver/gpio.h>
-#include <soc/io_mux_reg.h>
-#include <soc/uart_reg.h>
+#include "app.h"
 #if defined(P1_TEST_RX_DUMP)
 #include "rx_line_dump.h"
 #endif
@@ -54,16 +50,7 @@ extern "C" bool verifyRollbackLater()
     return true;
 }
 
-// Pins from archive/P1-dongle/P1-dongle.ino:
-//   HWSERIAL.begin(115200, SERIAL_8N1, 21, 22);
-//   TRIGGER 25, HIGH for continuous telegrams.
-// Face button: M5Atom.h Button Btn = Button(39, true, 10) — GPIO 39, active low.
-static constexpr int kP1Rx = 21;
-static constexpr int kP1Tx = 22;
-static constexpr int kDataRequest = 25;
-static constexpr int kBtn = 39;
-// Single SK6812 on the Atom Lite (archive/P1-LoRa-receiver/ledControl.h).
-static constexpr int kLedPin = 27;
+// Board pins, the P1 UART and the data-request line live with the product.
 // ~25% brightness; blue kept at the legacy whitish-looking Atom value.
 struct LedRgb {
     std::uint8_t r;
@@ -74,10 +61,10 @@ static constexpr LedRgb kLedBlue{0x00, 0x00, 0x40};
 static constexpr LedRgb kLedGreen{0x00, 0x40, 0x00};
 static constexpr LedRgb kLedRed{0x40, 0x00, 0x00};
 static constexpr LedRgb kLedOff{0x00, 0x00, 0x00};
+static const p1app::Product* g_product = nullptr;
 // Display / integer version: include/fw_version.h — bump both together.
 
 static void request_reboot(const char* reason);
-static void service_data_request(bool force);
 static void perform_factory_reset();
 static void publish_config_snapshot();
 static void restart_mqtt();
@@ -91,8 +78,6 @@ static void write_ota_note(unsigned ver);
 #if defined(P1_TEST_RX_DUMP)
 static bool g_rx_dump_done = false;
 #endif
-static p1req::Line g_req;
-static p1dsmr::Reader g_reader;
 static p1pub::Builder g_builder;
 static p1mqtt::Mqtt g_mqtt;
 static p1cfg::NvsBackend g_nvs;
@@ -192,23 +177,7 @@ struct EidRuntime {
 };
 static EidRuntime g_eid{};
 
-static unsigned g_ok = 0;
-static unsigned g_rejected = 0;
-static unsigned g_skipped = 0;
-static bool g_tele_good_stretch = true;
-static std::uint32_t g_tele_summary_ms = 0;
-static unsigned g_win_ok = 0;
-static unsigned g_win_rej = 0;
-static unsigned g_win_skip = 0;
-static char g_tele_last_reason[p1dsmr::Reader::kReasonMax]{};
-static std::uint32_t g_last_telegram_ms = 0;
-static bool g_hold_p1 = false;  // desk: pause telegram handling without unplugging
-static volatile unsigned g_ovf = 0;
-static unsigned g_uart_heap_before = 0;
-static unsigned g_uart_heap_after = 0;
 static std::uint32_t g_loop_max_ms = 0;
-static volatile unsigned g_full = 0;
-static volatile unsigned g_frm = 0;
 static volatile bool g_got_ip = false;
 static std::atomic<int> g_disc_reason{0};
 static char g_wifi_fail[p1web::kWifiFailMax]{};
@@ -236,14 +205,6 @@ static std::uint32_t g_lan_reboot_at = 0;
 static p1web::UploadIo g_upload_io{};
 static p1web::TelegramIo g_telegram_io{};
 
-struct TelegramKeep {
-    char bytes[p1dsmr::Reader::kBufferSize]{};
-    std::size_t len = 0;
-    char reason[p1dsmr::Reader::kReasonMax]{};
-    char when[24]{};
-};
-static TelegramKeep g_keep_rej{};
-static TelegramKeep g_keep_skip{};
 static std::uint32_t g_last_pub_ms = 0;
 static std::uint32_t g_last_resolve_ms = 0;
 static char g_device_id[p1mqtt::kDeviceIdCap]{};
@@ -568,6 +529,18 @@ static void ensure_web_station()
     g_web.set_readings(&g_readings_view);
 }
 
+static void app_log(p1log::Level level, const char* msg)
+{
+    g_log.log(level, msg);
+}
+
+static p1app::Product::MeterSnap meter_now()
+{
+    p1app::Product::MeterSnap snap{};
+    g_product->meter(snap);
+    return snap;
+}
+
 static void refresh_status_view()
 {
     IPAddress ip;
@@ -583,8 +556,9 @@ static void refresh_status_view()
     std::snprintf(g_status_heap, sizeof(g_status_heap), "%u",
                   static_cast<unsigned>(ESP.getFreeHeap()));
     std::snprintf(g_status_rssi, sizeof(g_status_rssi), "%ld", static_cast<long>(WiFi.RSSI()));
-    std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u skipped=%u", g_ok,
-                  g_rejected, g_skipped);
+    const p1app::Product::MeterSnap meter = meter_now();
+    std::snprintf(g_status_tele, sizeof(g_status_tele), "ok=%u rejected=%u skipped=%u",
+                  meter.ok, meter.rejected, meter.skipped);
     g_status_view.device_id = g_device_id;
     g_status_view.fw_ver = p1fw::kFwVer;
     g_status_view.ip = g_status_ip;
@@ -596,14 +570,14 @@ static void refresh_status_view()
     g_status_view.telegrams = g_status_tele;
     g_status_view.wifi = (WiFi.status() == WL_CONNECTED);
     g_status_view.meter =
-        (g_ok > 0) && (millis() - g_last_telegram_ms < p1led::kMeterStaleMs);
+        (meter.ok > 0) && (millis() - meter.last_ms < p1led::kMeterStaleMs);
     g_status_view.ha_en = g_cfg.values().ha_en;
     g_status_view.mqtt_en = g_cfg.values().mqtt_en;
-    g_status_view.telegrams_ok = g_ok;
-    g_status_view.telegrams_rejected = g_rejected;
-    g_status_view.telegrams_skipped = g_skipped;
-    g_status_view.has_rejected_telegram = g_keep_rej.len > 0;
-    g_status_view.has_skipped_telegram = g_keep_skip.len > 0;
+    g_status_view.telegrams_ok = meter.ok;
+    g_status_view.telegrams_rejected = meter.rejected;
+    g_status_view.telegrams_skipped = meter.skipped;
+    g_status_view.has_rejected_telegram = meter.has_rejected;
+    g_status_view.has_skipped_telegram = meter.has_skipped;
     g_status_view.upd_checked = g_upd_checked;
     g_status_view.upd_available = g_upd_available;
     g_status_view.upd_found = g_upd_found;
@@ -700,7 +674,9 @@ static void handle_web_actions()
         request_reboot("Reboot requested from web UI");
     }
     if (act->ota_check) {
-        if (on_station_network()) {
+        if (!g_product->ota) {
+            act->ota_check = false;
+        } else if (on_station_network()) {
             act->ota_check = false;
             const bool newer = ota_check_now();
             g_last_ota_check_ms = millis();
@@ -711,7 +687,9 @@ static void handle_web_actions()
         }
     }
     if (act->ota_install) {
-        if (on_station_network()) {
+        if (!g_product->ota) {
+            act->ota_install = false;
+        } else if (on_station_network()) {
             act->ota_install = false;
             ota_install_now();
         }
@@ -882,7 +860,7 @@ static std::size_t fw_max_image()
 
 static void poll_button()
 {
-    const bool pressed = digitalRead(kBtn) == LOW;
+    const bool pressed = g_product->button_down();
     switch (g_btn.update(pressed, millis())) {
     case p1btn::Event::None:
         break;
@@ -1108,7 +1086,7 @@ static void publish_diagnostics()
 
 static void led_write(const LedRgb& c)
 {
-    rgbLedWrite(static_cast<std::uint8_t>(kLedPin), c.r, c.g, c.b);
+    g_product->led_write(c.r, c.g, c.b);
 }
 
 static void led_show_busy_red()
@@ -1148,10 +1126,11 @@ static void service_status_led()
     f.mqtt_connected = g_mqtt.state() == p1mqtt::Mqtt::State::Connected;
     f.mqtt_https_paused = g_mqtt_https_paused;
     f.fs_fault = g_fs_fault;
-    if (g_ok == 0) {
+    const p1app::Product::MeterSnap meter = meter_now();
+    if (meter.ok == 0) {
         f.ms_since_meter = now;
     } else {
-        f.ms_since_meter = now - g_last_telegram_ms;
+        f.ms_since_meter = now - meter.last_ms;
     }
     f.ms_mqtt_down = 0;
     if (f.mqtt_en && !f.mqtt_https_paused) {
@@ -1357,14 +1336,14 @@ static void ha_publish_current()
         return;
     }
     if (plan.debug) {
-        if (!g_cfg.ha_debug_migrated()) {
+        if (g_product->ha_2x_migration && !g_cfg.ha_debug_migrated()) {
             run_ha_debug_migration();
         } else if (!publish_ha_debug()) {
             return;
         }
     }
     if (plan.meter) {
-        if (!g_cfg.ha_meter_migrated()) {
+        if (g_product->ha_2x_migration && !g_cfg.ha_meter_migrated()) {
             run_ha_meter_migration();
         } else if (!publish_ha_meter(g_disc_mask, 0)) {
             return;
@@ -2358,7 +2337,7 @@ static void handle_inbound()
     }
 }
 
-static void on_telegram(const p1dsmr::Data& data);
+static void on_telegram(const p1dsmr::Data& data, std::string_view raw);
 
 static void snapshot_readings(const p1dsmr::Data& data)
 {
@@ -2376,144 +2355,16 @@ static void snapshot_readings(const p1dsmr::Data& data)
     g_eid.batch_ms = millis();
 }
 
-static void keep_telegram(TelegramKeep& dst, std::string_view raw, std::string_view reason)
-{
-    dst.len = (raw.size() < sizeof(dst.bytes)) ? raw.size() : sizeof(dst.bytes);
-    if (dst.len > 0 && raw.data() != nullptr) {
-        std::memcpy(dst.bytes, raw.data(), dst.len);
-    }
-    const std::size_t rn = (reason.size() < sizeof(dst.reason) - 1) ? reason.size()
-                                                                     : sizeof(dst.reason) - 1;
-    std::memcpy(dst.reason, reason.data(), rn);
-    dst.reason[rn] = '\0';
-    p1log::format_iso_utc(p1log::unix_now(), dst.when, sizeof(dst.when));
-}
 
-static p1web::TelegramDump dump_rejected()
+static void on_telegram(const p1dsmr::Data& data, std::string_view raw)
 {
-    if (g_keep_rej.len == 0) {
-        return {};
-    }
-    return {g_keep_rej.bytes, g_keep_rej.len, g_keep_rej.reason, g_keep_rej.when};
-}
-
-static p1web::TelegramDump dump_skipped()
-{
-    if (g_keep_skip.len == 0) {
-        return {};
-    }
-    return {g_keep_skip.bytes, g_keep_skip.len, g_keep_skip.reason, g_keep_skip.when};
-}
-
-static void set_tele_reason(std::string_view reason)
-{
-    const std::size_t n = (reason.size() < sizeof(g_tele_last_reason) - 1)
-                              ? reason.size()
-                              : sizeof(g_tele_last_reason) - 1;
-    std::memcpy(g_tele_last_reason, reason.data(), n);
-    g_tele_last_reason[n] = '\0';
-}
-
-static void note_tele_problem(const char* kind, std::string_view reason)
-{
-    set_tele_reason(reason);
-    if (!g_tele_good_stretch) {
-        return;
-    }
-    g_tele_good_stretch = false;
-    g_tele_summary_ms = millis();
-    char msg[192];
-    std::snprintf(msg, sizeof(msg), "%s: %.*s", kind, static_cast<int>(reason.size()),
-                  reason.data());
-    g_log.log(p1log::Level::Warn, msg);
-}
-
-static void service_telegram_log()
-{
-    if (g_tele_good_stretch) {
-        return;
-    }
-    const std::uint32_t now = millis();
-    if (static_cast<std::int32_t>(now - g_tele_summary_ms) < 60000) {
-        return;
-    }
-    g_tele_summary_ms = now;
-    if (g_win_rej == 0 && g_win_skip == 0) {
-        g_tele_good_stretch = true;
-        g_win_ok = 0;
-        return;
-    }
-    char last[44];
-    const std::size_t n = std::strlen(g_tele_last_reason);
-    const std::size_t cut = (n < sizeof(last) - 1) ? n : sizeof(last) - 1;
-    std::memcpy(last, g_tele_last_reason, cut);
-    last[cut] = '\0';
-    char msg[192];
-    std::snprintf(msg, sizeof(msg),
-                  "Telegrams last minute: ok=%u rejected=%u skipped lines=%u; last: %s; "
-                  "uart ovf=%u full=%u frm=%u",
-                  g_win_ok, g_win_rej, g_win_skip, last, static_cast<unsigned>(g_ovf),
-                  static_cast<unsigned>(g_full), static_cast<unsigned>(g_frm));
-    g_log.log(p1log::Level::Warn, msg);
-    {
-        char loopmsg[48];
-        std::snprintf(loopmsg, sizeof(loopmsg), "loop max=%u ms",
-                      static_cast<unsigned>(g_loop_max_ms));
-        g_log.log(p1log::Level::Debug, loopmsg);
-    }
-    g_win_ok = 0;
-    g_win_rej = 0;
-    g_win_skip = 0;
-}
-
-static void apply_uart_bytes(std::span<const std::uint8_t> bytes)
-{
-    const unsigned prev = g_ok + g_rejected;
-    const auto stats = g_reader.feed(bytes, on_telegram);
-    g_ok += static_cast<unsigned>(stats.ok);
-    g_rejected += static_cast<unsigned>(stats.rejected);
-    g_skipped += static_cast<unsigned>(stats.skipped);
-    g_win_ok += static_cast<unsigned>(stats.ok);
-    g_win_rej += static_cast<unsigned>(stats.rejected);
-    g_win_skip += static_cast<unsigned>(stats.skipped);
-    if (stats.skipped > 0) {
-        keep_telegram(g_keep_skip, g_reader.last_with_skip(), g_reader.last_skipped_line());
-        note_tele_problem("Telegram skipped line", g_reader.last_skipped_line());
-    }
-    if (stats.rejected > 0) {
-        keep_telegram(g_keep_rej, g_reader.last_rejected(), g_reader.last_reject_reason());
-        note_tele_problem("Telegram rejected", g_reader.last_reject_reason());
-    }
-
-    const unsigned now = g_ok + g_rejected;
-    if (now > prev) {
-        g_req.on_telegram(millis());
-    }
-    for (unsigned k = prev + 1; k <= now; ++k) {
-        if (k % 10 == 0) {
-            char msg[96];
-            std::snprintf(msg, sizeof(msg),
-                          "S ok=%u rejected=%u heap=%u ovf=%u full=%u frm=%u", g_ok, g_rejected,
-                          static_cast<unsigned>(ESP.getFreeHeap()),
-                          static_cast<unsigned>(g_ovf), static_cast<unsigned>(g_full),
-                          static_cast<unsigned>(g_frm));
-            g_log.log(p1log::Level::Debug, msg);
-        }
-    }
-}
-
-static void on_telegram(const p1dsmr::Data& data)
-{
-    if (g_hold_p1) {
-        return;
-    }
     if (g_cfg.has_ota_failed() && g_cfg.ota_fail_unix() == 0 && data.timestamp_present) {
         std::int64_t ts = 0;
         if (p1eid::dsmr_to_unix(data.timestamp, ts) && ts > 1577836800) {
             maybe_stamp_ota_fail_unix(static_cast<std::uint32_t>(ts));
         }
     }
-    g_last_telegram_ms = millis();
+    g_product->note_fresh(millis());
     snapshot_readings(data);
 
     if (g_cfg.values().ha_en) {
@@ -2543,7 +2394,6 @@ static void on_telegram(const p1dsmr::Data& data)
         const int tw =
             std::snprintf(topic, sizeof(topic), "%stelegram", g_cfg.values().mqtt_pfix);
         if (tw > 0 && static_cast<std::size_t>(tw) < sizeof(topic)) {
-            const std::string_view raw = g_reader.raw();
             if (!raw.empty()) {
                 g_mqtt.publish(topic, raw, false);
                 ++n;
@@ -2725,6 +2575,9 @@ static void handle_line(char* line)
     if (line[0] == '\0') {
         return;
     }
+    if (g_product->serial_cmd(line)) {
+        return;
+    }
     if (std::strcmp(line, "get") == 0) {
         const std::size_t n = g_cfg.to_json(g_json, sizeof(g_json));
         if (n > 0) {
@@ -2830,7 +2683,7 @@ static void handle_line(char* line)
         }
         return;
     }
-    if (std::strcmp(line, "eid badtoken") == 0) {
+    if (g_product->energieid && std::strcmp(line, "eid badtoken") == 0) {
         std::snprintf(g_eid.hello.authorization, sizeof(g_eid.hello.authorization), "bad");
         Serial.println("eid token spoiled");
         return;
@@ -2838,33 +2691,6 @@ static void handle_line(char* line)
     if (std::strcmp(line, "tap") == 0) {
         open_upload_window();
         Serial.println("upload window open");
-        return;
-    }
-    if (std::memcmp(line, "hold ", 5) == 0) {
-        // Desk helper: drop parsed telegrams so the meter indicator can go false
-        // without unplugging (DATA_REQUEST is ignored by some sources).
-        if (std::strcmp(line + 5, "on") == 0) {
-            g_hold_p1 = true;
-            Serial.println("hold on");
-        } else if (std::strcmp(line + 5, "off") == 0) {
-            g_hold_p1 = false;
-            Serial.println("hold off");
-        } else {
-            Serial.println("usage: hold on|off");
-        }
-        return;
-    }
-    if (std::memcmp(line, "req ", 4) == 0) {
-        // Desk helper: drop DATA_REQUEST to stop meter telegrams (Fluvius continuous mode).
-        if (std::strcmp(line + 4, "on") == 0) {
-            digitalWrite(kDataRequest, HIGH);
-            Serial.println("req on");
-        } else if (std::strcmp(line + 4, "off") == 0) {
-            digitalWrite(kDataRequest, LOW);
-            Serial.println("req off");
-        } else {
-            Serial.println("usage: req on|off");
-        }
         return;
     }
     if (std::memcmp(line, "syslog", 6) == 0) {
@@ -2972,73 +2798,17 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info)
     }
 }
 
-static void service_data_request(bool force)
-{
-    const auto& v = g_cfg.values();
-    static std::uint32_t applied_type = 0xFFFFFFFFu;
-    static std::uint32_t applied_int = 0xFFFFFFFFu;
-    if (force || v.trg_type != applied_type || v.trg_int != applied_int) {
-        g_req.configure(v.trg_type, v.trg_int, millis());
-        applied_type = v.trg_type;
-        applied_int = v.trg_int;
-    }
-    g_req.tick(millis());
-    digitalWrite(kDataRequest, g_req.high ? HIGH : LOW);
-}
 
-// Increments only — this runs on uart_event_task (~2 KB stack).
-static void on_uart_err(hardwareSerial_error_t err)
+void p1app::app_setup(const p1app::Product& product)
 {
-    switch (err) {
-    case UART_FIFO_OVF_ERROR:
-        g_ovf = g_ovf + 1;
-        break;
-    case UART_BUFFER_FULL_ERROR:
-        g_full = g_full + 1;
-        break;
-    case UART_FRAME_ERROR:
-        g_frm = g_frm + 1;
-        break;
-    default:
-        break;
-    }
-}
-
-void setup()
-{
+    g_product = &product;
     Serial.begin(115200);
     // Busy red before any blocking WiFi / filesystem work.
     led_show_busy_red();
 
-    pinMode(kDataRequest, OUTPUT);
-    // GPIO 39 is input-only on ESP32-PICO-D4 — no internal pull-up. The Atom
-    // board provides an external pull-up; pressed = LOW (M5Atom Button invert).
-    pinMode(kBtn, INPUT);
-
-    g_uart_heap_before = static_cast<unsigned>(ESP.getFreeHeap());
-#if defined(P1_TEST_OLD_UART)
-    const size_t rx = Serial1.setRxBufferSize(1024);
-#else
-    const size_t rx = Serial1.setRxBufferSize(p1dsmr::Reader::kBufferSize);
-#endif
-    g_uart_heap_after = static_cast<unsigned>(ESP.getFreeHeap());
-    Serial1.begin(115200, SERIAL_8N1, kP1Rx, kP1Tx);
-    Serial1.onReceiveError(on_uart_err);
-    // Match 2.23 (Arduino-esp32 2.0.14) on this chip: GPIO 21 as GPIO
-    // function with pull-up, UART1 clocked from APB at 115201 baud, RX
-    // timeout 3 symbols. Measured against a 2.0.14 sketch on the desk unit.
-    PIN_FUNC_SELECT(IO_MUX_GPIO21_REG, PIN_FUNC_GPIO);
-    PIN_INPUT_ENABLE(IO_MUX_GPIO21_REG);
-    gpio_pullup_en(static_cast<gpio_num_t>(kP1Rx));
-    gpio_pulldown_dis(static_cast<gpio_num_t>(kP1Rx));
-    REG_SET_BIT(UART_CONF0_REG(1), UART_TICK_REF_ALWAYS_ON);
-    {
-        const std::uint32_t clk = static_cast<std::uint32_t>(getApbFrequency());
-        const std::uint32_t clkdiv = (clk << 4) / 115200u;
-        REG_WRITE(UART_CLKDIV_REG(1),
-                  ((clkdiv & 0xFu) << UART_CLKDIV_FRAG_S) | (clkdiv >> 4));
-    }
-    Serial1.setRxTimeout(3);
+    p1app::Product::UartBringup uart{};
+    g_product->board_begin();
+    g_product->source_begin(on_telegram, app_log, &g_loop_max_ms, uart);
 
     std::uint8_t mac[6]{};
     read_mac(mac);
@@ -3086,7 +2856,7 @@ void setup()
     }
 
     g_cfg.load();
-    service_data_request(true);
+    g_product->source_request(g_cfg.values().trg_type, g_cfg.values().trg_int, true);
     {
         char msg[72];
         std::snprintf(msg, sizeof(msg), "Telegram request type=%u interval=%u s",
@@ -3094,7 +2864,7 @@ void setup()
                       static_cast<unsigned>(g_cfg.values().trg_int));
         g_log.log(p1log::Level::Info, msg);
     }
-    if (g_cfg.legacy_import_ran()) {
+    if (g_product->legacy_nvs_import && g_cfg.legacy_import_ran()) {
         p1cfg::write_legacy_update_reason(g_cfg.values().last_reset,
                                           sizeof(g_cfg.values().last_reset), "");
         for (std::size_t i = 0; i < g_cfg.legacy_skip_count(); ++i) {
@@ -3177,11 +2947,11 @@ void setup()
     char boot[112];
     std::snprintf(boot, sizeof(boot), "Boot fw=%s id=%s reboots=%lu uart_rx=%u part=%s",
                   p1fw::kFwVer, g_device_id, static_cast<unsigned long>(g_cfg.values().reboots),
-                  static_cast<unsigned>(rx), part);
+                  uart.rx_buf, part);
     g_log.log(p1log::Level::Info, boot);
     char uart_heap[80];
     std::snprintf(uart_heap, sizeof(uart_heap), "UART heap before=%u after=%u",
-                  g_uart_heap_before, g_uart_heap_after);
+                  uart.heap_before, uart.heap_after);
     g_log.log(p1log::Level::Info, uart_heap);
     char reasons[128];
     std::snprintf(reasons, sizeof(reasons), "Reset hw=%s fw=%s", g_hw_reset_reason,
@@ -3197,8 +2967,8 @@ void setup()
     g_upload_io.end = &fw_end;
     g_upload_io.abort = &fw_abort;
     g_upload_io.max_image = &fw_max_image;
-    g_telegram_io.rejected = &dump_rejected;
-    g_telegram_io.skipped = &dump_skipped;
+    g_telegram_io.rejected = g_product->dump_rejected;
+    g_telegram_io.skipped = g_product->dump_skipped;
     g_web.set_upload_io(&g_upload_io);
     g_web.set_telegram_io(&g_telegram_io);
     g_web.set_store(&g_cfg);
@@ -3207,7 +2977,7 @@ void setup()
     start_wifi();
 }
 
-void loop()
+void p1app::app_loop()
 {
 #ifdef P1_TEST_LOOP_DELAY_MS
     delay(static_cast<std::uint32_t>(P1_TEST_LOOP_DELAY_MS));
@@ -3277,7 +3047,7 @@ void loop()
     }
     {
         static unsigned last_ovf = 0;
-        const unsigned now_ovf = static_cast<unsigned>(g_ovf);
+        const unsigned now_ovf = meter_now().ovf;
         if (now_ovf != last_ovf) {
             Serial.printf("RXDUMP ovf %u -> %u at %u ms\n", last_ovf, now_ovf,
                           static_cast<unsigned>(millis()));
@@ -3327,13 +3097,17 @@ void loop()
         }
     }
 
-    service_data_request(false);
+    g_product->source_request(g_cfg.values().trg_type, g_cfg.values().trg_int, false);
 
     handle_inbound();
     reconcile_ha_discovery();
 
-    ota_on_schedule();
-    service_eid();
+    if (g_product->ota) {
+        ota_on_schedule();
+    }
+    if (g_product->energieid) {
+        service_eid();
+    }
 
     if (mqtt_up) {
         g_log.replay_undelivered();
@@ -3344,31 +3118,7 @@ void loop()
         g_last_diag_ms = millis();
     }
 
-#if defined(P1_TEST_OLD_UART)
-    std::uint8_t buf[64];
-    const size_t n = Serial1.read(buf, sizeof(buf));
-    if (n > 0) {
-        apply_uart_bytes(std::span<const std::uint8_t>(buf, n));
-    }
-#else
-    std::uint8_t buf[256];
-    std::size_t drained = 0;
-    while (Serial1.available() > 0 && drained < p1dsmr::Reader::kBufferSize) {
-        std::size_t want = sizeof(buf);
-        const std::size_t room = p1dsmr::Reader::kBufferSize - drained;
-        if (want > room) {
-            want = room;
-        }
-        const size_t n = Serial1.read(buf, want);
-        if (n == 0) {
-            break;
-        }
-        drained += n;
-        apply_uart_bytes(std::span<const std::uint8_t>(buf, n));
-    }
-#endif
-
-    service_telegram_log();
+    g_product->source_drain();
 
     const std::uint32_t loop_dt = millis() - loop_t0;
     if (loop_dt > g_loop_max_ms) {
