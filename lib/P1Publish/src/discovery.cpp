@@ -134,7 +134,8 @@ constexpr LiveDiag kLiveDiag[] = {
     {"reboot", "Reboot", true, nullptr},
 };
 
-bool write_origin(Wr& w, const char* fw_ver, const char* origin, bool& first)
+bool write_origin(Wr& w, const char* fw_ver, const char* origin, bool& first,
+                  const char* support_url)
 {
     if (!wr_key(w, "origin", first) || !wr_char(w, '{')) {
         return false;
@@ -143,7 +144,7 @@ bool write_origin(Wr& w, const char* fw_ver, const char* origin, bool& first)
     if (!wr_key(w, "name", f) || !wr_json_str(w, origin != nullptr ? origin : "") ||
         !wr_key(w, "sw_version", f) ||
         !wr_json_str(w, fw_ver != nullptr ? fw_ver : "") || !wr_key(w, "support_url", f) ||
-        !wr_json_str(w, kSupportUrl) || !wr_char(w, '}')) {
+        !wr_json_str(w, support_url != nullptr ? support_url : kSupportUrl) || !wr_char(w, '}')) {
         return false;
     }
     return true;
@@ -340,7 +341,8 @@ const char* ha_unit(const p1cfg::Field& field)
 
 std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const char* config_url,
                             std::uint64_t include_mask, std::uint64_t stub_mask, char* out,
-                            std::size_t cap, const char* origin, const char* meter_model)
+                            std::size_t cap, const char* origin, const char* meter_model,
+                            const char* support_url)
 {
     if (out == nullptr || cap == 0) {
         return 0;
@@ -356,7 +358,7 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const c
     }
     if (!write_device(w, cfg.values().ha_device, slug_id,
                       meter_model != nullptr ? meter_model : "", fw_ver, config_url, first) ||
-        !write_origin(w, fw_ver, origin, first)) {
+        !write_origin(w, fw_ver, origin, first, support_url)) {
         return 0;
     }
     char avail[kTopicMax];
@@ -397,7 +399,8 @@ std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const c
 
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
                              const char* config_url, char* out, std::size_t cap, const char* origin,
-                             const char* debug_model, const DiagSpec* extra, std::size_t extra_n)
+                             const char* debug_model, const DiagSpec* extra, std::size_t extra_n,
+                             const char* support_url)
 {
     if (device_id == nullptr || device_id[0] == '\0' || out == nullptr || cap == 0) {
         return 0;
@@ -409,7 +412,7 @@ std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, con
     bool first = true;
     if (!write_device(w, device_id, device_id, debug_model != nullptr ? debug_model : "", fw_ver,
                       config_url, first) ||
-        !write_origin(w, fw_ver, origin, first)) {
+        !write_origin(w, fw_ver, origin, first, support_url)) {
         return 0;
     }
     char avail[kTopicMax];

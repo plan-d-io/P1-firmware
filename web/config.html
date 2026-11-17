@@ -53,6 +53,9 @@
     <button type="button" class="collapsible">Advanced settings</button>
     <div class="content" data-section="dongle"></div>
 
+    <button type="button" class="collapsible" id="productSectionBtn" style="display:none"></button>
+    <div class="content" id="productSection" data-section="product" style="display:none"></div>
+
     <button type="submit" class="submit">Save</button>
   </form>
   <button type="button" class="log-link" id="logBtn">View log</button>
@@ -258,12 +261,42 @@
         html: EYE
       });
       btn.addEventListener("click", function () {
-        var show = input.type === "password";
-        input.type = show ? "text" : "password";
-        btn.innerHTML = show ? EYE_OFF : EYE;
-        var lab = show ? "Hide password" : "Show password";
-        btn.setAttribute("title", lab);
-        btn.setAttribute("aria-label", lab);
+        function paint(show) {
+          input.type = show ? "text" : "password";
+          btn.innerHTML = show ? EYE_OFF : EYE;
+          var lab = show ? "Hide password" : "Show password";
+          btn.setAttribute("title", lab);
+          btn.setAttribute("aria-label", lab);
+        }
+        if (input.dataset.reveal === "1") {
+          if (input.type === "text") {
+            paint(false);
+            var line = document.getElementById("loraKeyLine");
+            var copy = document.getElementById("loraKeyCopy");
+            if (line) line.style.display = "none";
+            if (copy) copy.style.display = "none";
+            return;
+          }
+          fetch("/api/reveal?key=" + encodeURIComponent(key)).then(function (r) {
+            if (!r.ok) return null;
+            return r.json();
+          }).then(function (body) {
+            if (!body || typeof body.value !== "string") return;
+            input.value = body.value;
+            paint(true);
+            if (key === "LORA_KEY") {
+              var line = document.getElementById("loraKeyLine");
+              var copy = document.getElementById("loraKeyCopy");
+              if (line) {
+                line.value = '#define P1_PAIR_KEY "' + body.value + '"';
+                line.style.display = "";
+              }
+              if (copy) copy.style.display = "";
+            }
+          }).catch(function () {});
+          return;
+        }
+        paint(input.type === "password");
       });
       row.appendChild(input);
       row.appendChild(btn);
@@ -514,6 +547,82 @@
     updateWifiPassHint();
     syncUpdActionAvailability();
     syncTrgInterval();
+    renderProduct(cfg);
+  }
+
+  var productKeys = [];
+
+  function renderProduct(cfg) {
+    var btn = document.getElementById("productSectionBtn");
+    var host = document.getElementById("productSection");
+    if (!btn || !host) return;
+    host.innerHTML = "";
+    productKeys = [];
+    var title = "";
+    Object.keys(cfg).forEach(function (key) {
+      var entry = cfg[key];
+      if (!entry || typeof entry !== "object" || !entry.section) return;
+      if (!title) title = String(entry.section);
+      productKeys.push(key);
+      var flags = entry.flags || 0;
+      var secret = (flags & 2) !== 0;
+      var readonly = (flags & 16) !== 0;
+      var field = buildField([key, entry.label || key, secret ? "password" : "text"]);
+      host.appendChild(field);
+      var input = document.getElementById(key);
+      if (!input) return;
+      if (readonly) {
+        input.readOnly = true;
+        var shown = entry.value == null ? "" : String(entry.value);
+        input.value = shown;
+        initial[key] = shown;
+        return;
+      }
+      if (secret) {
+        secretsSet[key] = !!entry.set;
+        initial[key] = null;
+        input.value = "";
+        input.dataset.changed = "0";
+        input.dataset.reveal = "1";
+        input.placeholder = entry.set ? "Leave blank to keep current" : "No value stored";
+        if (entry.confirm) input.dataset.confirm = String(entry.confirm);
+        if (key === "LORA_KEY") {
+          var line = el("input", {
+            type: "text",
+            id: "loraKeyLine",
+            readonly: "readonly",
+            style: "display:none"
+          });
+          var copy = el("button", {
+            type: "button",
+            class: "submit",
+            id: "loraKeyCopy",
+            text: "Copy",
+            style: "display:none"
+          });
+          copy.addEventListener("click", function () {
+            line.focus();
+            line.select();
+            try {
+              document.execCommand("copy");
+            } catch (e) {}
+          });
+          host.appendChild(line);
+          host.appendChild(copy);
+        }
+        return;
+      }
+      var plain = entry.value == null ? "" : String(entry.value);
+      input.value = plain;
+      initial[key] = plain;
+    });
+    if (!productKeys.length) {
+      btn.style.display = "none";
+      host.style.display = "none";
+      return;
+    }
+    btn.textContent = title;
+    btn.style.display = "";
   }
 
   function clearErrors() {
@@ -569,6 +678,21 @@
         var s = input.value;
         if (s !== initial[key]) { body[key] = s; any = true; }
       });
+    });
+    productKeys.forEach(function (key) {
+      var input = document.getElementById(key);
+      if (!input || input.readOnly) return;
+      if (input.dataset.secret === "1") {
+        if (input.dataset.changed === "1" && input.value !== "") {
+          body[key] = input.value;
+          any = true;
+        }
+        return;
+      }
+      if (input.value !== initial[key]) {
+        body[key] = input.value;
+        any = true;
+      }
     });
     return any ? body : null;
   }
@@ -768,6 +892,15 @@
       document.getElementById("infoMessage").style.color = "#5aaf6f";
       return;
     }
+    var productReboot = false;
+    if (cfgBody) {
+      productKeys.forEach(function (key) {
+        if (!Object.prototype.hasOwnProperty.call(cfgBody, key)) return;
+        var input = document.getElementById(key);
+        if (input && input.dataset.confirm) productReboot = input.dataset.confirm;
+      });
+    }
+    if (productReboot && !window.confirm(productReboot)) return;
     function handleErr(res) {
       document.getElementById("infoMessage").style.color = "#ff8a8a";
       var m = /^(Parse|UnknownKey|WrongType|Invalid):(.+)$/.exec(res.text.trim());
@@ -814,6 +947,10 @@
         }
         return postFields().then(function (ok) {
           if (ok === null) return;
+          if (productReboot) {
+            window.location.href = "/rebooting";
+            return;
+          }
           finishOk();
           return fetch("/config").then(function (r) { return r.json(); }).then(applyValues);
         });

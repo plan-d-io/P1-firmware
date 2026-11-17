@@ -11,11 +11,14 @@
 #include <esp_http_server.h>
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
+#include <miniz.h>
 
 namespace p1web {
 namespace {
 
 Server* g_server = nullptr;
+
+esp_err_t send_html(httpd_req_t* req, const char* html, std::size_t len);
 
 esp_err_t send_gzip(httpd_req_t* req, const char* type, const std::uint8_t* data, std::size_t len)
 {
@@ -23,6 +26,108 @@ esp_err_t send_gzip(httpd_req_t* req, const char* type, const std::uint8_t* data
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Cache-Control", kCacheControl);
     return httpd_resp_send(req, reinterpret_cast<const char*>(data), static_cast<ssize_t>(len));
+}
+
+bool gunzip_page(const std::uint8_t* src, std::size_t src_len, char* dst, std::size_t dst_cap,
+                 std::size_t* out_len)
+{
+    if (src == nullptr || dst == nullptr || dst_cap < 2 || out_len == nullptr || src_len < 18 ||
+        src[0] != 0x1f || src[1] != 0x8b || src[2] != 8) {
+        return false;
+    }
+    std::size_t off = 10;
+    const std::uint8_t flags = src[3];
+    if ((flags & 0x04) != 0) {
+        if (off + 2 > src_len) {
+            return false;
+        }
+        const std::uint16_t extra = static_cast<std::uint16_t>(src[off] | (src[off + 1] << 8));
+        off += static_cast<std::size_t>(2) + extra;
+    }
+    if ((flags & 0x08) != 0) {
+        while (off < src_len && src[off++] != 0) {
+        }
+    }
+    if ((flags & 0x10) != 0) {
+        while (off < src_len && src[off++] != 0) {
+        }
+    }
+    if ((flags & 0x02) != 0) {
+        off += 2;
+    }
+    if (off + 8 >= src_len) {
+        return false;
+    }
+    const std::size_t n = tinfl_decompress_mem_to_mem(
+        dst, dst_cap - 1, src + off, src_len - off - 8, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    if (n == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+        return false;
+    }
+    dst[n] = '\0';
+    *out_len = n;
+    return true;
+}
+
+bool query_param(const char* uri, const char* name, char* out, std::size_t cap)
+{
+    if (uri == nullptr || name == nullptr || out == nullptr || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    const char* q = std::strchr(uri, '?');
+    if (q == nullptr) {
+        return false;
+    }
+    ++q;
+    const std::size_t nlen = std::strlen(name);
+    while (*q != '\0') {
+        if (std::strncmp(q, name, nlen) == 0 && q[nlen] == '=') {
+            q += nlen + 1;
+            std::size_t i = 0;
+            while (*q != '\0' && *q != '&' && i + 1 < cap) {
+                out[i++] = *q++;
+            }
+            out[i] = '\0';
+            return i > 0;
+        }
+        const char* amp = std::strchr(q, '&');
+        if (amp == nullptr) {
+            return false;
+        }
+        q = amp + 1;
+    }
+    return false;
+}
+
+esp_err_t send_product_html(httpd_req_t* req, const std::uint8_t* gz, std::size_t gz_len,
+                            std::size_t raw_len)
+{
+    const char* ap = g_server != nullptr ? g_server->page_ap() : kApSsid;
+    if (ap == nullptr || std::strcmp(ap, kApSsid) == 0) {
+        return send_gzip(req, "text/html", gz, gz_len);
+    }
+    char* raw = static_cast<char*>(malloc(raw_len + 1));
+    char* page = static_cast<char*>(malloc(raw_len + 64));
+    if (raw == nullptr || page == nullptr) {
+        free(raw);
+        free(page);
+        return send_gzip(req, "text/html", gz, gz_len);
+    }
+    std::size_t n = 0;
+    if (!gunzip_page(gz, gz_len, raw, raw_len + 1, &n)) {
+        free(raw);
+        free(page);
+        return send_gzip(req, "text/html", gz, gz_len);
+    }
+    const std::size_t m = substitute_ap_name(raw, n, ap, page, raw_len + 64);
+    free(raw);
+    if (m == 0) {
+        free(page);
+        return send_gzip(req, "text/html", gz, gz_len);
+    }
+    const esp_err_t err = send_html(req, page, m);
+    free(page);
+    return err;
 }
 
 esp_err_t send_html(httpd_req_t* req, const char* html, std::size_t len)
@@ -208,9 +313,11 @@ esp_err_t dispatch(httpd_req_t* req)
     case Route::RedirectHome:
         return send_redirect_home(req);
     case Route::Rebooting:
-        return send_gzip(req, "text/html", assets::kRebootingHtmlGz, assets::kRebootingHtmlGzLen);
+        return send_product_html(req, assets::kRebootingHtmlGz, assets::kRebootingHtmlGzLen,
+                                 assets::kRebootingHtmlRawLen);
     case Route::ConfigPage:
-        return send_gzip(req, "text/html", assets::kConfigHtmlGz, assets::kConfigHtmlGzLen);
+        return send_product_html(req, assets::kConfigHtmlGz, assets::kConfigHtmlGzLen,
+                                 assets::kConfigHtmlRawLen);
     case Route::Status: {
         char* page = static_cast<char*>(malloc(kHtmlBuf));
         if (page == nullptr) {
@@ -459,6 +566,32 @@ esp_err_t dispatch(httpd_req_t* req)
     }
     case Route::UpdateUpload:
         return handle_update_upload(req);
+    case Route::Reveal: {
+        p1cfg::Store* store = g_server->store_ptr();
+        char key[24];
+        char value[68];
+        if (store == nullptr || !query_param(req->uri, "key", key, sizeof(key)) ||
+            !store->reveal(key, value, sizeof(value))) {
+            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
+            return ESP_FAIL;
+        }
+        char json[160];
+        char escaped[140];
+        std::size_t e = 0;
+        for (const char* p = value; *p != '\0' && e + 2 < sizeof(escaped); ++p) {
+            if (*p == '"' || *p == '\\') {
+                escaped[e++] = '\\';
+            }
+            escaped[e++] = *p;
+        }
+        escaped[e] = '\0';
+        const int n = std::snprintf(json, sizeof(json), "{\"value\":\"%s\"}", escaped);
+        if (n <= 0 || static_cast<std::size_t>(n) >= sizeof(json)) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "reply");
+            return ESP_FAIL;
+        }
+        return send_json(req, json, static_cast<std::size_t>(n));
+    }
     case Route::ConfigGet: {
         p1cfg::Store* store = g_server->store_ptr();
         if (store == nullptr) {
@@ -542,7 +675,8 @@ esp_err_t dispatch(httpd_req_t* req)
 esp_err_t on_404(httpd_req_t* req, httpd_err_code_t /*err*/)
 {
     if (g_server != nullptr && g_server->mode_for_handlers() == Mode::Ap) {
-        return send_gzip(req, "text/html", assets::kConfigHtmlGz, assets::kConfigHtmlGzLen);
+        return send_product_html(req, assets::kConfigHtmlGz, assets::kConfigHtmlGzLen,
+                                 assets::kConfigHtmlRawLen);
     }
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
     return ESP_FAIL;
@@ -580,6 +714,16 @@ const ReadingsView* Server::readings_ptr() const
 p1cfg::Store* Server::store_ptr() const
 {
     return store_;
+}
+
+void Server::set_page_ap(const char* ap)
+{
+    page_ap_ = (ap != nullptr && ap[0] != '\0') ? ap : kApSsid;
+}
+
+const char* Server::page_ap() const
+{
+    return page_ap_ != nullptr ? page_ap_ : kApSsid;
 }
 
 p1log::FileStore* Server::files_ptr() const
@@ -632,6 +776,7 @@ bool Server::begin(Mode mode)
     register_one(handle, "/api/data", HTTP_GET);
     register_one(handle, "/api/fields", HTTP_GET);
     register_one(handle, "/api/networks", HTTP_GET);
+    register_one(handle, "/api/reveal", HTTP_GET);
     register_one(handle, "/fields", HTTP_POST);
     register_one(handle, "/syslog", HTTP_GET);
     register_one(handle, "/syslog0", HTTP_GET);

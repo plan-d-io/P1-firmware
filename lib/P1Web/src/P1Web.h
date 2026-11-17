@@ -78,6 +78,7 @@ enum class Route : std::uint8_t {
     UpdatePage,
     UpdateWindow,
     UpdateUpload,
+    Reveal,
     NotFound,
 };
 
@@ -286,6 +287,11 @@ std::size_t format_config_error(p1cfg::JsonStatus st, const char* bad_key, char*
 std::size_t replace_one(std::string_view tpl, std::string_view needle, std::string_view value,
                         char* out, std::size_t cap);
 
+// Replace every "p1dongle" in html with ap. The dongle name copies the text
+// through unchanged. Returns bytes written (excluding NUL), or 0 on overflow.
+std::size_t substitute_ap_name(const char* html, std::size_t len, const char* ap, char* out,
+                               std::size_t cap);
+
 #if defined(ARDUINO)
 class Server {
 public:
@@ -296,6 +302,7 @@ public:
     void set_status(const StatusView* status);
     void set_readings(const ReadingsView* readings);
     void set_store(p1cfg::Store* store);
+    void set_page_ap(const char* ap);
     void set_files(p1log::FileStore* files);
     void set_upload_io(const UploadIo* io);
     void set_telegram_io(const TelegramIo* io);
@@ -308,6 +315,7 @@ public:
     const StatusView* status_ptr() const;
     const ReadingsView* readings_ptr() const;
     p1cfg::Store* store_ptr() const;
+    const char* page_ap() const;
     p1log::FileStore* files_ptr() const;
     const UploadIo* upload_io_ptr() const;
     const TelegramIo* telegram_io_ptr() const;
@@ -320,6 +328,7 @@ private:
     const StatusView* status_ = nullptr;
     const ReadingsView* readings_ = nullptr;
     p1cfg::Store* store_ = nullptr;
+    const char* page_ap_ = nullptr;
     p1log::FileStore* files_ = nullptr;
     const UploadIo* upload_io_ = nullptr;
     const TelegramIo* telegram_io_ = nullptr;

@@ -115,6 +115,8 @@ void test_route_station()
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Post, "/config"));
     TEST_ASSERT_EQUAL(p1web::Route::ApiNetworks,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/networks"));
+    TEST_ASSERT_EQUAL(p1web::Route::Reveal,
+                      p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/api/reveal?key=X"));
     TEST_ASSERT_EQUAL(p1web::Route::RedirectHome,
                       p1web::resolve(p1web::Mode::Station, p1web::Method::Get, "/setup"));
     TEST_ASSERT_EQUAL(p1web::Route::RedirectHome,
@@ -704,6 +706,22 @@ void test_scan_sort()
     TEST_ASSERT_EQUAL_STRING("weak", c.entries[2].ssid);
 }
 
+void test_substitute_ap_name()
+{
+    const char html[] = "http://p1dongle.local and 'p1dongle'";
+    char out[80];
+    const std::size_t same =
+        p1web::substitute_ap_name(html, sizeof(html) - 1, "p1dongle", out, sizeof(out));
+    TEST_ASSERT_EQUAL_UINT(sizeof(html) - 1, same);
+    TEST_ASSERT_EQUAL_STRING(html, out);
+
+    const std::size_t changed =
+        p1web::substitute_ap_name(html, sizeof(html) - 1, "p1lora", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("http://p1lora.local and 'p1lora'", out);
+    TEST_ASSERT_EQUAL_UINT(std::strlen(out), changed);
+    TEST_ASSERT_NULL(std::strstr(out, "p1dongle"));
+}
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -734,5 +752,6 @@ int main()
     RUN_TEST(test_scan_sort);
     RUN_TEST(test_wifi_ssid_in_save);
     RUN_TEST(test_wifi_join_reason_text);
+    RUN_TEST(test_substitute_ap_name);
     return UNITY_END();
 }
