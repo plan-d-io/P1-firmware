@@ -3,6 +3,7 @@
 // What one product gives the shared application. The product fills a static
 // instance; the application keeps a pointer. Nothing here is allocated.
 
+#include <P1Config.h>
 #include <P1DSMR.h>
 #include <P1Syslog.h>
 #include <P1Web.h>
@@ -87,6 +88,20 @@ struct Product {
 
     // Product serial commands. True when the line was handled.
     bool (*serial_cmd)(char* line);
+
+    // Used when HA_DEVICE / MQTT_PFIX are absent. Dongle passes today's
+    // "Utility meter" and "data/devices/utility_meter/".
+    const char* ha_device_default;
+    const char* mqtt_pfix_default;
+    // Discovery support_url. Dongle passes the P1-dongle repository.
+    const char* support_url;
+    // The one secret the reveal endpoint may return. Null on the dongle.
+    const char* reveal_key;
+    const p1cfg::ExtraSetting* settings;
+    std::size_t settings_n;
+    // Called after settings are loaded. True asks the application to save.
+    // The dongle passes null.
+    bool (*after_settings)();
 };
 
 }  // namespace p1app

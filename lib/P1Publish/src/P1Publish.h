@@ -99,13 +99,15 @@ struct DiagSpec {
 std::size_t meter_discovery(const p1cfg::Store& cfg, const char* fw_ver, const char* config_url,
                             std::uint64_t include_mask, std::uint64_t stub_mask, char* out,
                             std::size_t cap, const char* origin = kOriginName,
-                            const char* meter_model = kMeterModel);
+                            const char* meter_model = kMeterModel,
+                            const char* support_url = kSupportUrl);
 
 std::size_t dongle_discovery(const p1cfg::Store& cfg, const char* device_id, const char* fw_ver,
                              const char* config_url, char* out, std::size_t cap,
                              const char* origin = kOriginName,
                              const char* debug_model = kDongleModel,
-                             const DiagSpec* extra = nullptr, std::size_t extra_n = 0);
+                             const DiagSpec* extra = nullptr, std::size_t extra_n = 0,
+                             const char* support_url = kSupportUrl);
 
 // Old per-entity config topics. Meter: 50 catalogue labels. Debug: 11 sensors
 // + reboot switch under both device ids, and homeassistant/device/<legacy id>

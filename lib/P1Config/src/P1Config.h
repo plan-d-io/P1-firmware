@@ -137,6 +137,26 @@ struct CfgEntry {
         const char* s;
     } def{};
     std::size_t str_cap = 0;
+    // Product settings only. Built-in rows leave these null, so /config
+    // for the dongle stays the same bytes.
+    const char* section = nullptr;
+    const char* confirm = nullptr;
+    bool (*accept)(char* value) = nullptr;
+};
+
+// A string setting a product adds to the same store. Registered before load().
+// key is an NVS key: 1–15 characters. buf is the product's own buffer.
+struct ExtraSetting {
+    const char* key;
+    const char* label;
+    CfgType type;
+    CfgFlags flags;
+    char* buf;
+    std::size_t cap;
+    const char* def;
+    const char* section;
+    const char* confirm;
+    bool (*accept)(char* value);
 };
 
 // ---------------------------------------------------------------------------
@@ -334,6 +354,17 @@ public:
     // legacy namespace.
     void set_legacy(StoreBackend* legacy) { legacy_ = legacy; }
 
+    // Call before load(). Replaces the built-in Home Assistant name and MQTT
+    // prefix used when those keys are absent, including after a factory reset.
+    void set_identity_defaults(const char* ha_device, const char* mqtt_pfix);
+    // Call before load(), once. String settings only. False if the list does
+    // not fit or a key is already in the catalogue.
+    bool add_settings(const ExtraSetting* list, std::size_t n);
+    // The one secret GET /api/reveal may return. Any other key, including
+    // other secrets, is refused.
+    void set_reveal_key(const char* key) { reveal_key_ = key; }
+    bool reveal(const char* key, char* out, std::size_t cap) const;
+
     void apply_defaults();
     void load();
     void save();
@@ -363,7 +394,7 @@ public:
     const Settings& values() const { return v_; }
 
     const CfgEntry* settings() const { return table_; }
-    std::size_t setting_count() const { return kSettingCount; }
+    std::size_t setting_count() const { return kSettingCount + extra_n_; }
     const CfgEntry* find_setting(std::string_view key) const;
 
     bool field_on(std::string_view id) const;
@@ -429,6 +460,7 @@ public:
 
 private:
     void bind_table();
+    void attach_extras();
     void load_one(const CfgEntry& e);
     void save_one(const CfgEntry& e);
     void migrate();
@@ -438,10 +470,30 @@ private:
     void import_trigger(StoreBackend& legacy);
     void skip_legacy(const char* key);
 
+    static constexpr std::size_t kExtraMax = 8;
+    static constexpr std::size_t kExtraStrMax = 68;
+
+    struct ExtraReg {
+        const char* key = nullptr;
+        const char* label = nullptr;
+        CfgFlags flags = 0;
+        char* buf = nullptr;
+        std::size_t cap = 0;
+        const char* def = nullptr;
+        const char* section = nullptr;
+        const char* confirm = nullptr;
+        bool (*accept)(char*) = nullptr;
+    };
+
     StoreBackend& backend_;
     StoreBackend* legacy_;
     Settings v_{};
-    CfgEntry table_[kSettingCount]{};
+    CfgEntry table_[kSettingCount + kExtraMax]{};
+    ExtraReg extras_[kExtraMax]{};
+    std::size_t extra_n_ = 0;
+    const char* reveal_key_ = nullptr;
+    const char* ha_device_def_ = "Utility meter";
+    const char* mqtt_pfix_def_ = "data/devices/utility_meter/";
     std::uint8_t field_over_[kMaxFields]{};  // 0 = default, 1 = on, 2 = off
     bool migrated_ = false;
     bool ha_mig_ = false;

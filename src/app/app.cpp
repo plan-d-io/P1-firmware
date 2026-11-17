@@ -1273,7 +1273,9 @@ static bool publish_ha_meter(std::uint64_t include_mask, std::uint64_t stub_mask
         const std::size_t n =
             p1pub::meter_discovery(g_cfg, g_product->fw_ver, config_url, include_mask, stub_mask, buf,
                                    p1pub::kDiscoveryCap, g_product->ha_origin,
-                                   g_product->ha_meter_model);
+                                   g_product->ha_meter_model,
+                                   g_product->support_url != nullptr ? g_product->support_url
+                                                                     : p1pub::kSupportUrl);
         ok = publish_discovery_buf(topic, buf, n);
     }
     delete[] buf;
@@ -1310,7 +1312,8 @@ static bool publish_ha_debug()
         }
         const std::size_t n = p1pub::dongle_discovery(
             g_cfg, g_device_id, g_product->fw_ver, config_url, buf, p1pub::kDiscoveryCap,
-            g_product->ha_origin, g_product->ha_debug_model, nd > 0 ? extra : nullptr, nd);
+            g_product->ha_origin, g_product->ha_debug_model, nd > 0 ? extra : nullptr, nd,
+            g_product->support_url != nullptr ? g_product->support_url : p1pub::kSupportUrl);
         ok = publish_discovery_buf(topic, buf, n);
     }
     delete[] buf;
@@ -2590,7 +2593,29 @@ static void cmd_set(char* rest)
             Serial.println("WIFI_PASS: 64 characters must be hex digits");
             return;
         }
-        std::memcpy(e->var.s, value, n + 1);
+        const char* use = value;
+        char rewritten[96];
+        if (e->accept != nullptr) {
+            if (value[0] == '"' && value[1] == '"' && value[2] == '\0') {
+                rewritten[0] = '\0';
+            } else if (n >= sizeof(rewritten)) {
+                Serial.println("value too long");
+                return;
+            } else {
+                std::memcpy(rewritten, value, n + 1);
+            }
+            if (!e->accept(rewritten)) {
+                Serial.println("invalid value");
+                return;
+            }
+            use = rewritten;
+        }
+        const std::size_t use_n = std::strlen(use);
+        if (use_n + 1 > e->str_cap) {
+            Serial.println("value too long");
+            return;
+        }
+        std::memcpy(e->var.s, use, use_n + 1);
         break;
     }
     }
@@ -2862,6 +2887,15 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info)
 void p1app::app_setup(const p1app::Product& product)
 {
     g_product = &product;
+    if (product.ha_device_default != nullptr && product.mqtt_pfix_default != nullptr) {
+        g_cfg.set_identity_defaults(product.ha_device_default, product.mqtt_pfix_default);
+    }
+    if (product.settings != nullptr && product.settings_n > 0) {
+        g_cfg.add_settings(product.settings, product.settings_n);
+    }
+    if (product.reveal_key != nullptr) {
+        g_cfg.set_reveal_key(product.reveal_key);
+    }
     if (product.legacy_nvs_import) {
         g_cfg.set_legacy(&g_legacy_nvs);
     }
@@ -2919,6 +2953,9 @@ void p1app::app_setup(const p1app::Product& product)
     }
 
     g_cfg.load();
+    if (g_product->after_settings != nullptr && g_product->after_settings()) {
+        g_cfg.save();
+    }
     g_product->source_request(g_cfg.values().trg_type, g_cfg.values().trg_int, true);
     {
         char msg[72];
@@ -3034,6 +3071,7 @@ void p1app::app_setup(const p1app::Product& product)
     g_telegram_io.skipped = g_product->dump_skipped;
     g_web.set_upload_io(&g_upload_io);
     g_web.set_telegram_io(&g_telegram_io);
+    g_web.set_page_ap(g_product->ap_ssid);
     g_web.set_store(&g_cfg);
     g_web.set_files(&g_fs);
     WiFi.onEvent(on_wifi_event);

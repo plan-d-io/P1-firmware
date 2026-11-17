@@ -52,6 +52,9 @@ Route resolve(Mode mode, Method method, std::string_view uri)
     if (uri == "/api/networks" && method == Method::Get) {
         return Route::ApiNetworks;
     }
+    if (uri == "/api/reveal" && method == Method::Get) {
+        return Route::Reveal;
+    }
     if (uri == "/fields" && method == Method::Post) {
         return Route::FieldsPost;
     }
@@ -224,6 +227,54 @@ void sort_scan_strongest_first(ScanCache& cache)
         }
         cache.entries[j] = key;
     }
+}
+
+std::size_t substitute_ap_name(const char* html, std::size_t len, const char* ap, char* out,
+                               std::size_t cap)
+{
+    if (html == nullptr || out == nullptr || cap == 0) {
+        return 0;
+    }
+    const char* name = (ap != nullptr && ap[0] != '\0') ? ap : "p1dongle";
+    constexpr char kNeedle[] = "p1dongle";
+    constexpr std::size_t kNeedleLen = sizeof(kNeedle) - 1;
+    if (std::strcmp(name, kNeedle) == 0) {
+        if (len >= cap) {
+            return 0;
+        }
+        if (len > 0) {
+            std::memcpy(out, html, len);
+        }
+        out[len] = '\0';
+        return len;
+    }
+    const std::size_t name_len = std::strlen(name);
+    std::size_t count = 0;
+    for (std::size_t i = 0; i + kNeedleLen <= len;) {
+        if (std::memcmp(html + i, kNeedle, kNeedleLen) == 0) {
+            ++count;
+            i += kNeedleLen;
+        } else {
+            ++i;
+        }
+    }
+    const std::size_t need =
+        len - count * kNeedleLen + count * name_len;
+    if (need >= cap) {
+        return 0;
+    }
+    std::size_t w = 0;
+    for (std::size_t i = 0; i < len;) {
+        if (i + kNeedleLen <= len && std::memcmp(html + i, kNeedle, kNeedleLen) == 0) {
+            std::memcpy(out + w, name, name_len);
+            w += name_len;
+            i += kNeedleLen;
+        } else {
+            out[w++] = html[i++];
+        }
+    }
+    out[w] = '\0';
+    return w;
 }
 
 std::size_t replace_one(std::string_view tpl, std::string_view needle, std::string_view value,

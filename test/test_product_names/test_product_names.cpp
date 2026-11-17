@@ -100,6 +100,91 @@ void test_extra_diag_sensor_is_appended()
     TEST_ASSERT_NOT_NULL(std::strstr(buf, "\"dev_cla\":\"signal_strength\""));
 }
 
+void test_empty_store_uses_product_identity()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    cfg.set_identity_defaults("LoRa receiver", "data/devices/lora_receiver/");
+    cfg.load();
+    TEST_ASSERT_EQUAL_STRING("LoRa receiver", cfg.values().ha_device);
+    TEST_ASSERT_EQUAL_STRING("data/devices/lora_receiver/", cfg.values().mqtt_pfix);
+    char json[p1cfg::kToJsonBufMin];
+    TEST_ASSERT_TRUE(cfg.to_json(json, sizeof(json)) > 0);
+    TEST_ASSERT_NULL(std::strstr(json, "utility_meter"));
+    TEST_ASSERT_NULL(std::strstr(json, "Utility meter"));
+}
+
+bool reject_nope(char* value)
+{
+    return std::strcmp(value, "nope") != 0;
+}
+
+void test_product_secret_is_masked_until_reveal()
+{
+    char secret[40];
+    const p1cfg::ExtraSetting extra[] = {{
+        "DEMO_KEY",
+        "Demo key",
+        p1cfg::CfgType::Str,
+        p1cfg::CFG_IN_API | p1cfg::CFG_SECRET | p1cfg::CFG_REBOOT,
+        secret,
+        sizeof(secret),
+        "super-secret-value",
+        "Extra",
+        "Changing this reboots.",
+        reject_nope,
+    }};
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    TEST_ASSERT_TRUE(cfg.add_settings(extra, 1));
+    cfg.set_reveal_key("DEMO_KEY");
+    cfg.load();
+
+    char json[p1cfg::kToJsonBufMin];
+    const std::size_t n = cfg.to_json(json, sizeof(json));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_NULL(std::strstr(json, "super-secret-value"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json, "\"DEMO_KEY\":{"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json, "\"set\":true"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json, "\"section\":\"Extra\""));
+
+    char snap[4096];
+    const std::size_t sn = p1mqtt::config_snapshot(cfg, "P1AABBCC", "3.04", snap, sizeof(snap));
+    TEST_ASSERT_TRUE(sn > 0);
+    TEST_ASSERT_NULL(std::strstr(snap, "super-secret-value"));
+    TEST_ASSERT_NULL(std::strstr(snap, "DEMO_KEY"));
+
+    char shown[40];
+    TEST_ASSERT_TRUE(cfg.reveal("DEMO_KEY", shown, sizeof(shown)));
+    TEST_ASSERT_EQUAL_STRING("super-secret-value", shown);
+    TEST_ASSERT_FALSE(cfg.reveal("WIFI_PASS", shown, sizeof(shown)));
+    TEST_ASSERT_EQUAL_STRING("", shown);
+    TEST_ASSERT_FALSE(cfg.reveal("MQTT_PASS", shown, sizeof(shown)));
+
+    TEST_ASSERT_EQUAL(p1cfg::JsonStatus::Invalid,
+                      cfg.apply_json(R"({"DEMO_KEY":"nope"})"));
+    TEST_ASSERT_EQUAL(p1cfg::JsonStatus::Ok, cfg.apply_json(R"({"DEMO_KEY":"kept-secret"})"));
+    TEST_ASSERT_TRUE(cfg.consume_reboot_needed());
+    TEST_ASSERT_TRUE(cfg.reveal("DEMO_KEY", shown, sizeof(shown)));
+    TEST_ASSERT_EQUAL_STRING("kept-secret", shown);
+    TEST_ASSERT_TRUE(cfg.to_json(json, sizeof(json)) > 0);
+    TEST_ASSERT_NULL(std::strstr(json, "kept-secret"));
+}
+
+void test_support_url_argument()
+{
+    p1cfg::MemoryBackend mem;
+    p1cfg::Store cfg(mem);
+    load_fixture(cfg);
+    char buf[p1pub::kDiscoveryCap];
+    TEST_ASSERT_TRUE(p1pub::meter_discovery(
+                         cfg, "3.04", "http://192.0.2.10", p1pub::enabled_field_mask(cfg), 0, buf,
+                         sizeof(buf), p1pub::kOriginName, p1pub::kMeterModel,
+                         "https://github.com/plan-d-io/P1-firmware") > 0);
+    TEST_ASSERT_NOT_NULL(std::strstr(buf, "https://github.com/plan-d-io/P1-firmware"));
+    TEST_ASSERT_NULL(std::strstr(buf, "https://github.com/plan-d-io/P1-dongle"));
+}
+
 void test_null_legacy_backend_is_not_read()
 {
     p1cfg::MemoryBackend legacy;
@@ -130,5 +215,8 @@ int main()
     RUN_TEST(test_second_product_strings);
     RUN_TEST(test_extra_diag_sensor_is_appended);
     RUN_TEST(test_null_legacy_backend_is_not_read);
+    RUN_TEST(test_empty_store_uses_product_identity);
+    RUN_TEST(test_product_secret_is_masked_until_reveal);
+    RUN_TEST(test_support_url_argument);
     return UNITY_END();
 }

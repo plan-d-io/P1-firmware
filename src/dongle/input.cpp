@@ -403,6 +403,13 @@ static const p1app::Product kProduct = {
     dump_rejected,
     dump_skipped,
     serial_cmd,
+    "Utility meter",
+    "data/devices/utility_meter/",
+    p1pub::kSupportUrl,
+    nullptr,
+    nullptr,
+    0,
+    nullptr,
 };
 
 const p1app::Product& dongle_product()

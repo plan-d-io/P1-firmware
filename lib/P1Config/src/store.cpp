@@ -505,8 +505,8 @@ Store::Store(StoreBackend& backend, StoreBackend* legacy) : backend_(backend), l
 void Store::apply_defaults()
 {
     v_ = Settings{};
-    copy_str(v_.mqtt_pfix, sizeof(v_.mqtt_pfix), "data/devices/utility_meter/");
-    copy_str(v_.ha_device, sizeof(v_.ha_device), "Utility meter");
+    copy_str(v_.mqtt_pfix, sizeof(v_.mqtt_pfix), mqtt_pfix_def_);
+    copy_str(v_.ha_device, sizeof(v_.ha_device), ha_device_def_);
     copy_str(v_.region, sizeof(v_.region), "auto");
     copy_str(v_.rel_chan, sizeof(v_.rel_chan), "main");
     v_.mqtt_port = 1883;
@@ -514,6 +514,13 @@ void Store::apply_defaults()
     v_.upl_throttle = 10;
     apply_update_defaults(v_, official_build());
     std::memset(field_over_, 0, sizeof(field_over_));
+    for (std::size_t i = 0; i < extra_n_; ++i) {
+        if (extras_[i].buf == nullptr || extras_[i].cap == 0) {
+            continue;
+        }
+        copy_str(extras_[i].buf, extras_[i].cap,
+                 extras_[i].def != nullptr ? extras_[i].def : "");
+    }
 }
 
 void Store::bind_table()
@@ -574,10 +581,10 @@ void Store::bind_table()
     add_str("MQTT_PASS", "MQTT password", CFG_IN_API | CFG_SECRET, v_.mqtt_pass,
             sizeof(v_.mqtt_pass), "");
     add_str("MQTT_PFIX", "MQTT topic prefix", CFG_IN_API, v_.mqtt_pfix, sizeof(v_.mqtt_pfix),
-            "data/devices/utility_meter/");
+            mqtt_pfix_def_);
     add_bool("HA_EN", "Home Assistant enabled", CFG_IN_API, &v_.ha_en, false);
     add_str("HA_DEVICE", "Home Assistant device name", CFG_IN_API, v_.ha_device,
-            sizeof(v_.ha_device), "Utility meter");
+            sizeof(v_.ha_device), ha_device_def_);
     add_i32("FRMT_PYLD", "Reading payload format", CFG_IN_API, &v_.frmt_pyld, 3);
     add_u32("UPL_THROTTLE", "Upload throttle", CFG_IN_API, &v_.upl_throttle, 10);
     add_str("REGION", "Meter region", CFG_IN_API, v_.region, sizeof(v_.region), "auto");
@@ -611,11 +618,111 @@ void Store::bind_table()
     // Internal store-and-forward cursor — not a user setting.
     add_u32("LOG_MARK", "Syslog replay watermark", CFG_HIDDEN, &v_.log_mark, 0);
     add_u32("CFG_VER", "Config schema version", CFG_HIDDEN, &v_.cfg_ver, 0);
+    attach_extras();
+}
+
+void Store::attach_extras()
+{
+    for (std::size_t i = 0; i < extra_n_; ++i) {
+        CfgEntry e{};
+        e.key = extras_[i].key;
+        e.label = extras_[i].label != nullptr ? extras_[i].label : extras_[i].key;
+        e.type = CfgType::Str;
+        e.flags = extras_[i].flags;
+        e.var.s = extras_[i].buf;
+        e.def.s = extras_[i].def != nullptr ? extras_[i].def : "";
+        e.str_cap = extras_[i].cap;
+        e.section = extras_[i].section;
+        e.confirm = extras_[i].confirm;
+        e.accept = extras_[i].accept;
+        table_[kSettingCount + i] = e;
+    }
+}
+
+void Store::set_identity_defaults(const char* ha_device, const char* mqtt_pfix)
+{
+    if (ha_device == nullptr || ha_device[0] == '\0' || mqtt_pfix == nullptr ||
+        mqtt_pfix[0] == '\0') {
+        return;
+    }
+    if (std::strlen(ha_device) >= sizeof(v_.ha_device) ||
+        std::strlen(mqtt_pfix) >= sizeof(v_.mqtt_pfix)) {
+        return;
+    }
+    ha_device_def_ = ha_device;
+    mqtt_pfix_def_ = mqtt_pfix;
+    copy_str(v_.ha_device, sizeof(v_.ha_device), ha_device);
+    copy_str(v_.mqtt_pfix, sizeof(v_.mqtt_pfix), mqtt_pfix);
+    bind_table();
+}
+
+bool Store::add_settings(const ExtraSetting* list, std::size_t n)
+{
+    if (list == nullptr || n == 0 || extra_n_ != 0 || n > kExtraMax) {
+        return false;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        const ExtraSetting& s = list[i];
+        if (s.type != CfgType::Str || s.key == nullptr || s.buf == nullptr || s.cap < 2 ||
+            s.cap > kExtraStrMax) {
+            return false;
+        }
+        const std::size_t klen = std::strlen(s.key);
+        if (klen == 0 || klen > 15) {
+            return false;
+        }
+        if (s.def != nullptr && std::strlen(s.def) >= s.cap) {
+            return false;
+        }
+        if (find_setting(s.key) != nullptr) {
+            return false;
+        }
+        for (std::size_t j = 0; j < i; ++j) {
+            if (std::strcmp(list[j].key, s.key) == 0) {
+                return false;
+            }
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        const ExtraSetting& s = list[i];
+        ExtraReg& r = extras_[i];
+        r.key = s.key;
+        r.label = s.label;
+        r.flags = s.flags;
+        r.buf = s.buf;
+        r.cap = s.cap;
+        r.def = s.def;
+        r.section = s.section;
+        r.confirm = s.confirm;
+        r.accept = s.accept;
+        copy_str(r.buf, r.cap, s.def != nullptr ? s.def : "");
+    }
+    extra_n_ = n;
+    bind_table();
+    return true;
+}
+
+bool Store::reveal(const char* key, char* out, std::size_t cap) const
+{
+    if (out != nullptr && cap > 0) {
+        out[0] = '\0';
+    }
+    if (key == nullptr || reveal_key_ == nullptr || std::strcmp(key, reveal_key_) != 0 ||
+        out == nullptr || cap == 0) {
+        return false;
+    }
+    const CfgEntry* e = find_setting(key);
+    if (e == nullptr || e->type != CfgType::Str || e->var.s == nullptr ||
+        (e->flags & CFG_SECRET) == 0) {
+        return false;
+    }
+    copy_str(out, cap, e->var.s);
+    return true;
 }
 
 const CfgEntry* Store::find_setting(std::string_view key) const
 {
-    for (std::size_t i = 0; i < kSettingCount; ++i) {
+    for (std::size_t i = 0; i < setting_count(); ++i) {
         if (key == table_[i].key) {
             return &table_[i];
         }
@@ -692,7 +799,7 @@ void Store::load()
     backend_.end();
 
     backend_.begin(true);
-    for (std::size_t i = 0; i < kSettingCount; ++i) {
+    for (std::size_t i = 0; i < setting_count(); ++i) {
         load_one(table_[i]);
     }
     load_overrides();
@@ -754,7 +861,7 @@ void Store::load()
 void Store::migrate()
 {
     backend_.begin(false);
-    for (std::size_t i = 0; i < kSettingCount; ++i) {
+    for (std::size_t i = 0; i < setting_count(); ++i) {
         const CfgEntry& e = table_[i];
         if (std::strcmp(e.key, "CFG_VER") == 0) {
             continue;
@@ -778,7 +885,7 @@ void Store::migrate()
 void Store::save()
 {
     backend_.begin(false);
-    for (std::size_t i = 0; i < kSettingCount; ++i) {
+    for (std::size_t i = 0; i < setting_count(); ++i) {
         save_one(table_[i]);
     }
     save_overrides();
@@ -1067,11 +1174,22 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
     };
 
     const Settings saved = v_;
+    char extra_saved[kExtraMax][kExtraStrMax]{};
+    for (std::size_t i = 0; i < extra_n_; ++i) {
+        if (extras_[i].buf != nullptr) {
+            copy_str(extra_saved[i], kExtraStrMax, extras_[i].buf);
+        }
+    }
     auto fail = [&](JsonStatus st, const char* key = nullptr) {
         if (key != nullptr) {
             set_bad(key);
         }
         v_ = saved;
+        for (std::size_t i = 0; i < extra_n_; ++i) {
+            if (extras_[i].buf != nullptr) {
+                copy_str(extras_[i].buf, extras_[i].cap, extra_saved[i]);
+            }
+        }
         bind_table();
         return st;
     };
@@ -1158,6 +1276,9 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
             if (std::strcmp(e->key, "WIFI_PASS") == 0 && !wifi_pass_ok(e->var.s)) {
                 return fail(JsonStatus::Invalid, key);
             }
+            if (e->accept != nullptr && !e->accept(e->var.s)) {
+                return fail(JsonStatus::Invalid, key);
+            }
             // IP field format is checked only when FIP_EN is true (post-pass).
             break;
         }
@@ -1195,7 +1316,14 @@ JsonStatus Store::apply_json(std::string_view json, char* bad_key, std::size_t b
     if (std::strcmp(saved.rel_chan, v_.rel_chan) != 0) {
         rel_chan_changed_ = true;
     }
-    reboot_needed_ = network_differs(saved, v_);
+    bool extra_reboot = false;
+    for (std::size_t i = 0; i < extra_n_; ++i) {
+        if ((extras_[i].flags & CFG_REBOOT) != 0 && extras_[i].buf != nullptr &&
+            std::strcmp(extra_saved[i], extras_[i].buf) != 0) {
+            extra_reboot = true;
+        }
+    }
+    reboot_needed_ = network_differs(saved, v_) || extra_reboot;
     return JsonStatus::Ok;
 }
 
@@ -1298,7 +1426,7 @@ std::size_t Store::to_json(char* out, std::size_t cap) const
         return 0;
     }
     bool first = true;
-    for (std::size_t i = 0; i < kSettingCount; ++i) {
+    for (std::size_t i = 0; i < setting_count(); ++i) {
         const CfgEntry& e = table_[i];
         if ((e.flags & CFG_IN_API) == 0) {
             continue;
@@ -1363,6 +1491,18 @@ std::size_t Store::to_json(char* out, std::size_t cap) const
                     return 0;
                 }
                 break;
+            }
+        }
+        if (e.section != nullptr && e.section[0] != '\0') {
+            if (!append(out, cap, n, ",\"section\":") || !append_json_str(out, cap, n, e.section)) {
+                out[0] = '\0';
+                return 0;
+            }
+        }
+        if (e.confirm != nullptr && e.confirm[0] != '\0') {
+            if (!append(out, cap, n, ",\"confirm\":") || !append_json_str(out, cap, n, e.confirm)) {
+                out[0] = '\0';
+                return 0;
             }
         }
         if (!append(out, cap, n, "}")) {
