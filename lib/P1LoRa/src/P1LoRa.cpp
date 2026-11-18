@@ -342,6 +342,11 @@ Duty::Duty(std::uint32_t budget_ms_per_hour)
 {
 }
 
+void Duty::set_budget_ms(std::uint32_t budget_ms_per_hour)
+{
+    budget_us_ = budget_ms_per_hour * 1000u;
+}
+
 void Duty::roll(std::uint32_t now_ms)
 {
     const std::uint32_t minute = now_ms / 60000u;
@@ -694,7 +699,8 @@ Status pack_status(const Key& key, std::uint8_t counter, const MeterStatus& mete
         return Status::WrongLength;
     }
     write_header(out, key, kTypeStatus, counter);
-    out[5] = meter.reason;
+    // Bit 7 is "command accepted" (see kStatusAccepted). Reason stays in 0–6.
+    out[5] = static_cast<std::uint8_t>((meter.reason & 0x7F) | (meter.accepted ? kStatusAccepted : 0));
     put_u16(out + 6, meter.since_s);
     out[8] = meter.rejected;
     len = 9;
@@ -774,7 +780,8 @@ Decoded decode(const Key& key, const std::uint8_t* frame, std::size_t len)
             return out;
         }
         out.kind = Kind::Status;
-        out.meter.reason = frame[5];
+        out.meter.reason = static_cast<std::uint8_t>(frame[5] & 0x7F);
+        out.meter.accepted = (frame[5] & kStatusAccepted) != 0;
         out.meter.since_s = get_u16(frame + 6);
         out.meter.rejected = frame[8];
         out.status = Status::Ok;

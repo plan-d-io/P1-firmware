@@ -68,6 +68,10 @@ class Duty {
 public:
     explicit Duty(std::uint32_t budget_ms_per_hour);
 
+    // The rolling window stays. The next can_send uses this budget, so a
+    // profile change cannot spend the previous profile's larger allowance.
+    void set_budget_ms(std::uint32_t budget_ms_per_hour);
+
     bool can_send(std::uint32_t now_ms, std::uint32_t airtime_us);
     void record(std::uint32_t now_ms, std::uint32_t airtime_us);
     // 0 if a send is allowed now. Otherwise how long to wait.
@@ -125,9 +129,14 @@ constexpr std::uint8_t kTypeOffer = 0x82;
 constexpr std::uint8_t kTypeConfirm = 0x83;
 
 // Status payload: why the transmitter has no reading to send.
+// Byte 0 layout: bits 0–6 are the reason below. Bit 7 is "command accepted",
+// the same meaning as kFlagAccepted on a reading. A transmitter with no meter
+// data only sends status frames, so the accept flag has to live here too.
+// The L03 literal 6b0b05010302580200 keeps bit 7 clear.
 constexpr std::uint8_t kStatusNoneSinceBoot = 1;
 constexpr std::uint8_t kStatusNoneForAWhile = 2;
 constexpr std::uint8_t kStatusRejected = 3;
+constexpr std::uint8_t kStatusAccepted = 0x80;
 constexpr std::uint16_t kSinceNever = 0xFFFF;
 constexpr std::uint16_t kSinceMax = 0xFFFE;
 // A reading is sent only while the last valid telegram is younger than this.
@@ -175,9 +184,10 @@ struct Ack {
 enum class Kind : std::uint8_t { None, Reading, Probe, Ack, Offer, Confirm, Status };
 
 struct MeterStatus {
-    std::uint8_t reason = 0;
+    std::uint8_t reason = 0;  // bits 0–6; bit 7 is carried by `accepted`
     std::uint16_t since_s = kSinceNever;
     std::uint8_t rejected = 0;
+    bool accepted = false;
 };
 
 struct Decoded {

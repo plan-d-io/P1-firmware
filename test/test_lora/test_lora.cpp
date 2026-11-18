@@ -715,6 +715,16 @@ void test_status_frame()
     TEST_ASSERT_EQUAL_UINT8(2, back.meter.reason);
     TEST_ASSERT_EQUAL_UINT16(600, back.meter.since_s);
     TEST_ASSERT_EQUAL_UINT8(0, back.meter.rejected);
+    TEST_ASSERT_FALSE(back.meter.accepted);
+
+    p1lora::MeterStatus flagged = meter;
+    flagged.accepted = true;
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::Status::Ok),
+                      static_cast<int>(p1lora::pack_status(key, 3, flagged, frame, sizeof frame, len)));
+    TEST_ASSERT_EQUAL_UINT8(0x82, frame[5]);
+    const p1lora::Decoded flagged_back = p1lora::decode(key, frame, len);
+    TEST_ASSERT_EQUAL_UINT8(2, flagged_back.meter.reason);
+    TEST_ASSERT_TRUE(flagged_back.meter.accepted);
 
     meter.since_s = 0xFFFE;
     meter.rejected = 0xFF;
@@ -914,6 +924,20 @@ void test_pair_key_text_and_masking()
     TEST_ASSERT_NULL(std::strstr(json, "000102030405060708090a0b0c0d0e0f"));
 }
 
+void test_link_offer_snr();
+void test_link_first_boot();
+void test_link_snr_steps();
+void test_link_loss_step_down();
+void test_link_silence_search();
+void test_link_step_up();
+void test_link_offer_reverts();
+void test_link_no_split();
+void test_link_locked();
+void test_link_commands();
+void test_link_resume();
+void test_link_status_accept();
+void test_link_duty_windows();
+
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
 
@@ -942,5 +966,18 @@ int main()
     RUN_TEST(test_optionals);
     RUN_TEST(test_self_test);
     RUN_TEST(test_pair_key_text_and_masking);
+    RUN_TEST(test_link_offer_snr);
+    RUN_TEST(test_link_first_boot);
+    RUN_TEST(test_link_snr_steps);
+    RUN_TEST(test_link_loss_step_down);
+    RUN_TEST(test_link_silence_search);
+    RUN_TEST(test_link_step_up);
+    RUN_TEST(test_link_offer_reverts);
+    RUN_TEST(test_link_no_split);
+    RUN_TEST(test_link_locked);
+    RUN_TEST(test_link_commands);
+    RUN_TEST(test_link_resume);
+    RUN_TEST(test_link_status_accept);
+    RUN_TEST(test_link_duty_windows);
     return UNITY_END();
 }
