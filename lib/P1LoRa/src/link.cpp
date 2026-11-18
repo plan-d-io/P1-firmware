@@ -175,6 +175,57 @@ bool settings_valid(const LinkSettings& settings)
     return settings.fallback_min / 10u <= 255u;
 }
 
+std::uint32_t link_checksum(const LinkImage& image)
+{
+    std::uint32_t sum = 0x811C9DC5u;
+    auto mix = [&](std::uint32_t v) {
+        sum ^= v;
+        sum *= 16777619u;
+    };
+    mix(image.magic);
+    mix(image.mode);
+    mix(image.profile);
+    mix(image.locked_step);
+    mix(image.last_good_step);
+    mix(image.fallback_min);
+    return sum;
+}
+
+bool link_image_store(const LinkSettings& settings, LinkImage& out)
+{
+    if (!settings.saved || !settings_valid(settings)) {
+        return false;
+    }
+    out = {};
+    out.magic = kLinkMagic;
+    out.mode = static_cast<std::uint8_t>(settings.mode);
+    out.profile = static_cast<std::uint8_t>(settings.profile);
+    out.locked_step = settings.locked_step;
+    out.last_good_step = settings.last_good_step;
+    out.fallback_min = settings.fallback_min;
+    out.checksum = link_checksum(out);
+    return true;
+}
+
+bool link_image_load(const LinkImage& in, LinkSettings& settings)
+{
+    if (in.magic != kLinkMagic || in.checksum != link_checksum(in)) {
+        return false;
+    }
+    LinkSettings trial;
+    trial.mode = static_cast<LinkMode>(in.mode);
+    trial.profile = static_cast<ProfileId>(in.profile);
+    trial.locked_step = in.locked_step;
+    trial.last_good_step = in.last_good_step;
+    trial.fallback_min = in.fallback_min;
+    trial.saved = true;
+    if (!settings_valid(trial)) {
+        return false;
+    }
+    settings = trial;
+    return true;
+}
+
 TxLink::TxLink(const LinkSettings& stored, Duty& duty, bool three_phase)
     : duty_(duty), three_(three_phase), committed_(stored)
 {
@@ -304,6 +355,14 @@ bool TxLink::silence_due(std::uint32_t now_ms) const
 
 void TxLink::poll(std::uint32_t now_ms)
 {
+    // A restored duty clock is already minutes ahead of zero. That is not
+    // silence; the quiet stretch starts when this process starts polling.
+    if (!clock_armed_) {
+        clock_armed_ = true;
+        if (last_heard_ms_ == 0) {
+            last_heard_ms_ = now_ms;
+        }
+    }
     if (revert_on_ && now_ms >= revert_at_) {
         revert(now_ms);
         return;
@@ -342,7 +401,10 @@ void TxLink::poll(std::uint32_t now_ms)
 AirAction TxLink::on_slot(std::uint32_t now_ms, bool meter_fresh, const MeterStatus& meter)
 {
     AirAction early;
-    if (now_ms < next_slot_ms_) {
+    // A switch arms this slot on the old channel, which can be minutes.
+    // While the new channel is still unconfirmed, the next frame goes now
+    // so it lands inside the revert window. The duty cap still applies.
+    if (now_ms < next_slot_ms_ && phase_ != Phase::Switching) {
         early.wait_ms = next_slot_ms_ - now_ms;
         return early;
     }
@@ -436,6 +498,22 @@ void TxLink::on_downlink(std::uint32_t now_ms, const Heard& frame)
 void TxLink::on_ack_missed(std::uint32_t)
 {
     // Silence is "no downlink at all". A miss leaves last_heard_ms_ alone.
+}
+
+void TxLink::force_auto(std::uint32_t now_ms)
+{
+    if (mode_ == LinkMode::Auto) {
+        return;
+    }
+    mode_ = LinkMode::Auto;
+    last_heard_ms_ = now_ms;
+    if (phase_ == Phase::Confirming || phase_ == Phase::Switching) {
+        revert_on_ = false;
+        have_back_ = false;
+        offer_attempt_ = false;
+        phase_ = step_ == 0 ? Phase::Search : Phase::Run;
+    }
+    store_committed();
 }
 
 LinkView TxLink::view() const
@@ -541,7 +619,7 @@ void RxLink::enter(ProfileId id, std::uint8_t step, Phase phase, std::uint32_t n
     last_heard_ms_ = now_ms;
     if (moved) {
         if (!preserve_step_up_) {
-            step_up_wait_ms_ = kStepUpMs;
+            step_up_wait_ms_ = step_up_base_ms_;
         }
         clear_quality();
         step_entered_ms_ = now_ms;
@@ -621,7 +699,7 @@ void RxLink::commit_run(std::uint32_t now_ms)
     phase_ = Phase::Run;
     last_heard_ms_ = now_ms;
     offer_cap_ = kNoOfferCap;
-    step_up_wait_ms_ = kStepUpMs;
+    step_up_wait_ms_ = step_up_base_ms_;
     step_up_attempt_ = false;
     store_committed();
 }
@@ -801,6 +879,20 @@ bool RxLink::silence_due(std::uint32_t now_ms) const
     return now_ms - last_heard_ms_ >= silence_period_ms(profile_, step_, three_);
 }
 
+bool RxLink::in_flight() const
+{
+    return cmd_.on || revert_on_ || phase_ == Phase::Confirming || phase_ == Phase::Switching;
+}
+
+void RxLink::set_step_up_ms(std::uint32_t ms)
+{
+    if (ms < 1000u) {
+        ms = 1000u;
+    }
+    step_up_base_ms_ = ms;
+    step_up_wait_ms_ = ms;
+}
+
 bool RxLink::request(LinkMode mode, ProfileId id, std::uint8_t step, std::uint16_t fallback_min)
 {
     LinkSettings trial;
@@ -828,6 +920,12 @@ bool RxLink::request(LinkMode mode, ProfileId id, std::uint8_t step, std::uint16
 
 AirAction RxLink::poll(std::uint32_t now_ms)
 {
+    if (!clock_armed_) {
+        clock_armed_ = true;
+        if (last_heard_ms_ == 0) {
+            last_heard_ms_ = now_ms;
+        }
+    }
     if (revert_on_ && now_ms >= revert_at_) {
         revert(now_ms);
         return {};

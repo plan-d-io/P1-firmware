@@ -1,5 +1,6 @@
 #include <P1Config.h>
 #include <P1LoRa.h>
+#include <link.h>
 #include <P1Mqtt.h>
 #include <from_telegram.h>
 #include <to_data.h>
@@ -9,6 +10,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iterator>
 #include <span>
@@ -672,6 +674,158 @@ void test_duty_image()
 
     p1lora::Duty other_budget(36000u);
     TEST_ASSERT_FALSE(other_budget.restore(image));
+    TEST_ASSERT_EQUAL_UINT32(1468u, sizeof(p1lora::DutyImage));
+}
+
+std::uint32_t steady_interval_ms(std::uint32_t budget_ms, std::uint32_t air_us)
+{
+    const std::uint64_t target = static_cast<std::uint64_t>(budget_ms) * 1000ull * 95ull / 100ull;
+    const std::uint64_t raw =
+        (static_cast<std::uint64_t>(air_us) * 3600000ull + target - 1ull) / target;
+    return raw < 1000ull ? 1000u : static_cast<std::uint32_t>(raw);
+}
+
+void assert_under_budget(const std::deque<std::pair<std::uint32_t, std::uint32_t>>& log,
+                         std::uint32_t budget_us)
+{
+    std::uint64_t sum = 0;
+    std::size_t begin = 0;
+    for (std::size_t i = 0; i < log.size(); ++i) {
+        sum += log[i].second;
+        const std::uint32_t now = log[i].first;
+        const std::uint32_t start = now >= 3600000u ? now - 3600000u : 0u;
+        while (begin < i && log[begin].first <= start) {
+            sum -= log[begin].second;
+            ++begin;
+        }
+        TEST_ASSERT_TRUE(sum <= budget_us);
+    }
+}
+
+void test_pace_sf8()
+{
+    const std::uint32_t air = p1lora::airtime_us(p1lora::ProfileId::A, 4, 53);
+    const std::uint32_t expect = steady_interval_ms(360000u, air);
+    TEST_ASSERT_EQUAL_UINT32(1946u, expect);
+
+    p1lora::Duty duty(360000u);
+    TEST_ASSERT_EQUAL_UINT32(1946u, duty.next_send_ms(0, air));
+    std::uint32_t now = 0;
+    int steady = 0;
+    int sends = 0;
+    std::uint32_t gap_min = 0xFFFFFFFFu;
+    std::uint32_t gap_max = 0;
+    while (now < 2u * 3600000u && sends < 8000) {
+        const std::uint32_t next = duty.next_send_ms(now, air);
+        TEST_ASSERT_TRUE(next > now);
+        TEST_ASSERT_TRUE(duty.can_send(next, air));
+        const std::uint32_t gap = next - now;
+        if (sends > 0 && next >= 3600000u) {
+            if (gap < gap_min) {
+                gap_min = gap;
+            }
+            if (gap > gap_max) {
+                gap_max = gap;
+            }
+            ++steady;
+        } else if (sends > 0) {
+            TEST_ASSERT_TRUE(gap <= expect * 2u);
+            TEST_ASSERT_TRUE(gap >= 1000u);
+        }
+        duty.record(next, air);
+        now = next;
+        ++sends;
+    }
+    TEST_ASSERT_TRUE(steady > 100);
+    // 1946 ms is the 95 % line. The extra 10 s slot still inside the window
+    // stretches a few gaps by one frame's worth of the over-count.
+    TEST_ASSERT_EQUAL_UINT32(1946u, gap_min);
+    TEST_ASSERT_EQUAL_UINT32(1951u, gap_max);
+}
+
+void test_pace_burst()
+{
+    const std::uint32_t air = p1lora::airtime_us(p1lora::ProfileId::A, 4, 53);
+    const std::uint32_t burst = p1lora::airtime_us(p1lora::ProfileId::A, 0, 53);
+    const std::uint32_t expect = steady_interval_ms(360000u, air);
+    p1lora::Duty duty(360000u);
+    std::deque<std::pair<std::uint32_t, std::uint32_t>> log;
+    std::uint32_t now = 0;
+    int burst_left = 0;
+    bool burst_done = false;
+    int after = 0;
+    bool recovered = false;
+    while (now < 3u * 3600000u && log.size() < 8000u) {
+        std::uint32_t use = air;
+        const std::uint32_t next = duty.next_send_ms(now, air);
+        if (!burst_done && next >= 1800000u) {
+            burst_left = 3;
+            burst_done = true;
+        }
+        if (burst_left > 0) {
+            use = burst;
+            --burst_left;
+        }
+        TEST_ASSERT_TRUE(next > now);
+        const std::uint32_t gap = next - now;
+        TEST_ASSERT_TRUE(gap <= expect * 2u);
+        TEST_ASSERT_TRUE(duty.can_send(next, use));
+        duty.record(next, use);
+        log.emplace_back(next, use);
+        if (next > 1900000u) {
+            if (gap == expect) {
+                ++after;
+                if (after >= 30) {
+                    recovered = true;
+                }
+            } else {
+                after = 0;
+            }
+        }
+        now = next;
+    }
+    assert_under_budget(log, 360000000u);
+    TEST_ASSERT_TRUE(recovered);
+
+    p1lora::Duty tight(36000u);
+    const std::uint32_t slow = p1lora::airtime_us(p1lora::ProfileId::B, 0, 53);
+    const std::uint32_t slow_gap = steady_interval_ms(36000u, slow);
+    std::deque<std::pair<std::uint32_t, std::uint32_t>> slow_log;
+    now = 0;
+    while (now < 2u * 3600000u && slow_log.size() < 200u) {
+        const std::uint32_t next = tight.next_send_ms(now, slow);
+        TEST_ASSERT_TRUE(tight.can_send(next, slow));
+        const std::uint32_t gap = next - now;
+        TEST_ASSERT_TRUE(gap <= slow_gap * 2u);
+        tight.record(next, slow);
+        slow_log.emplace_back(next, slow);
+        now = next;
+    }
+    assert_under_budget(slow_log, 36000000u);
+}
+
+void test_link_image()
+{
+    p1lora::LinkSettings in;
+    in.mode = p1lora::LinkMode::Locked;
+    in.profile = p1lora::ProfileId::B;
+    in.locked_step = 2;
+    in.last_good_step = 1;
+    in.fallback_min = 30;
+    in.saved = true;
+    p1lora::LinkImage image{};
+    TEST_ASSERT_TRUE(p1lora::link_image_store(in, image));
+    TEST_ASSERT_EQUAL_UINT32(16u, sizeof(image));
+    TEST_ASSERT_EQUAL_UINT32(p1lora::kLinkMagic, image.magic);
+    p1lora::LinkSettings out;
+    TEST_ASSERT_TRUE(p1lora::link_image_load(image, out));
+    TEST_ASSERT_TRUE(out.saved);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>(p1lora::LinkMode::Locked),
+                            static_cast<std::uint8_t>(out.mode));
+    TEST_ASSERT_EQUAL_UINT8(2, out.locked_step);
+    TEST_ASSERT_EQUAL_UINT16(30, out.fallback_min);
+    image.checksum ^= 1u;
+    TEST_ASSERT_FALSE(p1lora::link_image_load(image, out));
 }
 
 void test_counter_gap()
@@ -962,6 +1116,9 @@ int main()
     RUN_TEST(test_duty);
     RUN_TEST(test_power_clamp);
     RUN_TEST(test_duty_image);
+    RUN_TEST(test_pace_sf8);
+    RUN_TEST(test_pace_burst);
+    RUN_TEST(test_link_image);
     RUN_TEST(test_counter_gap);
     RUN_TEST(test_status_frame);
     RUN_TEST(test_status_interval);

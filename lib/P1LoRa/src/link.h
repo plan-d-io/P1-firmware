@@ -86,6 +86,26 @@ struct LinkSettings {
     bool saved = false;
 };
 
+// What both ends keep in NVS. 16 bytes. A bad checksum or an illegal step
+// loads as "nothing stored".
+constexpr std::uint32_t kLinkMagic = 0x50314C6Bu;
+
+struct LinkImage {
+    std::uint32_t magic;
+    std::uint8_t mode;
+    std::uint8_t profile;
+    std::uint8_t locked_step;
+    std::uint8_t last_good_step;
+    std::uint16_t fallback_min;
+    std::uint16_t pad;
+    std::uint32_t checksum;
+};
+static_assert(sizeof(LinkImage) == 16u, "link image size");
+
+bool link_image_store(const LinkSettings& settings, LinkImage& out);
+// False leaves settings unchanged.
+bool link_image_load(const LinkImage& in, LinkSettings& settings);
+
 bool settings_valid(const LinkSettings& settings);
 
 enum class AirKind : std::uint8_t { None, Reading, Status, Probe, Ack, Offer, Confirm };
@@ -124,6 +144,8 @@ public:
     AirAction on_slot(std::uint32_t now_ms, bool meter_fresh, const MeterStatus& meter);
     void on_downlink(std::uint32_t now_ms, const Heard& frame);
     void on_ack_missed(std::uint32_t now_ms);
+    // Leave locked mode for auto on the step in use. The receiver stays as it is.
+    void force_auto(std::uint32_t now_ms);
 
     LinkView view() const;
     LinkMode mode() const { return mode_; }
@@ -171,6 +193,7 @@ private:
     bool revert_on_ = false;
     std::uint32_t revert_at_ = 0;
     std::uint32_t last_heard_ms_ = 0;
+    bool clock_armed_ = false;
     std::uint32_t next_slot_ms_ = 0;
     std::uint8_t silence_strikes_ = 0;
     bool duty_gagged_ = false;
@@ -192,6 +215,10 @@ public:
     // Queues a command for the next ACK. False when the values are not valid
     // or a radio change is already in flight.
     bool request(LinkMode mode, ProfileId profile, std::uint8_t step, std::uint16_t fallback_min);
+    // True while a command is queued, a change is confirming or switching, or a revert is armed.
+    bool in_flight() const;
+    // Desk dwell. Replaces the 2 h step-up wait, including the next reset.
+    void set_step_up_ms(std::uint32_t ms);
 
     LinkView view() const;
     LinkMode mode() const { return mode_; }
@@ -260,8 +287,10 @@ private:
     bool revert_on_ = false;
     std::uint32_t revert_at_ = 0;
     std::uint32_t last_heard_ms_ = 0;
+    bool clock_armed_ = false;
     std::uint32_t step_entered_ms_ = 0;
     std::uint32_t step_up_wait_ms_ = kStepUpMs;
+    std::uint32_t step_up_base_ms_ = kStepUpMs;
     bool preserve_step_up_ = false;
     bool step_up_attempt_ = false;
     bool defer_step_up_ = false;

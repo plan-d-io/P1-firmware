@@ -517,7 +517,7 @@ void test_link_step_up()
     w.run_until(at + 130u * 60u * 1000u);
     TEST_ASSERT_TRUE(w.offers.size() >= 1);
     const std::uint32_t first = w.offers.back().ms;
-    TEST_ASSERT_EQUAL_UINT32(7218895u, first - at);
+    TEST_ASSERT_EQUAL_UINT32(7188310u, first - at);
     TEST_ASSERT_EQUAL_UINT8(5, w.offers.back().step);
     TEST_ASSERT_EQUAL_UINT8(4, w.tx.step());
     TEST_ASSERT_EQUAL_UINT8(4, w.rx.step());
@@ -528,7 +528,7 @@ void test_link_step_up()
     w.run_until(first + 4u * 60u * 60u * 1000u + 10u * 60u * 1000u);
     TEST_ASSERT_TRUE(w.offers.size() > n1);
     const std::uint32_t second = w.offers.back().ms;
-    TEST_ASSERT_EQUAL_UINT32(14460415u, second - first);
+    TEST_ASSERT_EQUAL_UINT32(14460200u, second - first);
     TEST_ASSERT_EQUAL_UINT8(5, w.offers.back().step);
 
     const std::uint32_t n2 = static_cast<std::uint32_t>(w.offers.size());
@@ -537,7 +537,7 @@ void test_link_step_up()
     w.run_until(second + 8u * 60u * 60u * 1000u + 10u * 60u * 1000u);
     TEST_ASSERT_TRUE(w.offers.size() > n2);
     const std::uint32_t third = w.offers.back().ms;
-    TEST_ASSERT_EQUAL_UINT32(28860600u, third - second);
+    TEST_ASSERT_EQUAL_UINT32(28861600u, third - second);
     TEST_ASSERT_EQUAL_UINT8(5, w.offers.back().step);
     w.run_until(third + 120000u);
     TEST_ASSERT_EQUAL_UINT8(4, w.tx.step());
@@ -549,7 +549,7 @@ void test_link_step_up()
     w.watch_ms = 0xFFFFFFFFu;
     const std::uint32_t down_from = w.now;
     w.run_until(down_from + 300000u);
-    TEST_ASSERT_EQUAL_UINT32(173696u, w.watch_ms - down_from);
+    TEST_ASSERT_EQUAL_UINT32(79096u, w.watch_ms - down_from);
     TEST_ASSERT_TRUE(both_at(w, 3, p1lora::ProfileId::A, p1lora::LinkView::Run));
     w.loss_a[4] = 0;
     w.set_snr(48);
@@ -560,7 +560,7 @@ void test_link_step_up()
     w.watch_step = 4;
     w.watch_ms = 0xFFFFFFFFu;
     w.run_until(dropped + 130u * 60u * 1000u);
-    TEST_ASSERT_EQUAL_UINT32(7254260u, w.watch_ms - dropped);
+    TEST_ASSERT_EQUAL_UINT32(7213460u, w.watch_ms - dropped);
     TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     finish(w, "step-up");
 }
@@ -713,7 +713,10 @@ void test_link_resume()
     p1lora::Duty duty(360000u);
     p1lora::TxLink tx(stored, duty, true);
     p1lora::MeterStatus meter;
-    const p1lora::AirAction first = tx.on_slot(0, true, meter);
+    tx.poll(100000u);
+    TEST_ASSERT_EQUAL_UINT8(5, tx.step());
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Run), static_cast<int>(tx.view()));
+    const p1lora::AirAction first = tx.on_slot(100000u, true, meter);
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::AirKind::Reading), static_cast<int>(first.kind));
     TEST_ASSERT_EQUAL_UINT8(5, tx.step());
     TEST_ASSERT_EQUAL_UINT8(5, first.sent_step);

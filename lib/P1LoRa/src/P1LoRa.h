@@ -47,23 +47,28 @@ std::int8_t clamp_tx_power(ProfileId id, std::int8_t requested_dbm);
 
 // Plain image of a Duty. The caller keeps it (RTC memory on the device).
 // A restored image is not aged: the reboot is treated as taking no time.
-constexpr int kDutySlots = 61;
-constexpr std::uint32_t kDutyMagic = 0x50314475u;
+// 10 s slots: 360 of them cover the hour, plus one so a slot that still
+// overlaps the window is counted in full. Image is 1468 bytes.
+constexpr std::uint32_t kDutySlotMs = 10000u;
+constexpr int kDutySlots = 361;
+constexpr std::uint32_t kDutyMagic = 0x50314476u;
 
 struct DutyImage {
     std::uint32_t magic;
     std::uint32_t budget_us;
     std::uint32_t bucket_us[kDutySlots];
-    std::uint32_t last_minute;
+    std::uint32_t last_slot;
     std::uint32_t now_ms;
     std::uint8_t started;
     std::uint8_t pad[3];
     std::uint32_t checksum;
 };
+static_assert(sizeof(DutyImage) == 1468u, "duty image size");
 
-// Rolling 3600 s window of our own airtime. Per-minute sums: a minute that
-// still overlaps the window is counted in full, so this may hold a send
-// back a little long and must not let one through early.
+// Rolling 3600 s window of our own airtime. A 10 s slot that still overlaps
+// the window is counted in full, so this may hold a send back a little and
+// must not let one through early. next_send_ms spreads what is left of a
+// 95 % aim across the hour, and never earlier than wait_ms.
 class Duty {
 public:
     explicit Duty(std::uint32_t budget_ms_per_hour);
@@ -76,6 +81,10 @@ public:
     void record(std::uint32_t now_ms, std::uint32_t airtime_us);
     // 0 if a send is allowed now. Otherwise how long to wait.
     std::uint32_t wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const;
+    // Absolute time of the next send of this airtime. The steady interval
+    // spreads a 95 % aim across the hour and is never under 1 s. A burst
+    // above that aim stretches it, at most twice, and never before the hard cap.
+    std::uint32_t next_send_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const;
     // Airtime still charged inside the window, in microseconds.
     std::uint32_t charged_us(std::uint32_t now_ms) const;
     // now_ms is the clock value the buckets were recorded against.
@@ -91,7 +100,7 @@ private:
 
     std::uint32_t budget_us_;
     std::uint32_t bucket_us_[kSlots]{};
-    std::uint32_t last_minute_ = 0;
+    std::uint32_t last_slot_ = 0;
     bool started_ = false;
 };
 

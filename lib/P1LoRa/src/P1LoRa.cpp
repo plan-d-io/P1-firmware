@@ -349,37 +349,37 @@ void Duty::set_budget_ms(std::uint32_t budget_ms_per_hour)
 
 void Duty::roll(std::uint32_t now_ms)
 {
-    const std::uint32_t minute = now_ms / 60000u;
+    const std::uint32_t slot = now_ms / kDutySlotMs;
     if (!started_) {
         started_ = true;
-        last_minute_ = minute;
+        last_slot_ = slot;
         return;
     }
-    if (minute <= last_minute_) {
+    if (slot <= last_slot_) {
         return;
     }
-    const std::uint32_t jump = minute - last_minute_;
-    if (jump >= kSlots) {
+    const std::uint32_t jump = slot - last_slot_;
+    if (jump >= static_cast<std::uint32_t>(kSlots)) {
         for (std::uint32_t& b : bucket_us_) {
             b = 0;
         }
     } else {
         for (std::uint32_t i = 1; i <= jump; ++i) {
-            bucket_us_[(last_minute_ + i) % kSlots] = 0;
+            bucket_us_[(last_slot_ + i) % kSlots] = 0;
         }
     }
-    last_minute_ = minute;
+    last_slot_ = slot;
 }
 
 std::uint32_t Duty::used_us(std::uint32_t now_ms)
 {
     roll(now_ms);
-    const std::uint32_t minute = now_ms / 60000u;
+    const std::uint32_t slot = now_ms / kDutySlotMs;
     const std::uint32_t window_start = now_ms >= 3600000u ? now_ms - 3600000u : 0;
-    const std::uint32_t oldest = window_start / 60000u;
+    const std::uint32_t oldest = window_start / kDutySlotMs;
     std::uint32_t sum = 0;
-    for (std::uint32_t m = oldest; m <= minute; ++m) {
-        const std::uint32_t add = bucket_us_[m % kSlots];
+    for (std::uint32_t s = oldest; s <= slot; ++s) {
+        const std::uint32_t add = bucket_us_[s % kSlots];
         if (sum > 0xFFFFFFFFu - add) {
             return 0xFFFFFFFFu;
         }
@@ -399,7 +399,7 @@ bool Duty::can_send(std::uint32_t now_ms, std::uint32_t airtime_us)
 void Duty::record(std::uint32_t now_ms, std::uint32_t airtime_us)
 {
     roll(now_ms);
-    std::uint32_t& slot = bucket_us_[(now_ms / 60000u) % kSlots];
+    std::uint32_t& slot = bucket_us_[(now_ms / kDutySlotMs) % kSlots];
     if (slot > 0xFFFFFFFFu - airtime_us) {
         slot = 0xFFFFFFFFu;
     } else {
@@ -425,7 +425,7 @@ std::uint32_t duty_checksum(const DutyImage& image)
     for (std::uint32_t bucket : image.bucket_us) {
         mix(bucket);
     }
-    mix(image.last_minute);
+    mix(image.last_slot);
     mix(image.now_ms);
     mix(image.started);
     return sum;
@@ -439,7 +439,7 @@ void Duty::save(DutyImage& out, std::uint32_t now_ms) const
     for (int i = 0; i < kSlots; ++i) {
         out.bucket_us[i] = bucket_us_[i];
     }
-    out.last_minute = last_minute_;
+    out.last_slot = last_slot_;
     out.now_ms = now_ms;
     out.started = started_ ? 1 : 0;
     out.checksum = duty_checksum(out);
@@ -453,7 +453,7 @@ bool Duty::restore(const DutyImage& in)
     for (int i = 0; i < kSlots; ++i) {
         bucket_us_[i] = in.bucket_us[i];
     }
-    last_minute_ = in.last_minute;
+    last_slot_ = in.last_slot;
     started_ = in.started != 0;
     return true;
 }
@@ -468,10 +468,11 @@ std::uint32_t Duty::wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) cons
         return 0;
     }
     std::uint32_t t = now_ms;
-    for (int i = 0; i < 70; ++i) {
+    for (int i = 0; i < 400; ++i) {
         const std::uint32_t window_start = t >= 3600000u ? t - 3600000u : 0;
-        const std::uint32_t oldest = window_start / 60000u;
-        const std::uint64_t expire = static_cast<std::uint64_t>(oldest + 1u) * 60000ull + 3600000ull;
+        const std::uint32_t oldest = window_start / kDutySlotMs;
+        const std::uint64_t expire =
+            static_cast<std::uint64_t>(oldest + 1u) * kDutySlotMs + 3600000ull;
         std::uint64_t next = expire > t ? expire : static_cast<std::uint64_t>(t) + 1u;
         if (next > 0xFFFFFFFFull) {
             return 0xFFFFFFFFu;
@@ -482,6 +483,52 @@ std::uint32_t Duty::wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) cons
         }
     }
     return 3600000u;
+}
+
+std::uint32_t Duty::next_send_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const
+{
+    const std::uint32_t hard = wait_ms(now_ms, airtime_us);
+    if (airtime_us == 0 || budget_us_ == 0 || hard == 0xFFFFFFFFu) {
+        if (hard == 0xFFFFFFFFu) {
+            return 0xFFFFFFFFu;
+        }
+        const std::uint64_t at = static_cast<std::uint64_t>(now_ms) + 1000u;
+        return at > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<std::uint32_t>(at);
+    }
+    const std::uint64_t target = static_cast<std::uint64_t>(budget_us_) * 95ull / 100ull;
+    std::uint32_t steady = 1000u;
+    if (target > 0 && airtime_us <= target) {
+        const std::uint64_t raw =
+            (static_cast<std::uint64_t>(airtime_us) * 3600000ull + target - 1ull) / target;
+        if (raw > steady) {
+            steady = raw > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<std::uint32_t>(raw);
+        }
+    }
+    const std::uint32_t used = charged_us(now_ms);
+    std::uint32_t interval = steady;
+    // Under the line the steady interval already spreads the remaining budget.
+    // Faster than that spends the hour early and then the hard cap pauses.
+    // Over the line (a search burst) the interval stretches, at most twice.
+    if (target > 0 && static_cast<std::uint64_t>(used) + airtime_us >= target) {
+        std::uint64_t stretched = static_cast<std::uint64_t>(steady) * used / target;
+        if (stretched < steady) {
+            stretched = steady;
+        }
+        const std::uint64_t cap = static_cast<std::uint64_t>(steady) * 2ull;
+        if (stretched > cap) {
+            stretched = cap;
+        }
+        interval = static_cast<std::uint32_t>(stretched);
+    }
+    std::uint64_t at = static_cast<std::uint64_t>(now_ms) + interval;
+    const std::uint64_t hard_at = static_cast<std::uint64_t>(now_ms) + hard;
+    if (hard_at > at) {
+        at = hard_at;
+    }
+    if (at <= now_ms) {
+        at = static_cast<std::uint64_t>(now_ms) + 1u;
+    }
+    return at > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<std::uint32_t>(at);
 }
 
 KeyStatus parse_key(const char* hex, std::size_t len, Key& out)
