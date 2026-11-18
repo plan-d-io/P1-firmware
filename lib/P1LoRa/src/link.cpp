@@ -27,6 +27,26 @@ std::uint32_t at_least(std::uint32_t value, std::uint32_t floor)
     return value < floor ? floor : value;
 }
 
+std::int16_t median3(std::int16_t a, std::int16_t b, std::int16_t c)
+{
+    if (a > b) {
+        const std::int16_t t = a;
+        a = b;
+        b = t;
+    }
+    if (b > c) {
+        const std::int16_t t = b;
+        b = c;
+        c = t;
+    }
+    if (a > b) {
+        const std::int16_t t = a;
+        a = b;
+        b = t;
+    }
+    return b;
+}
+
 }  // namespace
 
 std::int16_t floor_qdb(std::uint8_t sf)
@@ -96,6 +116,42 @@ std::uint32_t revert_window_ms(ProfileId id, std::uint8_t step, bool three_phase
 std::uint32_t silence_period_ms(ProfileId id, std::uint8_t step, bool three_phase)
 {
     return at_least(reading_pace_ms(id, step, three_phase) * 3u, kSilenceFloorMs);
+}
+
+// True when the duty window will not fit one more reading. A hold here is
+// this end staying quiet on purpose. It is not a dead channel, so the
+// silence timer must not step the link down across it.
+bool reading_blocked(Duty& duty, ProfileId id, std::uint8_t step, bool three, std::uint32_t now_ms)
+{
+    const std::uint32_t air = airtime_us(id, step, on_air_len(AirKind::Reading, three, false));
+    if (air == 0) {
+        return false;
+    }
+    return !duty.can_send(now_ms, air);
+}
+
+ProbeQuota probe_quota(std::uint32_t interval_ms)
+{
+    if (interval_ms > kSlowProbeMs) {
+        return ProbeQuota{3, 4};
+    }
+    return ProbeQuota{7, 10};
+}
+
+bool probe_quota_met(std::uint8_t heard, std::uint8_t missed, ProbeQuota quota)
+{
+    const std::uint8_t allow = static_cast<std::uint8_t>(quota.span - quota.need);
+    return heard >= quota.need && missed <= allow;
+}
+
+bool probe_quota_failed(std::uint8_t heard, std::uint8_t missed, ProbeQuota quota)
+{
+    const std::uint8_t allow = static_cast<std::uint8_t>(quota.span - quota.need);
+    if (missed > allow) {
+        return true;
+    }
+    const unsigned seen = static_cast<unsigned>(heard) + missed;
+    return seen >= quota.span && heard < quota.need;
 }
 
 bool settings_valid(const LinkSettings& settings)
@@ -261,10 +317,24 @@ void TxLink::poll(std::uint32_t now_ms)
         }
         return;
     }
-    if (phase_ == Phase::Run && step_ > 0 && silence_due(now_ms)) {
-        const std::uint8_t slower = static_cast<std::uint8_t>(step_ - 1);
-        const Phase next = slower == 0 ? Phase::Search : Phase::Run;
-        enter(profile_, slower, next, now_ms);
+    if (phase_ == Phase::Run && step_ > 0) {
+        if (reading_blocked(duty_, profile_, step_, three_, now_ms)) {
+            duty_gagged_ = true;
+        } else if (duty_gagged_) {
+            duty_gagged_ = false;
+            last_heard_ms_ = now_ms;
+        }
+    }
+    if (phase_ == Phase::Run && step_ > 0 && !duty_gagged_ && silence_due(now_ms)) {
+        if (silence_strikes_ == 0) {
+            silence_strikes_ = 1;
+            const std::uint8_t slower = static_cast<std::uint8_t>(step_ - 1u);
+            const Phase next = slower == 0 ? Phase::Search : Phase::Run;
+            enter(profile_, slower, next, now_ms);
+        } else {
+            silence_strikes_ = 0;
+            enter(profile_, 0, Phase::Search, now_ms);
+        }
         next_slot_ms_ = now_ms;
     }
 }
@@ -309,6 +379,7 @@ AirAction TxLink::on_slot(std::uint32_t now_ms, bool meter_fresh, const MeterSta
 void TxLink::on_downlink(std::uint32_t now_ms, const Heard& frame)
 {
     last_heard_ms_ = now_ms;
+    silence_strikes_ = 0;
     if (phase_ == Phase::Switching) {
         commit_run(now_ms);
     }
@@ -432,7 +503,9 @@ RxLink::RxLink(const LinkSettings& stored, Duty& duty, bool three_phase)
 
 void RxLink::apply_budget()
 {
-    duty_.set_budget_ms(::p1lora::profile(profile_).duty_ms_per_hour);
+    const std::uint32_t budget = ::p1lora::profile(profile_).duty_ms_per_hour;
+    duty_.set_budget_ms(budget);
+    peer_air_.set_budget_ms(budget);
 }
 
 void RxLink::clear_quality()
@@ -450,6 +523,14 @@ void RxLink::clear_quality()
     }
 }
 
+void RxLink::clear_candidate()
+{
+    cand_n_ = 0;
+    probes_heard_ = 0;
+    probes_missed_ = 0;
+    have_probe_ = false;
+}
+
 void RxLink::enter(ProfileId id, std::uint8_t step, Phase phase, std::uint32_t now_ms)
 {
     const bool moved = id != profile_ || step != step_;
@@ -459,12 +540,20 @@ void RxLink::enter(ProfileId id, std::uint8_t step, Phase phase, std::uint32_t n
     apply_budget();
     last_heard_ms_ = now_ms;
     if (moved) {
+        if (!preserve_step_up_) {
+            step_up_wait_ms_ = kStepUpMs;
+        }
         clear_quality();
         step_entered_ms_ = now_ms;
         probes_heard_ = 0;
         probes_missed_ = 0;
         have_probe_ = false;
         confirm_armed_ = false;
+        cand_n_ = 0;
+    }
+    preserve_step_up_ = false;
+    if (phase_ == Phase::Search) {
+        clear_candidate();
     }
 }
 
@@ -480,13 +569,20 @@ void RxLink::revert(std::uint32_t now_ms)
     confirm_armed_ = false;
     defer_offer_ = false;
     const bool offer = offer_attempt_;
+    const bool step_up = step_up_attempt_;
     const std::uint8_t failed = offered_step_;
     offer_attempt_ = false;
+    step_up_attempt_ = false;
     cmd_.on = false;
     cmd_timed_ = false;
     const Mark back = back_;
     const bool have = have_back_;
     have_back_ = false;
+    if (offer && step_up) {
+        const std::uint32_t doubled = step_up_wait_ms_ > (kStepUpMaxMs / 2u) ? kStepUpMaxMs : step_up_wait_ms_ * 2u;
+        step_up_wait_ms_ = doubled > kStepUpMaxMs ? kStepUpMaxMs : doubled;
+        preserve_step_up_ = true;
+    }
     if (!have) {
         mode_ = LinkMode::Auto;
         fallback_min_ = 0;
@@ -496,7 +592,7 @@ void RxLink::revert(std::uint32_t now_ms)
         fallback_min_ = back.fallback_min;
         enter(back.profile, back.step, back.phase, now_ms);
     }
-    if (offer) {
+    if (offer && !step_up) {
         offer_cap_ = failed == 0 ? 0 : static_cast<std::uint8_t>(failed - 1);
     }
 }
@@ -525,6 +621,8 @@ void RxLink::commit_run(std::uint32_t now_ms)
     phase_ = Phase::Run;
     last_heard_ms_ = now_ms;
     offer_cap_ = kNoOfferCap;
+    step_up_wait_ms_ = kStepUpMs;
+    step_up_attempt_ = false;
     store_committed();
 }
 
@@ -591,6 +689,22 @@ void RxLink::note_counter(std::uint8_t counter)
     push(false);
 }
 
+void RxLink::note_probe(std::uint8_t counter)
+{
+    if (have_probe_) {
+        const Gap gap = counter_gap(last_probe_, counter);
+        if (!gap.restart) {
+            const unsigned sum = static_cast<unsigned>(probes_missed_) + gap.loss;
+            probes_missed_ = sum > 255u ? 255 : static_cast<std::uint8_t>(sum);
+        }
+    }
+    have_probe_ = true;
+    last_probe_ = counter;
+    if (probes_heard_ < 0xFF) {
+        ++probes_heard_;
+    }
+}
+
 bool RxLink::loss_over_limit() const
 {
     return loss_fill_ == kLossSpan && loss_count_ * 100u > static_cast<unsigned>(kLossSpan) * kLossDownPct;
@@ -625,7 +739,7 @@ bool RxLink::step_up_ready(std::uint32_t now_ms) const
     if (offer_cap_ != kNoOfferCap && next > offer_cap_) {
         return false;
     }
-    if (now_ms < step_entered_ms_ || now_ms - step_entered_ms_ < kStepUpMs) {
+    if (now_ms < step_entered_ms_ || now_ms - step_entered_ms_ < step_up_wait_ms_) {
         return false;
     }
     const std::uint32_t span = stay_ok_ + stay_lost_;
@@ -648,12 +762,13 @@ void RxLink::queue_down()
     cmd_timed_ = false;
 }
 
-AirAction RxLink::start_offer(std::uint32_t now_ms, std::uint8_t step)
+AirAction RxLink::start_offer(std::uint32_t now_ms, std::uint8_t step, bool step_up)
 {
     AirAction action = begin_send(now_ms, AirKind::Offer, false);
     if (action.kind == AirKind::None) {
         defer_offer_ = true;
         defer_step_ = step;
+        defer_step_up_ = step_up;
         defer_at_ = now_ms + action.wait_ms;
         return action;
     }
@@ -661,13 +776,16 @@ AirAction RxLink::start_offer(std::uint32_t now_ms, std::uint8_t step)
     back_ = Mark{profile_, step_, phase_, mode_, fallback_min_};
     have_back_ = true;
     offer_attempt_ = true;
+    step_up_attempt_ = step_up;
     offered_step_ = step;
     defer_offer_ = false;
+    preserve_step_up_ = true;
     enter(profile_, step, Phase::Confirming, now_ms);
     probes_heard_ = 0;
     probes_missed_ = 0;
     have_probe_ = false;
     confirm_armed_ = false;
+    cand_n_ = 0;
     arm_revert(now_ms);
     return action;
 }
@@ -718,7 +836,7 @@ AirAction RxLink::poll(std::uint32_t now_ms)
         if (now_ms < defer_at_) {
             return {};
         }
-        return start_offer(now_ms, defer_step_);
+        return start_offer(now_ms, defer_step_, defer_step_up_);
     }
     // One command is attempted for the revert window of its target. After that
     // the receiver stops repeating it, so a dead target cannot be retried forever.
@@ -736,14 +854,28 @@ AirAction RxLink::poll(std::uint32_t now_ms)
         }
         return {};
     }
-    if (phase_ == Phase::Run && step_ > 0 && silence_due(now_ms)) {
-        const std::uint8_t slower = static_cast<std::uint8_t>(step_ - 1u);
-        const Phase next = slower == 0 ? Phase::Search : Phase::Run;
-        enter(profile_, slower, next, now_ms);
+    if (phase_ == Phase::Run && step_ > 0) {
+        if (reading_blocked(peer_air_, profile_, step_, three_, now_ms)) {
+            duty_gagged_ = true;
+        } else if (duty_gagged_) {
+            duty_gagged_ = false;
+            last_heard_ms_ = now_ms;
+        }
+    }
+    if (phase_ == Phase::Run && step_ > 0 && !duty_gagged_ && silence_due(now_ms)) {
+        if (silence_strikes_ == 0) {
+            silence_strikes_ = 1;
+            const std::uint8_t slower = static_cast<std::uint8_t>(step_ - 1u);
+            const Phase next = slower == 0 ? Phase::Search : Phase::Run;
+            enter(profile_, slower, next, now_ms);
+        } else {
+            silence_strikes_ = 0;
+            enter(profile_, 0, Phase::Search, now_ms);
+        }
         return {};
     }
     if (step_up_ready(now_ms)) {
-        return start_offer(now_ms, static_cast<std::uint8_t>(step_ + 1u));
+        return start_offer(now_ms, static_cast<std::uint8_t>(step_ + 1u), true);
     }
     return {};
 }
@@ -751,23 +883,21 @@ AirAction RxLink::poll(std::uint32_t now_ms)
 AirAction RxLink::on_uplink(std::uint32_t now_ms, const Heard& frame)
 {
     last_heard_ms_ = now_ms;
+    silence_strikes_ = 0;
+    const std::uint16_t heard_len = on_air_len(frame.kind, three_, false);
+    const std::uint32_t heard_air = airtime_us(profile_, step_, heard_len);
+    if (heard_air != 0) {
+        peer_air_.record(now_ms, heard_air);
+    }
     if (phase_ == Phase::Switching) {
         commit_run(now_ms);
     }
 
-    if (frame.kind == AirKind::Probe && phase_ == Phase::Confirming) {
-        if (have_probe_) {
-            const Gap gap = counter_gap(last_probe_, frame.counter);
-            if (!gap.restart) {
-                const unsigned sum = static_cast<unsigned>(probes_missed_) + gap.loss;
-                probes_missed_ = sum > 255u ? 255 : static_cast<std::uint8_t>(sum);
-            }
-        }
-        have_probe_ = true;
-        last_probe_ = frame.counter;
-        if (probes_heard_ < 0xFF) {
-            ++probes_heard_;
-        }
+    const bool probe = frame.kind == AirKind::Probe;
+    const bool probing = phase_ == Phase::Confirming || phase_ == Phase::Search ||
+                         (phase_ == Phase::Run && step_ == 0);
+    if (probe && probing) {
+        note_probe(frame.counter);
     }
     note_counter(frame.counter);
     if (snr_n_ < 0xFFFFFFFFu) {
@@ -815,7 +945,9 @@ AirAction RxLink::on_uplink(std::uint32_t now_ms, const Heard& frame)
     }
 
     if (frame.kind == AirKind::Probe && phase_ == Phase::Confirming) {
-        if (probes_heard_ >= kConfirmHeard && probes_missed_ <= static_cast<std::uint8_t>(kConfirmOf - kConfirmHeard)) {
+        const ProbeQuota quota = probe_quota(reading_pace_ms(profile_, step_, three_));
+        // SNR does not confirm. Only the counter does, and only once the quota is met.
+        if (probe_quota_met(probes_heard_, probes_missed_, quota)) {
             if (!confirm_armed_) {
                 confirm_armed_ = true;
                 arm_revert(now_ms);
@@ -829,8 +961,32 @@ AirAction RxLink::on_uplink(std::uint32_t now_ms, const Heard& frame)
 
     if (frame.kind == AirKind::Probe && mode_ == LinkMode::Auto && !revert_on_ && !cmd_.on &&
         (phase_ == Phase::Search || (phase_ == Phase::Run && step_ == 0))) {
-        const std::uint8_t pick = fastest_offer_step(profile_, step_, frame.snr_qdb, offer_cap_);
-        if (pick == step_) {
+        if (cand_n_ < 3) {
+            int q = frame.snr_qdb;
+            if (q < -128) {
+                q = -128;
+            }
+            if (q > 127) {
+                q = 127;
+            }
+            cand_snr_[cand_n_++] = static_cast<std::int16_t>(q);
+        }
+        const ProbeQuota quota = probe_quota(reading_pace_ms(profile_, step_, three_));
+        const bool failed = probe_quota_failed(probes_heard_, probes_missed_, quota);
+        const bool met = probe_quota_met(probes_heard_, probes_missed_, quota);
+        if (cand_n_ < 3) {
+            if (failed && phase_ == Phase::Search) {
+                offer_cap_ = step_ == 0 ? 0 : static_cast<std::uint8_t>(step_ - 1u);
+                clear_candidate();
+            }
+            return {};
+        }
+        const std::int16_t med = median3(cand_snr_[0], cand_snr_[1], cand_snr_[2]);
+        const std::uint8_t pick = fastest_offer_step(profile_, step_, med, offer_cap_);
+        if (pick != step_ && phase_ == Phase::Search) {
+            return start_offer(now_ms, pick, false);
+        }
+        if (pick == step_ && met) {
             AirAction confirm = begin_send(now_ms, AirKind::Confirm, false);
             if (confirm.kind == AirKind::None) {
                 return confirm;
@@ -841,9 +997,11 @@ AirAction RxLink::on_uplink(std::uint32_t now_ms, const Heard& frame)
             }
             return confirm;
         }
-        if (phase_ == Phase::Search) {
-            return start_offer(now_ms, pick);
+        if (failed && phase_ == Phase::Search) {
+            offer_cap_ = step_ == 0 ? 0 : static_cast<std::uint8_t>(step_ - 1u);
+            clear_candidate();
         }
+        return {};
     }
 
     if (frame.kind != AirKind::Reading && frame.kind != AirKind::Status) {

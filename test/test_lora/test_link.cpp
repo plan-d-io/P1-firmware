@@ -69,6 +69,12 @@ struct World {
     bool want_home = false;
     bool home_left = false;
     std::uint32_t home_ms = 0xFFFFFFFFu;
+    std::uint8_t up_script[96]{};
+    std::uint8_t up_script_n = 0;
+    std::uint8_t up_script_i = 0;
+    std::int16_t snr_script[8]{};
+    std::uint8_t snr_script_n = 0;
+    std::uint8_t snr_script_i = 0;
 
     explicit World(p1lora::LinkSettings stored = {}, std::uint32_t seed = 1)
         : txd(360000u),
@@ -274,8 +280,17 @@ struct World {
         heard.accepted = act.accepted;
         heard.meter = act.meter;
         heard.snr_qdb = snr_of(act.sent_profile, act.sent_step);
+        if (act.kind == p1lora::AirKind::Probe && snr_script_i < snr_script_n) {
+            heard.snr_qdb = snr_script[snr_script_i++];
+        }
+        bool scripted = false;
+        bool script_drop = false;
+        if (up_script_i < up_script_n) {
+            scripted = true;
+            script_drop = up_script[up_script_i++] == 0;
+        }
         const bool same = rx.profile() == act.sent_profile && rx.step() == act.sent_step;
-        if (!same || dropped(act.sent_profile, act.sent_step, control_frame(act))) {
+        if (!same || (scripted ? script_drop : dropped(act.sent_profile, act.sent_step, control_frame(act)))) {
             tx.on_ack_missed(arrive);
             note(arrive);
             tx_due = tx.next_slot_ms() > now ? tx.next_slot_ms() : now;
@@ -402,8 +417,8 @@ void test_link_first_boot()
 {
     World w;
     w.watch_step = 5;
-    w.run_until(120000u);
-    TEST_ASSERT_EQUAL_UINT32(5701u, w.watch_ms);
+    w.run_until(180000u);
+    TEST_ASSERT_EQUAL_UINT32(59101u, w.watch_ms);
     TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
     TEST_ASSERT_TRUE(w.tx.settings().saved);
     TEST_ASSERT_TRUE(w.rx.settings().saved);
@@ -419,7 +434,7 @@ void test_link_snr_steps()
     zero.set_snr(0);
     zero.watch_step = 4;
     zero.run_until(180000u);
-    TEST_ASSERT_EQUAL_UINT32(7490u, zero.watch_ms);
+    TEST_ASSERT_EQUAL_UINT32(64090u, zero.watch_ms);
     TEST_ASSERT_TRUE(both_at(zero, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     finish(zero, "snr0");
 
@@ -427,7 +442,7 @@ void test_link_snr_steps()
     weak.set_snr(-32);
     weak.watch_step = 0;
     weak.run_until(180000u);
-    TEST_ASSERT_EQUAL_UINT32(3458u, weak.watch_ms);
+    TEST_ASSERT_EQUAL_UINT32(52858u, weak.watch_ms);
     TEST_ASSERT_TRUE(both_at(weak, 0, p1lora::ProfileId::A, p1lora::LinkView::Run));
     finish(weak, "snr-8");
 }
@@ -442,8 +457,8 @@ void test_link_loss_step_down()
     w.loss_a[5] = 50;
     w.watch_step = 4;
     w.watch_ms = 0xFFFFFFFFu;
-    w.run_until(up + 180000u);
-    TEST_ASSERT_EQUAL_UINT32(73249u, w.watch_ms - up);
+    w.run_until(up + 300000u);
+    TEST_ASSERT_EQUAL_UINT32(39504u, w.watch_ms - up);
     TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     const std::uint32_t at = w.now;
     w.loss_a[5] = 0;
@@ -460,14 +475,20 @@ void test_link_silence_search()
     TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
     const std::uint32_t dead = w.now;
     w.set_loss(100);
+    w.watch_step = 4;
+    w.watch_ms = 0xFFFFFFFFu;
+    w.run_until(dead + 180000u);
+    TEST_ASSERT_EQUAL_UINT32(120323u, w.watch_ms - dead);
+    TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     w.watch_step = 0;
     w.watch_search = true;
     w.watch_ms = 0xFFFFFFFFu;
-    w.run_until(dead + 900000u);
-    TEST_ASSERT_EQUAL_UINT32(602204u, w.watch_ms - dead);
+    w.run_until(dead + 400000u);
+    TEST_ASSERT_EQUAL_UINT32(242604u, w.watch_ms - dead);
     TEST_ASSERT_EQUAL_UINT8(0, w.tx.step());
     TEST_ASSERT_EQUAL_UINT8(0, w.rx.step());
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Search), static_cast<int>(w.tx.view()));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Search), static_cast<int>(w.rx.view()));
     w.set_loss(0);
     w.set_snr(48);
     w.watch_step = 5;
@@ -475,7 +496,7 @@ void test_link_silence_search()
     w.watch_ms = 0xFFFFFFFFu;
     const std::uint32_t back = w.now;
     w.run_until(back + 180000u);
-    TEST_ASSERT_EQUAL_UINT32(26539u, w.watch_ms - back);
+    TEST_ASSERT_EQUAL_UINT32(72139u, w.watch_ms - back);
     TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
     finish(w, "silence");
 }
@@ -489,16 +510,58 @@ void test_link_step_up()
     TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     const std::uint32_t at = w.watch_ms;
     w.set_snr(48);
-    w.run_until(at + 29u * 60u * 1000u);
+    w.loss_a[5] = 100;
+    w.run_until(at + 110u * 60u * 1000u);
     TEST_ASSERT_EQUAL_UINT8(4, w.tx.step());
     TEST_ASSERT_EQUAL_UINT8(4, w.rx.step());
-    w.watch_step = 5;
+    w.run_until(at + 130u * 60u * 1000u);
+    TEST_ASSERT_TRUE(w.offers.size() >= 1);
+    const std::uint32_t first = w.offers.back().ms;
+    TEST_ASSERT_EQUAL_UINT32(7218895u, first - at);
+    TEST_ASSERT_EQUAL_UINT8(5, w.offers.back().step);
+    TEST_ASSERT_EQUAL_UINT8(4, w.tx.step());
+    TEST_ASSERT_EQUAL_UINT8(4, w.rx.step());
+
+    const std::uint32_t n1 = static_cast<std::uint32_t>(w.offers.size());
+    w.run_until(first + 3u * 60u * 60u * 1000u);
+    TEST_ASSERT_EQUAL_UINT32(n1, static_cast<std::uint32_t>(w.offers.size()));
+    w.run_until(first + 4u * 60u * 60u * 1000u + 10u * 60u * 1000u);
+    TEST_ASSERT_TRUE(w.offers.size() > n1);
+    const std::uint32_t second = w.offers.back().ms;
+    TEST_ASSERT_EQUAL_UINT32(14460415u, second - first);
+    TEST_ASSERT_EQUAL_UINT8(5, w.offers.back().step);
+
+    const std::uint32_t n2 = static_cast<std::uint32_t>(w.offers.size());
+    w.run_until(second + 6u * 60u * 60u * 1000u);
+    TEST_ASSERT_EQUAL_UINT32(n2, static_cast<std::uint32_t>(w.offers.size()));
+    w.run_until(second + 8u * 60u * 60u * 1000u + 10u * 60u * 1000u);
+    TEST_ASSERT_TRUE(w.offers.size() > n2);
+    const std::uint32_t third = w.offers.back().ms;
+    TEST_ASSERT_EQUAL_UINT32(28860600u, third - second);
+    TEST_ASSERT_EQUAL_UINT8(5, w.offers.back().step);
+    w.run_until(third + 120000u);
+    TEST_ASSERT_EQUAL_UINT8(4, w.tx.step());
+    TEST_ASSERT_EQUAL_UINT8(4, w.rx.step());
+
+    w.loss_a[5] = 0;
+    w.loss_a[4] = 30;
+    w.watch_step = 3;
     w.watch_ms = 0xFFFFFFFFu;
-    w.run_until(at + 33u * 60u * 1000u);
-    TEST_ASSERT_EQUAL_UINT32(2u, static_cast<std::uint32_t>(w.offers.size()));
-    TEST_ASSERT_EQUAL_UINT32(at + 1796215u, w.offers.back().ms);
-    TEST_ASSERT_EQUAL_UINT32(at + 1798520u, w.watch_ms);
-    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+    const std::uint32_t down_from = w.now;
+    w.run_until(down_from + 300000u);
+    TEST_ASSERT_EQUAL_UINT32(173696u, w.watch_ms - down_from);
+    TEST_ASSERT_TRUE(both_at(w, 3, p1lora::ProfileId::A, p1lora::LinkView::Run));
+    w.loss_a[4] = 0;
+    w.set_snr(48);
+    const std::uint32_t dropped = w.watch_ms;
+    const std::uint32_t offers_at_drop = static_cast<std::uint32_t>(w.offers.size());
+    w.run_until(dropped + 110u * 60u * 1000u);
+    TEST_ASSERT_EQUAL_UINT32(offers_at_drop, static_cast<std::uint32_t>(w.offers.size()));
+    w.watch_step = 4;
+    w.watch_ms = 0xFFFFFFFFu;
+    w.run_until(dropped + 130u * 60u * 1000u);
+    TEST_ASSERT_EQUAL_UINT32(7254260u, w.watch_ms - dropped);
+    TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     finish(w, "step-up");
 }
 
@@ -507,12 +570,12 @@ void test_link_offer_reverts()
     World w;
     w.loss_a[5] = 100;
     w.watch_step = 4;
-    w.run_until(180000u);
-    TEST_ASSERT_EQUAL_UINT32(2u, static_cast<std::uint32_t>(w.offers.size()));
+    w.run_until(240000u);
+    TEST_ASSERT_TRUE(w.offers.size() >= 2);
+    TEST_ASSERT_EQUAL_UINT32(51866u, w.offers[0].ms);
+    TEST_ASSERT_EQUAL_UINT32(164724u, w.offers[1].ms);
     TEST_ASSERT_EQUAL_UINT8(5, w.offers[0].step);
-    TEST_ASSERT_EQUAL_UINT32(2466u, w.offers[0].ms);
     TEST_ASSERT_EQUAL_UINT8(4, w.offers[1].step);
-    TEST_ASSERT_EQUAL_UINT32(65924u, w.offers[1].ms);
     TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
     finish(w, "revert");
 }
@@ -527,7 +590,7 @@ void test_link_no_split()
     for (std::uint32_t seed = 1000; seed < 1200; ++seed) {
         World w({}, seed);
         w.ctrl_loss = static_cast<std::uint8_t>((seed * 17u) % 61u);
-        w.run_until(10u * 60u * 1000u);
+        w.run_until(30u * 60u * 1000u);
         const bool met = w.tx.settings().saved && w.rx.settings().saved && w.tx.step() == w.rx.step() &&
                          w.tx.profile() == w.rx.profile() && w.tx.view() == p1lora::LinkView::Run &&
                          w.rx.view() == p1lora::LinkView::Run;
@@ -599,7 +662,7 @@ void test_link_commands()
 {
     World w;
     w.watch_step = 5;
-    w.run_until(120000u);
+    w.run_until(180000u);
     TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
     TEST_ASSERT_TRUE(w.rx.request(p1lora::LinkMode::Locked, p1lora::ProfileId::A, 5, 0));
     w.run_until(w.now + 60000u);
@@ -613,7 +676,7 @@ void test_link_commands()
     w.watch_profile = p1lora::ProfileId::B;
     w.watch_ms = 0xFFFFFFFFu;
     w.run_until(w.now + 180000u);
-    TEST_ASSERT_EQUAL_UINT32(184449u, w.watch_ms);
+    TEST_ASSERT_EQUAL_UINT32(243849u, w.watch_ms);
     TEST_ASSERT_TRUE(both_at(w, 0, p1lora::ProfileId::B, p1lora::LinkView::Run));
 
     TEST_ASSERT_TRUE(w.rx.request(p1lora::LinkMode::Auto, p1lora::ProfileId::A, 5, 0));
@@ -631,7 +694,7 @@ void test_link_commands()
     TEST_ASSERT_TRUE(w.rx.request(p1lora::LinkMode::Auto, p1lora::ProfileId::B, 0, 0));
     const std::uint32_t window = p1lora::revert_window_ms(p1lora::ProfileId::B, 0, true);
     w.run_until(before + window + 120000u);
-    TEST_ASSERT_EQUAL_UINT32(before + 740592u, w.home_ms);
+    TEST_ASSERT_EQUAL_UINT32(740992u, w.home_ms - before);
     TEST_ASSERT_TRUE(w.saw_profile_b);
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::ProfileId::A), static_cast<int>(w.tx.profile()));
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::ProfileId::A), static_cast<int>(w.rx.profile()));
@@ -661,7 +724,7 @@ void test_link_status_accept()
 {
     World w;
     w.watch_step = 5;
-    w.run_until(120000u);
+    w.run_until(180000u);
     TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
     w.meter = false;
     w.run_until(w.now + 5000u);
@@ -693,4 +756,136 @@ void test_link_duty_windows()
     TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
     TEST_ASSERT_FALSE(w.tx_log.empty());
     finish(w, "duty");
+}
+
+void run_script(World& w, std::uint32_t cap)
+{
+    const std::uint8_t n = w.up_script_n;
+    while (w.up_script_i < n && w.now < cap) {
+        w.run_until(w.now + 1000u);
+    }
+}
+
+void test_link_loss_burst()
+{
+    World w;
+    w.watch_step = 5;
+    w.run_until(180000u);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+    for (int i = 0; i < 50; ++i) {
+        w.up_script[i] = (i >= 22 && i < 28) ? 0 : 1;
+    }
+    w.up_script_n = 50;
+    run_script(w, w.now + 120000u);
+    TEST_ASSERT_EQUAL_UINT8(50, w.up_script_i);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    for (int i = 0; i < 50; ++i) {
+        w.up_script[i] = (i % 10) < 3 ? 0 : 1;
+    }
+    w.up_script_n = 50;
+    w.up_script_i = 0;
+    w.watch_step = 4;
+    w.watch_ms = 0xFFFFFFFFu;
+    const std::uint32_t from = w.now;
+    run_script(w, from + 180000u);
+    TEST_ASSERT_EQUAL_UINT32(24504u, w.watch_ms - from);
+    TEST_ASSERT_TRUE(both_at(w, 4, p1lora::ProfileId::A, p1lora::LinkView::Run));
+    finish(w, "burst");
+}
+
+void test_link_confirm_quota()
+{
+    const std::uint32_t sf12 = p1lora::reading_pace_ms(p1lora::ProfileId::A, 0, true);
+    const std::uint32_t sf11 = p1lora::reading_pace_ms(p1lora::ProfileId::A, 1, true);
+    const std::uint32_t sf10 = p1lora::reading_pace_ms(p1lora::ProfileId::A, 2, true);
+    const std::uint32_t sf8 = p1lora::reading_pace_ms(p1lora::ProfileId::A, 4, true);
+    TEST_ASSERT_TRUE(sf12 > p1lora::kSlowProbeMs);
+    TEST_ASSERT_TRUE(sf11 > p1lora::kSlowProbeMs);
+    TEST_ASSERT_TRUE(sf10 <= p1lora::kSlowProbeMs);
+    const p1lora::ProbeQuota slow = p1lora::probe_quota(sf12);
+    const p1lora::ProbeQuota fast = p1lora::probe_quota(sf8);
+    TEST_ASSERT_EQUAL_UINT8(3, slow.need);
+    TEST_ASSERT_EQUAL_UINT8(4, slow.span);
+    TEST_ASSERT_EQUAL_UINT8(7, fast.need);
+    TEST_ASSERT_EQUAL_UINT8(10, fast.span);
+
+    World ok;
+    ok.set_snr(-32);
+    ok.watch_step = 0;
+    ok.run_until(180000u);
+    TEST_ASSERT_EQUAL_UINT32(52858u, ok.watch_ms);
+    TEST_ASSERT_TRUE(both_at(ok, 0, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    World bad;
+    bad.set_snr(-32);
+    const std::uint8_t gaps[] = {1, 0, 1, 0, 1};
+    for (std::uint8_t i = 0; i < 5; ++i) {
+        bad.up_script[i] = gaps[i];
+    }
+    bad.up_script_n = 5;
+    run_script(bad, 200000u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Search), static_cast<int>(bad.tx.view()));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Search), static_cast<int>(bad.rx.view()));
+    TEST_ASSERT_EQUAL_UINT8(0, bad.tx.step());
+    TEST_ASSERT_EQUAL_UINT8(0, bad.rx.step());
+    TEST_ASSERT_FALSE(bad.rx.settings().saved);
+    bad.up_script_n = bad.up_script_i;
+    bad.set_snr(48);
+    bad.watch_step = 0;
+    bad.watch_ms = 0xFFFFFFFFu;
+    bad.run_until(bad.now + 180000u);
+    TEST_ASSERT_EQUAL_UINT32(176358u, bad.watch_ms);
+    TEST_ASSERT_TRUE(both_at(bad, 0, p1lora::ProfileId::A, p1lora::LinkView::Run));
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<std::uint32_t>(bad.offers.size()));
+
+    World six;
+    six.set_snr(0);
+    for (int i = 0; i < 9; ++i) {
+        six.up_script[i] = 1;
+    }
+    for (int i = 9; i < 49; ++i) {
+        six.up_script[i] = 0;
+    }
+    six.up_script_n = 49;
+    const std::uint32_t cap = 400000u;
+    while (six.up_script_i < six.up_script_n && six.now < cap) {
+        six.run_until(six.now + 1000u);
+        if (!six.offers.empty() && six.tx.step() == 0 && six.rx.step() == 0 &&
+            six.tx.view() == p1lora::LinkView::Search && six.rx.view() == p1lora::LinkView::Search &&
+            six.now > six.offers[0].ms) {
+            break;
+        }
+    }
+    TEST_ASSERT_FALSE(six.offers.empty());
+    TEST_ASSERT_EQUAL_UINT8(4, six.offers[0].step);
+    TEST_ASSERT_EQUAL_UINT8(0, six.tx.step());
+    TEST_ASSERT_EQUAL_UINT8(0, six.rx.step());
+    six.up_script_n = six.up_script_i;
+    six.set_snr(48);
+    six.watch_step = 3;
+    six.watch_ms = 0xFFFFFFFFu;
+    six.run_until(six.now + 240000u);
+    TEST_ASSERT_TRUE(six.offers.size() >= 2);
+    TEST_ASSERT_EQUAL_UINT32(189424u, six.offers[1].ms);
+    TEST_ASSERT_EQUAL_UINT8(3, six.offers[1].step);
+    finish(six, "quota");
+}
+
+void test_link_candidate_median()
+{
+    World w;
+    // 12 dB, −2 dB, 11 dB. The middle value is 11 dB, not the worst and not the mean.
+    w.snr_script[0] = 48;
+    w.snr_script[1] = -8;
+    w.snr_script[2] = 44;
+    w.snr_script_n = 3;
+    w.run_until(180000u);
+    const std::uint8_t as_median = p1lora::fastest_offer_step(p1lora::ProfileId::A, 0, 44);
+    const std::uint8_t as_worst = p1lora::fastest_offer_step(p1lora::ProfileId::A, 0, -8);
+    TEST_ASSERT_FALSE(w.offers.empty());
+    TEST_ASSERT_EQUAL_UINT8(as_median, w.offers[0].step);
+    TEST_ASSERT_TRUE(as_median != as_worst);
+    TEST_ASSERT_EQUAL_UINT32(51866u, w.offers[0].ms);
+    finish(w, "median");
 }

@@ -937,6 +937,9 @@ void test_link_commands();
 void test_link_resume();
 void test_link_status_accept();
 void test_link_duty_windows();
+void test_link_loss_burst();
+void test_link_confirm_quota();
+void test_link_candidate_median();
 
 extern "C" void setUp() {}
 extern "C" void tearDown() {}
@@ -979,5 +982,8 @@ int main()
     RUN_TEST(test_link_resume);
     RUN_TEST(test_link_status_accept);
     RUN_TEST(test_link_duty_windows);
+    RUN_TEST(test_link_loss_burst);
+    RUN_TEST(test_link_confirm_quota);
+    RUN_TEST(test_link_candidate_median);
     return UNITY_END();
 }

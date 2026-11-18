@@ -2,13 +2,18 @@
 
 // Link behaviour for both ends of a pair. Event-driven: the caller passes
 // time in and owns the radio, the NVS write and the duty image. No heap and
-// no Arduino types. L05b is what connects this to the boards.
+// no Arduino types. The firmware is what connects this to the boards.
 //
 // The receiver decides step changes. The transmitter follows. A command or an
 // offer that changes the radio is provisional until the other end is heard on
 // the new setting; the revert window below sends both back to the previous
 // setting if that does not happen. Locking the step already in use stores
 // the mode and does not retune.
+//
+// A single frame's SNR never changes the link state. What moves the link is
+// the frame counter (heard against sent), a silence timer, or a command.
+// SNR only proposes a candidate step — the median of the first three probes
+// heard in search — and gates a step up. The counter then confirms the step.
 
 #include "P1LoRa.h"
 
@@ -21,15 +26,26 @@ constexpr std::int16_t kOfferMarginQdb = 40;   // 10.0 dB
 constexpr std::int16_t kStepUpExtraQdb = 10;   // 2.5 dB
 constexpr std::int16_t kBwOctaveQdb = 12;      // 3.0 dB, 10·log10(2)
 
-constexpr std::uint8_t kConfirmHeard = 3;
-constexpr std::uint8_t kConfirmOf = 5;
-constexpr std::uint8_t kLossSpan = 20;
-constexpr std::uint8_t kLossDownPct = 20;      // step down above this, not at it
-constexpr std::uint8_t kStepUpLossPct = 2;     // step up below this
-constexpr std::uint32_t kStepUpMs = 30u * 60u * 1000u;
+constexpr std::uint8_t kLossSpan = 50;
+constexpr std::uint8_t kLossDownPct = 25;      // step down above this, not at it
+constexpr std::uint8_t kStepUpLossPct = 1;     // step up strictly under this
+constexpr std::uint32_t kStepUpMs = 2u * 60u * 60u * 1000u;
+constexpr std::uint32_t kStepUpMaxMs = 24u * 60u * 60u * 1000u;
+constexpr std::uint32_t kSlowProbeMs = 12000;  // slower than this: 3 of 4, else 7 of 10
 constexpr std::uint32_t kSilenceFloorMs = 120000;
 constexpr std::uint32_t kRevertFloorMs = 60000;
 constexpr std::uint8_t kNoOfferCap = 0xFF;
+
+// How many probes have to arrive before a step is confirmed. `span` is the
+// group size (4 or 10). A miss is a counter gap, the same rule as loss.
+struct ProbeQuota {
+    std::uint8_t need = 7;
+    std::uint8_t span = 10;
+};
+
+ProbeQuota probe_quota(std::uint32_t interval_ms);
+bool probe_quota_met(std::uint8_t heard, std::uint8_t missed, ProbeQuota quota);
+bool probe_quota_failed(std::uint8_t heard, std::uint8_t missed, ProbeQuota quota);
 
 // SX1276 demodulation floor for SF7..SF12, in quarter-dB.
 std::int16_t floor_qdb(std::uint8_t sf);
@@ -156,6 +172,8 @@ private:
     std::uint32_t revert_at_ = 0;
     std::uint32_t last_heard_ms_ = 0;
     std::uint32_t next_slot_ms_ = 0;
+    std::uint8_t silence_strikes_ = 0;
+    bool duty_gagged_ = false;
     bool accept_next_ = false;
     bool switch_after_send_ = false;
     ProfileId switch_profile_ = ProfileId::A;
@@ -212,15 +230,21 @@ private:
     void store_committed();
     AirAction begin_send(std::uint32_t now_ms, AirKind kind, bool with_command);
     void note_counter(std::uint8_t counter);
+    void note_probe(std::uint8_t counter);
     void clear_quality();
+    void clear_candidate();
     bool loss_over_limit() const;
     bool step_up_ready(std::uint32_t now_ms) const;
     std::int16_t median_qdb() const;
     void queue_down();
-    AirAction start_offer(std::uint32_t now_ms, std::uint8_t step);
+    AirAction start_offer(std::uint32_t now_ms, std::uint8_t step, bool step_up);
     bool silence_due(std::uint32_t now_ms) const;
 
     Duty& duty_;
+    // Airtime of uplinks actually heard. While this cannot fit another
+    // reading, the transmitter is in a duty hold, not gone.
+    Duty peer_air_{360000u};
+    bool duty_gagged_ = false;
     bool three_;
     LinkSettings committed_{};
     bool store_ = false;
@@ -237,6 +261,13 @@ private:
     std::uint32_t revert_at_ = 0;
     std::uint32_t last_heard_ms_ = 0;
     std::uint32_t step_entered_ms_ = 0;
+    std::uint32_t step_up_wait_ms_ = kStepUpMs;
+    bool preserve_step_up_ = false;
+    bool step_up_attempt_ = false;
+    bool defer_step_up_ = false;
+    std::uint8_t silence_strikes_ = 0;
+    std::int16_t cand_snr_[3]{};
+    std::uint8_t cand_n_ = 0;
     bool lock_lost_ = false;
     Command cmd_{};
     bool confirm_armed_ = false;
