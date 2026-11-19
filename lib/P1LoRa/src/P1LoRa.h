@@ -46,62 +46,89 @@ std::uint32_t status_interval_s(ProfileId id, std::uint8_t step);
 std::int8_t clamp_tx_power(ProfileId id, std::int8_t requested_dbm);
 
 // Plain image of a Duty. The caller keeps it (RTC memory on the device).
-// A restored image is not aged: the reboot is treated as taking no time.
-// 10 s slots: 360 of them cover the hour, plus one so a slot that still
-// overlaps the window is counted in full. Image is 1468 bytes.
+// One window per profile: airtime on 869 MHz does not spend the 868 MHz
+// allowance, and the reverse. A restored image is not aged: the reboot is
+// treated as taking no time. 10 s slots: 360 of them cover the hour, plus
+// one so a slot that still overlaps the window is counted in full.
+// Magic 0x50314477 rejects the older one-window image (0x50314476, 1468 bytes).
 constexpr std::uint32_t kDutySlotMs = 10000u;
 constexpr int kDutySlots = 361;
-constexpr std::uint32_t kDutyMagic = 0x50314476u;
+constexpr std::uint32_t kDutyMagic = 0x50314477u;
 
-struct DutyImage {
-    std::uint32_t magic;
+struct DutyBandImage {
     std::uint32_t budget_us;
     std::uint32_t bucket_us[kDutySlots];
     std::uint32_t last_slot;
-    std::uint32_t now_ms;
     std::uint8_t started;
     std::uint8_t pad[3];
+};
+static_assert(sizeof(DutyBandImage) == 1456u, "duty band image size");
+
+struct DutyImage {
+    std::uint32_t magic;
+    std::uint32_t home_us;
+    std::uint32_t active;
+    std::uint32_t now_ms;
+    DutyBandImage band[2];
     std::uint32_t checksum;
 };
-static_assert(sizeof(DutyImage) == 1468u, "duty image size");
+static_assert(sizeof(DutyImage) == 2932u, "duty image size");
 
-// Rolling 3600 s window of our own airtime. A 10 s slot that still overlaps
-// the window is counted in full, so this may hold a send back a little and
-// must not let one through early. next_send_ms spreads what is left of a
-// 95 % aim across the hour, and never earlier than wait_ms.
+// Rolling 3600 s window of our own airtime, one per profile. A 10 s slot
+// that still overlaps the window is counted in full, so this may hold a
+// send back a little and must not let one through early. next_send_ms
+// spreads what is left of a 95 % aim across the hour, and never earlier
+// than wait_ms. The pacer and the hard cap use the active profile's window.
 class Duty {
 public:
     explicit Duty(std::uint32_t budget_ms_per_hour);
 
-    // The rolling window stays. The next can_send uses this budget, so a
-    // profile change cannot spend the previous profile's larger allowance.
+    // Select the window whose allowance is this. Profile A and profile B
+    // stay separate. An allowance that matches neither stays on the active
+    // window and replaces that window's budget.
     void set_budget_ms(std::uint32_t budget_ms_per_hour);
 
     bool can_send(std::uint32_t now_ms, std::uint32_t airtime_us);
     void record(std::uint32_t now_ms, std::uint32_t airtime_us);
+    // The link records its estimate on the active window. The radio may
+    // still be on the other profile. Put the measured airtime on the band
+    // that was on the air, and take the estimate back off the active window
+    // when those are different, so a band is never under-counted and the
+    // other band is not charged for it.
+    void settle(std::uint32_t on_air_budget_ms, std::uint32_t now_ms, std::uint32_t linked_us,
+                std::uint32_t need_us);
     // 0 if a send is allowed now. Otherwise how long to wait.
     std::uint32_t wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const;
     // Absolute time of the next send of this airtime. The steady interval
     // spreads a 95 % aim across the hour and is never under 1 s. A burst
     // above that aim stretches it, at most twice, and never before the hard cap.
     std::uint32_t next_send_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const;
-    // Airtime still charged inside the window, in microseconds.
+    // Airtime still charged inside the active window, in microseconds.
     std::uint32_t charged_us(std::uint32_t now_ms) const;
     // now_ms is the clock value the buckets were recorded against.
     void save(DutyImage& out, std::uint32_t now_ms) const;
-    // False if the magic, checksum or budget does not match. State is unchanged then.
+    // False if the magic, checksum or home budget does not match. State is unchanged then.
     bool restore(const DutyImage& in);
 
 private:
     static constexpr int kSlots = kDutySlots;
 
-    void roll(std::uint32_t now_ms);
-    std::uint32_t used_us(std::uint32_t now_ms);
+    struct Band {
+        std::uint32_t budget_us = 0;
+        std::uint32_t bucket_us[kSlots]{};
+        std::uint32_t last_slot = 0;
+        bool started = false;
+    };
 
-    std::uint32_t budget_us_;
-    std::uint32_t bucket_us_[kSlots]{};
-    std::uint32_t last_slot_ = 0;
-    bool started_ = false;
+    static void roll(Band& band, std::uint32_t now_ms);
+    static std::uint32_t used_us(Band& band, std::uint32_t now_ms);
+    int band_index(std::uint32_t budget_us) const;
+    void add(Band& band, std::uint32_t now_ms, std::uint32_t airtime_us);
+    void remove(Band& band, std::uint32_t now_ms, std::uint32_t airtime_us);
+
+    Band band_[2];
+    int active_ = 0;
+    std::uint32_t home_us_ = 0;
 };
 
 enum class KeyStatus : std::uint8_t { Ok, Rejected };

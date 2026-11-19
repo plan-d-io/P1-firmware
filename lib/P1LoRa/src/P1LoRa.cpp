@@ -338,48 +338,72 @@ std::uint32_t status_interval_s(ProfileId id, std::uint8_t step)
 }
 
 Duty::Duty(std::uint32_t budget_ms_per_hour)
-    : budget_us_(budget_ms_per_hour * 1000u)
+    : home_us_(budget_ms_per_hour * 1000u)
 {
+    band_[0].budget_us = profile(ProfileId::A).duty_ms_per_hour * 1000u;
+    band_[1].budget_us = profile(ProfileId::B).duty_ms_per_hour * 1000u;
+    if (home_us_ == band_[1].budget_us && home_us_ != band_[0].budget_us) {
+        active_ = 1;
+    } else {
+        active_ = 0;
+        if (home_us_ != band_[0].budget_us) {
+            band_[0].budget_us = home_us_;
+        }
+    }
 }
 
 void Duty::set_budget_ms(std::uint32_t budget_ms_per_hour)
 {
-    budget_us_ = budget_ms_per_hour * 1000u;
+    const std::uint32_t us = budget_ms_per_hour * 1000u;
+    const int match = band_index(us);
+    if (band_[match].budget_us == us) {
+        active_ = match;
+        return;
+    }
+    band_[active_].budget_us = us;
 }
 
-void Duty::roll(std::uint32_t now_ms)
+int Duty::band_index(std::uint32_t budget_us) const
+{
+    if (band_[1].budget_us == budget_us) {
+        return 1;
+    }
+    return 0;
+}
+
+void Duty::roll(Band& band, std::uint32_t now_ms)
 {
     const std::uint32_t slot = now_ms / kDutySlotMs;
-    if (!started_) {
-        started_ = true;
-        last_slot_ = slot;
+    if (!band.started) {
+        band.started = true;
+        band.last_slot = slot;
         return;
     }
-    if (slot <= last_slot_) {
+    if (slot <= band.last_slot) {
         return;
     }
-    const std::uint32_t jump = slot - last_slot_;
+    const std::uint32_t jump = slot - band.last_slot;
     if (jump >= static_cast<std::uint32_t>(kSlots)) {
-        for (std::uint32_t& b : bucket_us_) {
+        for (std::uint32_t& b : band.bucket_us) {
             b = 0;
         }
     } else {
         for (std::uint32_t i = 1; i <= jump; ++i) {
-            bucket_us_[(last_slot_ + i) % kSlots] = 0;
+            band.bucket_us[(band.last_slot + i) % kSlots] = 0;
         }
     }
-    last_slot_ = slot;
+    band.last_slot = slot;
 }
 
-std::uint32_t Duty::used_us(std::uint32_t now_ms)
+std::uint32_t Duty::used_us(Band& band, std::uint32_t now_ms)
 {
-    roll(now_ms);
+    roll(band, now_ms);
     const std::uint32_t slot = now_ms / kDutySlotMs;
     const std::uint32_t window_start = now_ms >= 3600000u ? now_ms - 3600000u : 0;
     const std::uint32_t oldest = window_start / kDutySlotMs;
     std::uint32_t sum = 0;
     for (std::uint32_t s = oldest; s <= slot; ++s) {
-        const std::uint32_t add = bucket_us_[s % kSlots];
+        const std::uint32_t add = band.bucket_us[s % kSlots];
         if (sum > 0xFFFFFFFFu - add) {
             return 0xFFFFFFFFu;
         }
@@ -390,16 +414,17 @@ std::uint32_t Duty::used_us(std::uint32_t now_ms)
 
 bool Duty::can_send(std::uint32_t now_ms, std::uint32_t airtime_us)
 {
-    if (airtime_us > budget_us_) {
+    Band& band = band_[active_];
+    if (airtime_us > band.budget_us) {
         return false;
     }
-    return used_us(now_ms) <= budget_us_ - airtime_us;
+    return used_us(band, now_ms) <= band.budget_us - airtime_us;
 }
 
-void Duty::record(std::uint32_t now_ms, std::uint32_t airtime_us)
+void Duty::add(Band& band, std::uint32_t now_ms, std::uint32_t airtime_us)
 {
-    roll(now_ms);
-    std::uint32_t& slot = bucket_us_[(now_ms / kDutySlotMs) % kSlots];
+    roll(band, now_ms);
+    std::uint32_t& slot = band.bucket_us[(now_ms / kDutySlotMs) % kSlots];
     if (slot > 0xFFFFFFFFu - airtime_us) {
         slot = 0xFFFFFFFFu;
     } else {
@@ -407,10 +432,41 @@ void Duty::record(std::uint32_t now_ms, std::uint32_t airtime_us)
     }
 }
 
+void Duty::remove(Band& band, std::uint32_t now_ms, std::uint32_t airtime_us)
+{
+    roll(band, now_ms);
+    std::uint32_t& slot = band.bucket_us[(now_ms / kDutySlotMs) % kSlots];
+    slot = slot > airtime_us ? slot - airtime_us : 0;
+}
+
+void Duty::record(std::uint32_t now_ms, std::uint32_t airtime_us)
+{
+    add(band_[active_], now_ms, airtime_us);
+}
+
+void Duty::settle(std::uint32_t on_air_budget_ms, std::uint32_t now_ms, std::uint32_t linked_us,
+                  std::uint32_t need_us)
+{
+    const std::uint32_t on_air_us = on_air_budget_ms * 1000u;
+    Band& active = band_[active_];
+    if (active.budget_us == on_air_us) {
+        if (need_us > linked_us) {
+            add(active, now_ms, need_us - linked_us);
+        }
+        return;
+    }
+    if (linked_us > 0) {
+        remove(active, now_ms, linked_us);
+    }
+    if (need_us > 0) {
+        add(band_[band_index(on_air_us)], now_ms, need_us);
+    }
+}
+
 std::uint32_t Duty::charged_us(std::uint32_t now_ms) const
 {
-    Duty copy(*this);
-    return copy.used_us(now_ms);
+    Band copy = band_[active_];
+    return used_us(copy, now_ms);
 }
 
 std::uint32_t duty_checksum(const DutyImage& image)
@@ -421,13 +477,17 @@ std::uint32_t duty_checksum(const DutyImage& image)
         sum *= 16777619u;
     };
     mix(image.magic);
-    mix(image.budget_us);
-    for (std::uint32_t bucket : image.bucket_us) {
-        mix(bucket);
-    }
-    mix(image.last_slot);
+    mix(image.home_us);
+    mix(image.active);
     mix(image.now_ms);
-    mix(image.started);
+    for (const DutyBandImage& band : image.band) {
+        mix(band.budget_us);
+        for (std::uint32_t bucket : band.bucket_us) {
+            mix(bucket);
+        }
+        mix(band.last_slot);
+        mix(band.started);
+    }
     return sum;
 }
 
@@ -435,36 +495,50 @@ void Duty::save(DutyImage& out, std::uint32_t now_ms) const
 {
     out = {};
     out.magic = kDutyMagic;
-    out.budget_us = budget_us_;
-    for (int i = 0; i < kSlots; ++i) {
-        out.bucket_us[i] = bucket_us_[i];
-    }
-    out.last_slot = last_slot_;
+    out.home_us = home_us_;
+    out.active = static_cast<std::uint32_t>(active_);
     out.now_ms = now_ms;
-    out.started = started_ ? 1 : 0;
+    for (int n = 0; n < 2; ++n) {
+        out.band[n].budget_us = band_[n].budget_us;
+        for (int i = 0; i < kSlots; ++i) {
+            out.band[n].bucket_us[i] = band_[n].bucket_us[i];
+        }
+        out.band[n].last_slot = band_[n].last_slot;
+        out.band[n].started = band_[n].started ? 1 : 0;
+    }
     out.checksum = duty_checksum(out);
 }
 
 bool Duty::restore(const DutyImage& in)
 {
-    if (in.magic != kDutyMagic || in.budget_us != budget_us_ || in.checksum != duty_checksum(in)) {
+    if (in.magic != kDutyMagic || in.home_us != home_us_ || in.active > 1u ||
+        in.checksum != duty_checksum(in)) {
         return false;
     }
-    for (int i = 0; i < kSlots; ++i) {
-        bucket_us_[i] = in.bucket_us[i];
+    for (int n = 0; n < 2; ++n) {
+        if (in.band[n].budget_us != band_[n].budget_us) {
+            return false;
+        }
     }
-    last_slot_ = in.last_slot;
-    started_ = in.started != 0;
+    for (int n = 0; n < 2; ++n) {
+        for (int i = 0; i < kSlots; ++i) {
+            band_[n].bucket_us[i] = in.band[n].bucket_us[i];
+        }
+        band_[n].last_slot = in.band[n].last_slot;
+        band_[n].started = in.band[n].started != 0;
+    }
+    active_ = static_cast<int>(in.active);
     return true;
 }
 
 std::uint32_t Duty::wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const
 {
-    if (airtime_us > budget_us_) {
+    const std::uint32_t budget_us = band_[active_].budget_us;
+    if (airtime_us > budget_us) {
         return 0xFFFFFFFFu;
     }
-    Duty probe(*this);
-    if (probe.can_send(now_ms, airtime_us)) {
+    Band probe = band_[active_];
+    if (used_us(probe, now_ms) <= budget_us - airtime_us) {
         return 0;
     }
     std::uint32_t t = now_ms;
@@ -478,7 +552,7 @@ std::uint32_t Duty::wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) cons
             return 0xFFFFFFFFu;
         }
         t = static_cast<std::uint32_t>(next);
-        if (probe.can_send(t, airtime_us)) {
+        if (used_us(probe, t) <= budget_us - airtime_us) {
             return t - now_ms;
         }
     }
@@ -487,15 +561,16 @@ std::uint32_t Duty::wait_ms(std::uint32_t now_ms, std::uint32_t airtime_us) cons
 
 std::uint32_t Duty::next_send_ms(std::uint32_t now_ms, std::uint32_t airtime_us) const
 {
+    const std::uint32_t budget_us = band_[active_].budget_us;
     const std::uint32_t hard = wait_ms(now_ms, airtime_us);
-    if (airtime_us == 0 || budget_us_ == 0 || hard == 0xFFFFFFFFu) {
+    if (airtime_us == 0 || budget_us == 0 || hard == 0xFFFFFFFFu) {
         if (hard == 0xFFFFFFFFu) {
             return 0xFFFFFFFFu;
         }
         const std::uint64_t at = static_cast<std::uint64_t>(now_ms) + 1000u;
         return at > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<std::uint32_t>(at);
     }
-    const std::uint64_t target = static_cast<std::uint64_t>(budget_us_) * 95ull / 100ull;
+    const std::uint64_t target = static_cast<std::uint64_t>(budget_us) * 95ull / 100ull;
     std::uint32_t steady = 1000u;
     if (target > 0 && airtime_us <= target) {
         const std::uint64_t raw =

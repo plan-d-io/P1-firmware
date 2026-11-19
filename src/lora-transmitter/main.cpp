@@ -513,9 +513,8 @@ struct AirResult {
 void charge_sent(uint32_t linked_us, uint32_t radio_us, uint32_t measured)
 {
     const uint32_t need = radio_us > measured ? radio_us : measured;
-    if (need > linked_us) {
-        g_duty.record(duty_clock(), need - linked_us);
-    }
+    const uint32_t on_air = p1lora::profile(g_on_profile).duty_ms_per_hour;
+    g_duty.settle(on_air, duty_clock(), linked_us, need);
     remember_duty();
 }
 

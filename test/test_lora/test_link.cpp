@@ -359,6 +359,9 @@ struct World {
                 std::uint64_t sum = 0;
                 const std::uint32_t t = log[i].ms;
                 for (std::size_t j = 0; j <= i; ++j) {
+                    if (log[j].budget_us != log[i].budget_us) {
+                        continue;
+                    }
                     if (t - log[j].ms <= 3600000u) {
                         sum += log[j].air_us;
                     }

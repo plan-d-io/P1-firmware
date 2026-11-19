@@ -674,7 +674,7 @@ void test_duty_image()
 
     p1lora::Duty other_budget(36000u);
     TEST_ASSERT_FALSE(other_budget.restore(image));
-    TEST_ASSERT_EQUAL_UINT32(1468u, sizeof(p1lora::DutyImage));
+    TEST_ASSERT_EQUAL_UINT32(2932u, sizeof(p1lora::DutyImage));
 }
 
 std::uint32_t steady_interval_ms(std::uint32_t budget_ms, std::uint32_t air_us)
@@ -700,6 +700,58 @@ void assert_under_budget(const std::deque<std::pair<std::uint32_t, std::uint32_t
         }
         TEST_ASSERT_TRUE(sum <= budget_us);
     }
+}
+
+void test_duty_per_band()
+{
+    const std::uint32_t air_a = p1lora::airtime_us(p1lora::ProfileId::A, 4, 53);
+    const std::uint32_t air_b = p1lora::airtime_us(p1lora::ProfileId::B, 6, 53);
+    TEST_ASSERT_EQUAL_UINT32(1946u, steady_interval_ms(360000u, air_a));
+    TEST_ASSERT_EQUAL_UINT32(5403u, steady_interval_ms(36000u, air_b));
+
+    p1lora::Duty duty(360000u);
+    p1lora::Duty shadow(360000u);
+    std::deque<std::pair<std::uint32_t, std::uint32_t>> on_a;
+    std::deque<std::pair<std::uint32_t, std::uint32_t>> on_b;
+    std::uint32_t now = 0;
+    while (now < 3600000u) {
+        const std::uint32_t next = duty.next_send_ms(now, air_a);
+        TEST_ASSERT_TRUE(next > now);
+        TEST_ASSERT_TRUE(duty.can_send(next, air_a));
+        duty.record(next, air_a);
+        shadow.record(next, air_a);
+        on_a.emplace_back(next, air_a);
+        now = next;
+    }
+    TEST_ASSERT_TRUE(duty.charged_us(now) > 0u);
+
+    duty.set_budget_ms(36000u);
+    TEST_ASSERT_EQUAL_UINT32(0u, duty.charged_us(now));
+    TEST_ASSERT_EQUAL_UINT32(0u, duty.wait_ms(now, air_b));
+    TEST_ASSERT_EQUAL_UINT32(5403u, duty.next_send_ms(now, air_b) - now);
+    for (int i = 0; i < 30; ++i) {
+        const std::uint32_t next = duty.next_send_ms(now, air_b);
+        TEST_ASSERT_EQUAL_UINT32(5403u, next - now);
+        TEST_ASSERT_TRUE(duty.can_send(next, air_b));
+        duty.record(next, air_b);
+        on_b.emplace_back(next, air_b);
+        now = next;
+    }
+    const std::uint32_t b_used = duty.charged_us(now);
+
+    duty.set_budget_ms(360000u);
+    TEST_ASSERT_EQUAL_UINT32(shadow.charged_us(now), duty.charged_us(now));
+    TEST_ASSERT_TRUE(duty.charged_us(now) > 0u);
+    assert_under_budget(on_a, 360000u * 1000u);
+    assert_under_budget(on_b, 36000u * 1000u);
+
+    p1lora::DutyImage image{};
+    duty.save(image, now);
+    p1lora::Duty restored(360000u);
+    TEST_ASSERT_TRUE(restored.restore(image));
+    TEST_ASSERT_EQUAL_UINT32(duty.charged_us(now), restored.charged_us(now));
+    restored.set_budget_ms(36000u);
+    TEST_ASSERT_EQUAL_UINT32(b_used, restored.charged_us(now));
 }
 
 void test_pace_sf8()
@@ -1116,6 +1168,7 @@ int main()
     RUN_TEST(test_duty);
     RUN_TEST(test_power_clamp);
     RUN_TEST(test_duty_image);
+    RUN_TEST(test_duty_per_band);
     RUN_TEST(test_pace_sf8);
     RUN_TEST(test_pace_burst);
     RUN_TEST(test_link_image);
