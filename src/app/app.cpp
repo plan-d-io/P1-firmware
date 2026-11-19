@@ -1121,9 +1121,9 @@ static void publish_diagnostics()
     if (g_product->diagnostics == nullptr) {
         return;
     }
-    p1app::Product::DiagPoint points[8]{};
-    const std::size_t nd = g_product->diagnostics(points, 8);
-    for (std::size_t i = 0; i < nd && i < 8; ++i) {
+    p1app::Product::DiagPoint points[12]{};
+    const std::size_t nd = g_product->diagnostics(points, 12);
+    for (std::size_t i = 0; i < nd && i < 12; ++i) {
         publish_one_diag(points[i].id, points[i].name, points[i].value_json, points[i].unit);
     }
 }
@@ -1300,11 +1300,11 @@ static bool publish_ha_debug()
     fill_ha_config_url(config_url, sizeof(config_url));
     bool ok = false;
     if (p1pub::device_discovery_topic(g_device_id, topic, sizeof(topic)) > 0) {
-        p1pub::DiagSpec extra[8]{};
-        p1app::Product::DiagPoint points[8]{};
+        p1pub::DiagSpec extra[12]{};
+        p1app::Product::DiagPoint points[12]{};
         const std::size_t nd =
-            g_product->diagnostics != nullptr ? g_product->diagnostics(points, 8) : 0;
-        for (std::size_t i = 0; i < nd && i < 8; ++i) {
+            g_product->diagnostics != nullptr ? g_product->diagnostics(points, 12) : 0;
+        for (std::size_t i = 0; i < nd && i < 12; ++i) {
             extra[i].id = points[i].id;
             extra[i].name = points[i].name;
             extra[i].unit = points[i].unit;
