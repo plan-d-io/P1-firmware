@@ -737,6 +737,12 @@ void send_action(const p1lora::AirAction& action, const p1lora::MeterStatus& met
         Serial.print(" probe");
     }
     Serial.println();
+    // Nothing came back. Three such sends after a reboot give up the stored
+    // step. A downlink during the listen already cancelled that count.
+    if (!air.acked && g_link != nullptr) {
+        g_link->on_ack_missed(duty_clock());
+        persist_link();
+    }
 }
 
 void print_summary()

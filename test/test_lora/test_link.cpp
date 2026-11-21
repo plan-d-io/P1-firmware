@@ -4,6 +4,7 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <new>
 #include <vector>
 
 namespace {
@@ -66,6 +67,11 @@ struct World {
     p1lora::ProfileId watch_profile = p1lora::ProfileId::A;
     std::uint32_t watch_ms = 0xFFFFFFFFu;
     bool watch_search = false;
+    bool mark_search = false;
+    bool saw_tx_search = false;
+    bool saw_rx_search = false;
+    std::uint32_t tx_search_ms = 0xFFFFFFFFu;
+    std::uint32_t rx_search_ms = 0xFFFFFFFFu;
     bool want_home = false;
     bool home_left = false;
     std::uint32_t home_ms = 0xFFFFFFFFu;
@@ -187,6 +193,20 @@ struct World {
         const std::uint32_t allow = allowance(tx.profile(), tx.step()) > allowance(rx.profile(), rx.step())
                                         ? allowance(tx.profile(), tx.step())
                                         : allowance(rx.profile(), rx.step());
+        if (mark_search) {
+            if (tx.view() == p1lora::LinkView::Search) {
+                if (!saw_tx_search) {
+                    tx_search_ms = t;
+                }
+                saw_tx_search = true;
+            }
+            if (rx.view() == p1lora::LinkView::Search) {
+                if (!saw_rx_search) {
+                    rx_search_ms = t;
+                }
+                saw_rx_search = true;
+            }
+        }
         if (diff) {
             if (!diverged) {
                 diverged = true;
@@ -350,6 +370,57 @@ struct World {
         if (diverged && now >= div_from && now - div_from > diverge_max) {
             diverge_max = now - div_from;
         }
+    }
+
+    // A power-on reboot: the duty window is empty and the stored step is resumed.
+    void reboot_tx()
+    {
+        const p1lora::LinkSettings kept = tx.settings();
+        tx.~TxLink();
+        txd.~Duty();
+        new (&txd) p1lora::Duty(360000u);
+        new (&tx) p1lora::TxLink(kept, txd, true);
+        tx_due = now;
+        tx_log.clear();
+    }
+
+    void reboot_rx()
+    {
+        const p1lora::LinkSettings kept = rx.settings();
+        rx.~RxLink();
+        rxd.~Duty();
+        new (&rxd) p1lora::Duty(360000u);
+        new (&rx) p1lora::RxLink(kept, rxd, true);
+        rx_log.clear();
+    }
+
+    void fresh_tx()
+    {
+        tx.~TxLink();
+        txd.~Duty();
+        new (&txd) p1lora::Duty(360000u);
+        new (&tx) p1lora::TxLink(p1lora::LinkSettings{}, txd, true);
+        tx_due = now;
+        tx_log.clear();
+    }
+
+    void fresh_rx()
+    {
+        rx.~RxLink();
+        rxd.~Duty();
+        new (&rxd) p1lora::Duty(360000u);
+        new (&rx) p1lora::RxLink(p1lora::LinkSettings{}, rxd, true);
+        rx_log.clear();
+    }
+
+    void arm_search_watch()
+    {
+        mark_search = true;
+        saw_tx_search = false;
+        saw_rx_search = false;
+        tx_search_ms = 0xFFFFFFFFu;
+        rx_search_ms = 0xFFFFFFFFu;
+        watch_ms = 0xFFFFFFFFu;
     }
 
     void check_duty() const
@@ -724,6 +795,95 @@ void test_link_resume()
     TEST_ASSERT_EQUAL_UINT8(5, tx.step());
     TEST_ASSERT_EQUAL_UINT8(5, first.sent_step);
     TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Run), static_cast<int>(tx.view()));
+}
+
+// A rebooted auto end gives the stored step one short try, then searches.
+// The ordinary silence rule (two minutes, then one step, then search) is untouched.
+void test_link_reboot_shortcut()
+{
+    World w;
+    w.watch_step = 5;
+    w.run_until(180000u);
+    TEST_ASSERT_EQUAL_UINT32(59101u, w.watch_ms);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    // Transmitter rebooted while the receiver is already searching on step 0.
+    const std::uint32_t tx_off = w.now;
+    w.fresh_rx();
+    w.reboot_tx();
+    w.arm_search_watch();
+    w.run_until(tx_off + 180000u);
+    TEST_ASSERT_TRUE(w.saw_tx_search);
+    // Three missed sends, then search. Both are in run again 61.2 s after the reboot.
+    TEST_ASSERT_EQUAL_UINT32(2103u, w.tx_search_ms - tx_off);
+    TEST_ASSERT_EQUAL_UINT32(61204u, w.watch_ms - tx_off);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    // Either end rebooted while the partner is still on the same step: no search.
+    const std::uint32_t tx_stay = w.now;
+    w.reboot_tx();
+    w.arm_search_watch();
+    w.run_until(tx_stay + 60000u);
+    TEST_ASSERT_FALSE(w.saw_tx_search);
+    TEST_ASSERT_FALSE(w.saw_rx_search);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    // Receiver rebooted while the transmitter is searching.
+    // SF7's reading interval is 1 s, so three of them sit under the 30 s floor.
+    // SF12's is 24.7 s, so three of them (74.1 s) is the wait on that step.
+    TEST_ASSERT_EQUAL_UINT32(1000u, p1lora::reading_pace_ms(p1lora::ProfileId::A, 5, true));
+    TEST_ASSERT_EQUAL_UINT32(24700u, p1lora::reading_pace_ms(p1lora::ProfileId::A, 0, true));
+    const std::uint32_t rx_off = w.now;
+    w.fresh_tx();
+    w.reboot_rx();
+    w.arm_search_watch();
+    w.run_until(rx_off + 180000u);
+    TEST_ASSERT_TRUE(w.saw_rx_search);
+    TEST_ASSERT_EQUAL_UINT32(rx_off + p1lora::kRebootListenFloorMs, w.rx_search_ms);
+    // Search starts at 30 s. Both are in run again 108.5 s after the reboot.
+    TEST_ASSERT_EQUAL_UINT32(108501u, w.watch_ms - rx_off);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    const std::uint32_t rx_stay = w.now;
+    w.reboot_rx();
+    w.arm_search_watch();
+    w.run_until(rx_stay + 60000u);
+    TEST_ASSERT_FALSE(w.saw_tx_search);
+    TEST_ASSERT_FALSE(w.saw_rx_search);
+    TEST_ASSERT_TRUE(both_at(w, 5, p1lora::ProfileId::A, p1lora::LinkView::Run));
+
+    // Locked mode never takes the shortcut, even with every frame lost.
+    p1lora::LinkSettings locked;
+    locked.saved = true;
+    locked.mode = p1lora::LinkMode::Locked;
+    locked.profile = p1lora::ProfileId::A;
+    locked.locked_step = 4;
+    World held(locked);
+    held.set_loss(100);
+    held.arm_search_watch();
+    held.run_until(120000u);
+    TEST_ASSERT_FALSE(held.saw_tx_search);
+    TEST_ASSERT_FALSE(held.saw_rx_search);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Locked), static_cast<int>(held.tx.view()));
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Locked), static_cast<int>(held.rx.view()));
+    TEST_ASSERT_EQUAL_UINT8(4, held.tx.step());
+    TEST_ASSERT_EQUAL_UINT8(4, held.rx.step());
+
+    // A stored SF12 step waits three of its own intervals, which is past the floor.
+    p1lora::LinkSettings slow;
+    slow.saved = true;
+    slow.mode = p1lora::LinkMode::Auto;
+    slow.profile = p1lora::ProfileId::A;
+    slow.last_good_step = 0;
+    p1lora::Duty slow_duty(360000u);
+    p1lora::RxLink quiet(slow, slow_duty, true);
+    quiet.poll(0);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Run), static_cast<int>(quiet.view()));
+    quiet.poll(74099u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Run), static_cast<int>(quiet.view()));
+    quiet.poll(74100u);
+    TEST_ASSERT_EQUAL(static_cast<int>(p1lora::LinkView::Search), static_cast<int>(quiet.view()));
+    TEST_ASSERT_EQUAL_UINT8(0, quiet.step());
 }
 
 void test_link_status_accept()

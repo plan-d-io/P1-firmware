@@ -1141,6 +1141,7 @@ void test_link_no_split();
 void test_link_locked();
 void test_link_commands();
 void test_link_resume();
+void test_link_reboot_shortcut();
 void test_link_status_accept();
 void test_link_duty_windows();
 void test_link_loss_burst();
@@ -1190,6 +1191,7 @@ int main()
     RUN_TEST(test_link_locked);
     RUN_TEST(test_link_commands);
     RUN_TEST(test_link_resume);
+    RUN_TEST(test_link_reboot_shortcut);
     RUN_TEST(test_link_status_accept);
     RUN_TEST(test_link_duty_windows);
     RUN_TEST(test_link_loss_burst);

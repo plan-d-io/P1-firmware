@@ -34,6 +34,11 @@ constexpr std::uint32_t kStepUpMaxMs = 24u * 60u * 60u * 1000u;
 constexpr std::uint32_t kSlowProbeMs = 12000;  // slower than this: 3 of 4, else 7 of 10
 constexpr std::uint32_t kSilenceFloorMs = 120000;
 constexpr std::uint32_t kRevertFloorMs = 60000;
+// After a reboot in auto, a quiet stored step is given up. The transmitter
+// searches when its first three sends hear nothing. The receiver searches
+// when it hears nothing for three reading intervals, and never sooner than this.
+constexpr std::uint8_t kRebootMisses = 3;
+constexpr std::uint32_t kRebootListenFloorMs = 30000;
 constexpr std::uint8_t kNoOfferCap = 0xFF;
 
 // How many probes have to arrive before a step is confirmed. `span` is the
@@ -197,6 +202,9 @@ private:
     std::uint32_t next_slot_ms_ = 0;
     std::uint8_t silence_strikes_ = 0;
     bool duty_gagged_ = false;
+    // Sends still allowed before a rebooted auto link gives up the stored step.
+    // Zero means the shortcut is over: a downlink arrived, or it already fired.
+    std::uint8_t quiet_left_ = 0;
     bool accept_next_ = false;
     bool switch_after_send_ = false;
     ProfileId switch_profile_ = ProfileId::A;
@@ -295,6 +303,10 @@ private:
     bool step_up_attempt_ = false;
     bool defer_step_up_ = false;
     std::uint8_t silence_strikes_ = 0;
+    // Armed only for an auto resume. The deadline is the first poll plus the wait.
+    bool reboot_arm_ = false;
+    bool reboot_deadline_set_ = false;
+    std::uint32_t reboot_deadline_ = 0;
     std::int16_t cand_snr_[3]{};
     std::uint8_t cand_n_ = 0;
     bool lock_lost_ = false;

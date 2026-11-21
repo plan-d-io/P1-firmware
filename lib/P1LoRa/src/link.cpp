@@ -235,6 +235,9 @@ TxLink::TxLink(const LinkSettings& stored, Duty& duty, bool three_phase)
         profile_ = stored.profile;
         step_ = stored.mode == LinkMode::Locked ? stored.locked_step : stored.last_good_step;
         phase_ = Phase::Run;
+        if (mode_ == LinkMode::Auto) {
+            quiet_left_ = kRebootMisses;
+        }
     } else {
         committed_.saved = false;
         mode_ = LinkMode::Auto;
@@ -440,6 +443,7 @@ AirAction TxLink::on_slot(std::uint32_t now_ms, bool meter_fresh, const MeterSta
 
 void TxLink::on_downlink(std::uint32_t now_ms, const Heard& frame)
 {
+    quiet_left_ = 0;
     last_heard_ms_ = now_ms;
     silence_strikes_ = 0;
     if (phase_ == Phase::Switching) {
@@ -495,9 +499,20 @@ void TxLink::on_downlink(std::uint32_t now_ms, const Heard& frame)
     switch_fallback_ = fallback;
 }
 
-void TxLink::on_ack_missed(std::uint32_t)
+void TxLink::on_ack_missed(std::uint32_t now_ms)
 {
     // Silence is "no downlink at all". A miss leaves last_heard_ms_ alone.
+    // A reboot still on its stored step gives that step three sends, then searches.
+    if (quiet_left_ == 0 || mode_ != LinkMode::Auto || phase_ != Phase::Run) {
+        return;
+    }
+    --quiet_left_;
+    if (quiet_left_ != 0) {
+        return;
+    }
+    silence_strikes_ = 0;
+    enter(profile_, 0, Phase::Search, now_ms);
+    next_slot_ms_ = now_ms;
 }
 
 void TxLink::force_auto(std::uint32_t now_ms)
@@ -568,6 +583,9 @@ RxLink::RxLink(const LinkSettings& stored, Duty& duty, bool three_phase)
         profile_ = stored.profile;
         step_ = stored.mode == LinkMode::Locked ? stored.locked_step : stored.last_good_step;
         phase_ = Phase::Run;
+        if (mode_ == LinkMode::Auto) {
+            reboot_arm_ = true;
+        }
     } else {
         committed_.saved = false;
         mode_ = LinkMode::Auto;
@@ -926,6 +944,22 @@ AirAction RxLink::poll(std::uint32_t now_ms)
             last_heard_ms_ = now_ms;
         }
     }
+    if (reboot_arm_ && !reboot_deadline_set_) {
+        const std::uint32_t pace = reading_pace_ms(profile_, step_, three_);
+        std::uint32_t wait = pace > 0xFFFFFFFFu / 3u ? 0xFFFFFFFFu : pace * 3u;
+        if (wait < kRebootListenFloorMs) {
+            wait = kRebootListenFloorMs;
+        }
+        const std::uint64_t at = static_cast<std::uint64_t>(now_ms) + wait;
+        reboot_deadline_ = at > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<std::uint32_t>(at);
+        reboot_deadline_set_ = true;
+    }
+    if (reboot_arm_ && reboot_deadline_set_ && now_ms >= reboot_deadline_ && phase_ == Phase::Run) {
+        reboot_arm_ = false;
+        silence_strikes_ = 0;
+        enter(profile_, 0, Phase::Search, now_ms);
+        return {};
+    }
     if (revert_on_ && now_ms >= revert_at_) {
         revert(now_ms);
         return {};
@@ -980,6 +1014,7 @@ AirAction RxLink::poll(std::uint32_t now_ms)
 
 AirAction RxLink::on_uplink(std::uint32_t now_ms, const Heard& frame)
 {
+    reboot_arm_ = false;
     last_heard_ms_ = now_ms;
     silence_strikes_ = 0;
     const std::uint16_t heard_len = on_air_len(frame.kind, three_, false);
@@ -1185,6 +1220,9 @@ std::uint32_t RxLink::next_wake_ms(std::uint32_t now_ms) const
         take(last_heard_ms_ + static_cast<std::uint32_t>(fallback_min_) * 60000u);
     } else if (mode_ == LinkMode::Auto && phase_ == Phase::Run && step_ > 0) {
         take(last_heard_ms_ + silence_period_ms(profile_, step_, three_));
+    }
+    if (reboot_arm_ && reboot_deadline_set_) {
+        take(reboot_deadline_);
     }
     return wake;
 }
